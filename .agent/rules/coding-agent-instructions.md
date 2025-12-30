@@ -79,6 +79,11 @@ Docstrings: Use docstrings for complex logic. Avoid rudimentary comments (e.g., 
 Production Comments: No overly verbose or explanatory comments. This is a production environment, and it needs to be refined and contain minimalist comments while staying organized.
 
 
+TOOL USAGE:
+
+Editing .ipynb files: The edit file tool does not let you edit .ipynb file extensions, so you must read the file and the rewrite the entire file while keeping everything the same except for what you intended to modify.
+
+
 
 ## RESPONSE FORMAT
 
