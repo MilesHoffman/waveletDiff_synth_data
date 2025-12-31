@@ -4,7 +4,7 @@ WaveletDiffusionTransformer (Keras 3).
 
 import keras
 from keras import layers, ops, Model
-from .layers import TimeEmbedding, WaveletTransformerBlock
+from .layers import TimeEmbedding, WaveletTransformerBlock, PositionalEncoding
 from .attention import CrossLevelAttention
 
 class WaveletLevelTransformer(layers.Layer):
@@ -15,7 +15,7 @@ class WaveletLevelTransformer(layers.Layer):
         self.input_proj = layers.Dense(embed_dim)
         
         # Fixed Positional Encoding (Sine/Cosine) matches PyTorch
-        self.pos_emb = layers.PositionalEncoding(embed_dim, max_len=level_dim)
+        self.pos_emb = PositionalEncoding(embed_dim, max_len=level_dim)
         
         self.blocks = [
             WaveletTransformerBlock(embed_dim, num_heads, dropout)

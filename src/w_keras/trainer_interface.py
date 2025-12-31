@@ -47,7 +47,8 @@ def init_model(info, config):
         'dropout': config['DROPOUT'],
         'time_embed_dim': config.get('TIME_EMBED_DIM', 128),
         'prediction_target': config.get('PREDICTION_TARGET', 'noise'),
-        'use_cross_level_attention': config.get('USE_CROSS_LEVEL_ATTENTION', True)
+        'use_cross_level_attention': config.get('USE_CROSS_LEVEL_ATTENTION', True),
+        'energy_weight': config.get('ENERGY_WEIGHT', 0.0)
     }
     
     model = ktrans.WaveletDiffusionTransformer(info, model_config)
