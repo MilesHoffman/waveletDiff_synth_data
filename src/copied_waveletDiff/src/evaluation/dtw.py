@@ -252,7 +252,7 @@ def dtw_js_divergence_distance(
         else:
             # Fallback to sequential processing
             distances = []
-            for sample in tqdm(samples, desc="Computing DTW distances"):
+            for sample in tqdm(samples, desc="Computing DTW distances", leave=False, mininterval=1.0):
                 sample = np.asarray(sample)
                 sample_distances = []
                 
