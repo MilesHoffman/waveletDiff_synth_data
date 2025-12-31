@@ -164,7 +164,10 @@ class WaveletTransformerBlock(nn.Module):
         """
         # Self-attention with time conditioning
         x_norm1 = self.norm1(x, time_embed)
-        attn_out, _ = self.attn(x_norm1, x_norm1, x_norm1, attn_mask=mask)
+        # Adaptive TPU optimization: Disable weights on XLA to enable fused kernels
+        # On GPU, user reported regression with False, so we keep True
+        is_tpu = x.device.type == "xla"
+        attn_out, _ = self.attn(x_norm1, x_norm1, x_norm1, attn_mask=mask, need_weights=not is_tpu)
         x = x + self.dropout(attn_out)
         
         # Feed-forward with time conditioning

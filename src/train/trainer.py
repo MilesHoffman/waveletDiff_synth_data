@@ -243,13 +243,8 @@ def train_loop(fabric, model, optimizer, train_loader, config,
     model.train()
     # Logging State
     # Logging State
-    is_tpu = fabric.device.type == "xla"
-    if is_tpu:
-        # On TPU, accumulate on device to avoid per-step CPU sync
-        running_loss = torch.zeros((), device=fabric.device)
-    else:
-        # On GPU/CPU, standard float accumulation
-        running_loss = 0.0
+    # Unified efficient logging for all devices
+    running_loss = torch.zeros((), device=fabric.device)
 
     # Profiler Context
     if enable_profiler:
@@ -298,22 +293,15 @@ def train_loop(fabric, model, optimizer, train_loader, config,
                 scheduler.step()
 
             # Logging Accumulation
-            if is_tpu:
-                # Keep on device, detach to stop graph growth
-                running_loss += loss.detach()
-            else:
-                # Sync logic (standard for GPU)
-                running_loss += loss.item()
+            # Unified efficient logging: Accumulate on device to prevent sync
+            # This is safe for both TPU (prevents graph break) and GPU (prevents CPU sync)
+            running_loss += loss.detach()
 
             if (step + 1) % log_interval == 0 and not enable_profiler:
                 # Calculate Avg Loss
-                if is_tpu:
-                    # Sync only once per interval
-                    avg_loss = running_loss.item() / log_interval
-                    running_loss.zero_()
-                else:
-                    avg_loss = running_loss / log_interval
-                    running_loss = 0.0
+                # Sync only once per interval
+                avg_loss = running_loss.item() / log_interval
+                running_loss.zero_()
 
                 if fabric.world_size > 1:
                     avg_loss = fabric.all_reduce(avg_loss, reduce_op="mean")
