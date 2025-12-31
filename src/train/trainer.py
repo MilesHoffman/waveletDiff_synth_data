@@ -153,12 +153,16 @@ def init_model(fabric, datamodule, config,
     
     # Model summary info (rank 0 only)
     if fabric.is_global_zero:
+        total_params = sum(p.numel() for p in model.parameters())
+        trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        
         print("\n" + "="*60)
         print("WAVELET DIFFUSION TRANSFORMER MODEL INFO")
         print("="*60)
         print(f"Dataset: {config['dataset']['name']}")
         print(f"Input dimension: {datamodule.get_input_dim()}")
-        # ... could add more logging ...
+        print(f"Total Parameters: {total_params:,}")
+        print(f"Trainable Parameters: {trainable_params:,}")
         print("="*60 + "\n")
 
     # Move to device
