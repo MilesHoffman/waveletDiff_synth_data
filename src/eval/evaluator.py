@@ -88,6 +88,11 @@ def run_evaluation(checkpoint_path, data_path, output_dir, num_samples=None, dev
     np.save(gen_path, generated_data)
     print(f"Saved generated samples to {gen_path}")
     
+    # Save Real Data for visualization consistency
+    real_path = os.path.join(output_dir, "real_samples_used.npy")
+    np.save(real_path, real_data)
+    print(f"Saved real samples to {real_path}")
+    
     # 4. Compute Metrics
     evaluator = MetricsEvaluator(real_data, generated_data, device=device)
     results = evaluator.run_all()
