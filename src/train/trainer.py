@@ -118,7 +118,7 @@ def get_dataloaders(fabric, repo_dir, dataset_name, seq_len, batch_size, wavelet
         shuffle=True,
         drop_last=True,
         num_workers=num_workers,
-        pin_memory=True, # Always pin memory for faster host-to-device transfer
+        pin_memory=True if fabric.device.type == "cuda" else False,
         persistent_workers=True if num_workers > 0 else False
     )
 
