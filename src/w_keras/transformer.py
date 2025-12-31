@@ -162,49 +162,11 @@ class WaveletDiffusionTransformer(Model):
         # Concat
         return ops.concatenate(level_outputs, axis=1)
 
-    def train_step(self, data):
-        # Data is just x_0 (batch of wavelet coeffs)
-        x_0 = data
-        batch_size = ops.shape(x_0)[0]
-        
-        # 1. Sample Time
-        t = keras.random.randint(minval=0, maxval=self.T, shape=(batch_size,))
-        t_norm = ops.cast(t, "float32") / float(self.T)
-        
-        # 2. Add Noise (Forward Process)
-        noise = keras.random.normal(shape=ops.shape(x_0))
-        
-        # Get alpha_bar_t
-        alpha_bar_t = ops.take(self.alpha_bar, t, axis=0) # [B]
-        # Reshape for broadcast: [B, 1, 1]
-        alpha_bar_t = ops.reshape(alpha_bar_t, (batch_size, 1, 1))
-        
-        sqrt_alpha = ops.sqrt(alpha_bar_t)
-        sqrt_one_minus_alpha = ops.sqrt(1.0 - alpha_bar_t)
-        
-        # Cast to x_0 dtype (likely bfloat16 on TPU)
-        dtype = x_0.dtype
-        sqrt_alpha = ops.cast(sqrt_alpha, dtype)
-        sqrt_one_minus_alpha = ops.cast(sqrt_one_minus_alpha, dtype)
-        noise = ops.cast(noise, dtype)
-        
-        x_t = sqrt_alpha * x_0 + sqrt_one_minus_alpha * noise
-        
         # 3. Predict & Compute Loss
-        if self.prediction_target == 'noise':
-            target = noise
-        else:
-            target = x_0
+        # Removed custom train_step to rely on Keras standard fit() with JAX.
+        # Data pipeline now handles noise addition.
+        
+        pass
 
-        with tf.GradientTape() as tape:
-            pred = self((x_t, t_norm), training=True)
-            loss = self.loss_fn(target, pred)
-            
-        # 4. Gradients
-        trainable_vars = self.trainable_variables
-        gradients = tape.gradient(loss, trainable_vars)
-        
-        # 5. Update
-        self.optimizer.apply_gradients(zip(gradients, trainable_vars))
-        
-        return {"loss": loss}
+    # No custom train_step needed anymore.
+    # Standard Keras 3 fit works with JAX if data is ((x, t), y)

@@ -16,6 +16,7 @@ def setup_environment():
     
     # Check Hardware
     try:
+        import jax
         devices = jax.devices()
         device_type = devices[0].platform.upper()
         print(f"🚀 Hardware Detected: {device_type} (Count: {len(devices)})")
@@ -29,11 +30,18 @@ def setup_environment():
     except Exception as e:
         print(f"Hardware detection failed: {e}")
 
-def get_dataloader(data_path, batch_size, seq_len):
+def get_dataloader(data_path, batch_size, seq_len, config=None):
     """
     Returns (ds, info). 
+    If config is provided, applies diffusion noise mapping (x->(x_t, t), y).
     """
-    return kdata.load_dataset(data_path, batch_size, seq_len)
+    ds, info = kdata.load_dataset(data_path, batch_size, seq_len)
+    
+    if config:
+        print("⚡ Applying Diffusion Noise Pipeline...")
+        ds = kdata.prepare_diffusion_dataset(ds, config)
+        
+    return ds, info
 
 def init_model(info, config):
     """
