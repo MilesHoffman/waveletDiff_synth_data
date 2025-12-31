@@ -248,6 +248,8 @@ def dtw_js_divergence_distance(
                     desc="Computing DTW distances (Parallel)"
                 ))
             
+            tqdm.close()
+            
             return np.array(distances)
         else:
             # Fallback to sequential processing
@@ -263,6 +265,8 @@ def dtw_js_divergence_distance(
                 
                 # Use mean distance to reference set as the representative distance
                 distances.append(np.mean(sample_distances))
+
+            tqdm.close()
             
             return np.array(distances)
     
