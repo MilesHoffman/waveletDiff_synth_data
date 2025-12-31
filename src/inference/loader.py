@@ -76,11 +76,46 @@ def load_model(checkpoint_path, config, device='cuda'):
     config.setdefault('data', {})
     config['data'].setdefault('data_dir', 'data') # Dummy path if not real loading
     
-    # Initialize DataModule with robust config
-    datamodule = WaveletTimeSeriesDataModule(config=config)
-    # We might need to manually set properties if they are derived from data
-    # datamodule.get_input_dim() etc. 
-    # If data_dir is valid in config, it might try to load data.
+    # DYNAMIC PATH FIX: Override data_dir to match current environment
+    current_repo_data_dir = repo_root / "WaveletDiff_source" / "data"
+    if current_repo_data_dir.exists():
+        full_data_path = str(current_repo_data_dir.absolute())
+        config.setdefault('data', {})
+        config['data']['data_dir'] = full_data_path
+        
+        # FORCE 5-COLUMN FILTERING for 'stocks' dataset
+        # The training notebook filters: ['Open', 'High', 'Low', 'Close', 'Volume']
+        if config['dataset'].get('name') == 'stocks':
+            import pandas as pd
+            from data.loaders import create_sliding_windows
+            
+            stocks_csv = current_repo_data_dir / "stocks" / "stock_data.csv"
+            if stocks_csv.exists():
+                df = pd.read_csv(stocks_csv)
+                CORE_COLS = ['Open', 'High', 'Low', 'Close', 'Volume']
+                if all(col in df.columns for col in CORE_COLS):
+                    df_filtered = df[CORE_COLS]
+                    
+                    # Create windows
+                    raw_data_np, _ = create_sliding_windows(
+                        df_filtered.values,
+                        seq_len=config['dataset']['seq_len'],
+                        normalize=True
+                    )
+                    
+                    # Pass explicit tensor to DataModule
+                    datamodule = WaveletTimeSeriesDataModule(
+                        config=config, 
+                        data_tensor=torch.FloatTensor(raw_data_np)
+                    )
+                else:
+                    datamodule = WaveletTimeSeriesDataModule(config=config)
+            else:
+                 datamodule = WaveletTimeSeriesDataModule(config=config)
+        else:
+             datamodule = WaveletTimeSeriesDataModule(config=config)
+    else:
+        datamodule = WaveletTimeSeriesDataModule(config=config)
     
     model = WaveletDiffusionTransformer(data_module=datamodule, config=config)
     
