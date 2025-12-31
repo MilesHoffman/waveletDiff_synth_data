@@ -245,7 +245,14 @@ def train_loop(fabric, model, optimizer, train_loader, config,
         pbar = range(effective_steps)
 
     model.train()
-    running_loss = 0.0
+    # Logging State
+    is_tpu = fabric.device.type == "xla"
+    if is_tpu:
+        # On TPU, accumulate on device to avoid per-step CPU sync
+        running_loss = torch.zeros((), device=fabric.device)
+    else:
+        # On GPU/CPU, standard float accumulation
+        running_loss = 0.0
 
     # Profiler Context
     if enable_profiler:
@@ -293,12 +300,24 @@ def train_loop(fabric, model, optimizer, train_loader, config,
                 optimizer.step()
                 scheduler.step()
 
-            # Logging
-            current_loss = loss.item()
-            running_loss += current_loss
+            # Logging Accumulation
+            if is_tpu:
+                # Keep on device, detach to stop graph growth
+                running_loss += loss.detach()
+            else:
+                # Sync logic (standard for GPU)
+                running_loss += loss.item()
 
             if (step + 1) % log_interval == 0 and not enable_profiler:
-                avg_loss = running_loss / log_interval
+                # Calculate Avg Loss
+                if is_tpu:
+                    # Sync only once per interval
+                    avg_loss = running_loss.item() / log_interval
+                    running_loss.zero_()
+                else:
+                    avg_loss = running_loss / log_interval
+                    running_loss = 0.0
+
                 if fabric.world_size > 1:
                     avg_loss = fabric.all_reduce(avg_loss, reduce_op="mean")
 
@@ -309,8 +328,6 @@ def train_loop(fabric, model, optimizer, train_loader, config,
                     pbar.set_postfix({"loss": f"{avg_loss:.4f}", "lr": f"{current_lr:.2e}"})
                     # Use standard print for logs to persist in notebook output cells
                     print(f"[Step {step+1:5d} | {pct:3.0f}%] loss: {avg_loss:.4f} | lr: {current_lr:.2e}")
-                    
-                running_loss = 0.0
 
             # Checkpointing
             if (step + 1) % save_interval == 0 and not enable_profiler:
