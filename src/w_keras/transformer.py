@@ -106,7 +106,7 @@ class WaveletDiffusionTransformer(Model):
                 level_embed_dims=embed_dims_list,
                 num_heads=num_heads,
                 time_embed_dim=time_embed_dim,
-                activation_mode="cross_only" # or all_to_all
+                attention_mode="cross_only" # or all_to_all
             )
             
         # Noise Schedule (Fixed buffers)
