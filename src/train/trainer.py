@@ -275,7 +275,7 @@ def train_loop(fabric, model, optimizer, train_loader, config,
                 x_0 = batch[0]
 
             # Forward & Loss
-            optimizer.zero_grad()
+            optimizer.zero_grad(set_to_none=True)
             with record_function("forward_pass"):
                 t = torch.randint(0, model.T, (x_0.size(0),), device=fabric.device)
                 loss = model.compute_loss(x_0, t)
