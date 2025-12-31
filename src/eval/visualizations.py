@@ -95,7 +95,7 @@ def plot_distributions(real_data, syn_data, feature_names=None, exclude_indices=
         plt.savefig(save_path)
     plt.show()
 
-def plot_scalogram(real_sample, syn_sample, wavelet='cmor', save_path=None):
+def plot_scalogram(real_sample, syn_sample, wavelet='cmor1.5-1.0', save_path=None):
     """
     Plots Continuous Wavelet Transform (CWT) scalogram for a single real vs synthetic sample.
     
@@ -219,9 +219,16 @@ def plot_acf(real_data, syn_data, feature_idx=0, max_lag=50, save_path=None):
             ts = transform(data_returns[i])
             # drop nans/inf if any
             ts = ts[np.isfinite(ts)]
-            if len(ts) < max_lag: continue
-            lag_acf = acf(ts, nlags=max_lag, fft=True)
-            acfs.append(lag_acf)
+            if len(ts) < max_lag: 
+                continue
+            try:
+                lag_acf = acf(ts, nlags=max_lag, fft=True)
+                acfs.append(lag_acf)
+            except:
+                continue
+                
+        if len(acfs) == 0:
+            return None
         return np.nanmean(np.array(acfs), axis=0)
 
     acf_real_ret = compute_avg_acf(real_ret)
@@ -230,7 +237,20 @@ def plot_acf(real_data, syn_data, feature_idx=0, max_lag=50, save_path=None):
     acf_real_sqw = compute_avg_acf(real_ret, lambda x: x**2)
     acf_syn_sqw = compute_avg_acf(syn_ret, lambda x: x**2)
 
-    lags = np.arange(len(acf_real_ret))
+    # Determine valid lags from whichever result is available
+    valid_result = next((r for r in [acf_real_ret, acf_syn_ret, acf_real_sqw, acf_syn_sqw] if r is not None), None)
+    
+    if valid_result is None:
+        print("Warning: Insufficient data length for ACF plot. Skipping.")
+        return
+
+    lags = np.arange(len(valid_result))
+    
+    # Handle None cases for plotting (fill with zeros or skip plot lines)
+    acf_real_ret = acf_real_ret if acf_real_ret is not None else np.zeros_like(lags)
+    acf_syn_ret = acf_syn_ret if acf_syn_ret is not None else np.zeros_like(lags)
+    acf_real_sqw = acf_real_sqw if acf_real_sqw is not None else np.zeros_like(lags)
+    acf_syn_sqw = acf_syn_sqw if acf_syn_sqw is not None else np.zeros_like(lags)
     
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8))
     
