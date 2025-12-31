@@ -14,12 +14,8 @@ class WaveletLevelTransformer(layers.Layer):
         super().__init__(**kwargs)
         self.input_proj = layers.Dense(embed_dim)
         
-        # Positional Encoding (Fixed Sinusoidal)
-        # In Keras we can use a standard Embedding layer or compute on fly. 
-        # Since level_dim is fixed per level, we can learn it or use fixed.
-        # PyTorch uses fixed. Let's use Learnabale for Keras simplicity or stick to fixed?
-        # Let's use Learnable "Embedding" style for simplicity and power.
-        self.pos_emb = layers.Embedding(input_dim=level_dim, output_dim=embed_dim)
+        # Fixed Positional Encoding (Sine/Cosine) matches PyTorch
+        self.pos_emb = layers.PositionalEncoding(embed_dim, max_len=level_dim)
         
         self.blocks = [
             WaveletTransformerBlock(embed_dim, num_heads, dropout)
@@ -31,17 +27,12 @@ class WaveletLevelTransformer(layers.Layer):
         
     def call(self, x, time_embed, return_embeddings=False, training=None):
         # x: [B, level_dim, num_features]
-        b, s, f = ops.shape(x)[0], ops.shape(x)[1], ops.shape(x)[2]
         
         # Embed
         x = self.input_proj(x) # [B, S, E]
         
         # Pos Emb
-        positions = ops.arange(0, s, dtype="int32")
-        # Broadcast positions to batch? No, Embedding layer handles it if we pass indices or add.
-        # Better: x + pos_emb(positions)
-        pe = self.pos_emb(positions) # [S, E]
-        x = x + ops.expand_dims(pe, 0)
+        x = self.pos_emb(x)
         
         x = self.dropout(x, training=training)
         
@@ -77,6 +68,18 @@ class WaveletDiffusionTransformer(Model):
         dropout = model_config.get('dropout', 0.1)
         self.prediction_target = model_config.get('prediction_target', 'noise')
         
+        # Initialize Loss
+        energy_weight = model_config.get('energy_weight', 0.0)
+        from .loss import WaveletLoss
+        self.loss_fn = WaveletLoss(
+            level_dims=self.level_dims,
+            level_start_indices=self.level_starts,
+            strategy="coefficient_weighted",
+            approximation_weight=2.0,
+            use_energy_term=(energy_weight > 0),
+            energy_weight=energy_weight
+        )
+        
         self.time_embedding = TimeEmbedding(time_embed_dim)
         
         # Level Transformers
@@ -110,8 +113,6 @@ class WaveletDiffusionTransformer(Model):
             )
             
         # Noise Schedule (Fixed buffers)
-        # We need to register these buffers or store them. 
-        # In Keras, we can store as non-trainable weights.
         self.T = 1000
         beta = ops.linspace(0.0001, 0.02, self.T)
         alpha = 1.0 - beta
@@ -126,20 +127,13 @@ class WaveletDiffusionTransformer(Model):
         self.alpha_bar.assign(alpha_bar)
 
     def call(self, inputs):
-        # inputs is tuple: (x, t) normally.
-        # But Keras .fit passes one x.
-        # We'll split it or expect inputs structure if used manually.
-        # For training, we override train_step so this call() is for INFERENCE mainly.
-        # Let's assume call receives (x_t, t_norm)
-        
+        # inputs: tuple (x_t, t_norm)
         x_all, t_norm = inputs
         
         # Time Embed
         time_embed = self.time_embedding(t_norm)
         
         # Split x_all into levels
-        # x_all: [B, TotalCoeffs, Features]
-        
         level_outputs = []
         
         if self.use_cross:
@@ -181,8 +175,6 @@ class WaveletDiffusionTransformer(Model):
         noise = keras.random.normal(shape=ops.shape(x_0))
         
         # Get alpha_bar_t
-        # Gather is tricky for batch. 
-        # t is [B]. We want alpha_bar[t].
         alpha_bar_t = ops.take(self.alpha_bar, t, axis=0) # [B]
         # Reshape for broadcast: [B, 1, 1]
         alpha_bar_t = ops.reshape(alpha_bar_t, (batch_size, 1, 1))
@@ -192,20 +184,15 @@ class WaveletDiffusionTransformer(Model):
         
         x_t = sqrt_alpha * x_0 + sqrt_one_minus_alpha * noise
         
-        # 3. Predict
+        # 3. Predict & Compute Loss
+        if self.prediction_target == 'noise':
+            target = noise
+        else:
+            target = x_0
+
         with tf.GradientTape() as tape:
-            # Prediction
-            pred_noise = self((x_t, t_norm), training=True)
-            
-            # Loss (MSE)
-            # Custom logic: weighted MSE? Or simple MSE for now.
-            if self.prediction_target == 'noise':
-                target = noise
-            else:
-                target = x_0
-                
-            loss = ops.mean(ops.square(target - pred_noise))
-            # We can add energy terms here later
+            pred = self((x_t, t_norm), training=True)
+            loss = self.loss_fn(target, pred)
             
         # 4. Gradients
         trainable_vars = self.trainable_variables

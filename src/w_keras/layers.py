@@ -38,6 +38,37 @@ class TimeEmbedding(layers.Layer):
         return self.mlp(emb)
 
 
+class PositionalEncoding(layers.Layer):
+    """Sinusoidal positional encoding to match PyTorch implementation."""
+    def __init__(self, embed_dim, max_len=5000, **kwargs):
+        super().__init__(**kwargs)
+        self.embed_dim = embed_dim
+        self.max_len = max_len
+        
+        # Precompute pe matrix
+        # pe: [max_len, embed_dim]
+        pe = np.zeros((max_len, embed_dim), dtype=np.float32)
+        position = np.arange(0, max_len, dtype=np.float32)[:, np.newaxis]
+        div_term = np.exp(np.arange(0, embed_dim, 2, dtype=np.float32) * (-math.log(10000.0) / embed_dim))
+        
+        pe[:, 0::2] = np.sin(position * div_term)
+        pe[:, 1::2] = np.cos(position * div_term)
+        
+        # Register as non-trainable weight/constant
+        self.pe = tf.constant(pe) # Use TF constant for graph compatibility
+
+    def call(self, x):
+        # x: [B, SeqLen, EmbedDim]
+        seq_len = ops.shape(x)[1]
+        
+        # Slice pe to seq_len
+        # Expand dims to broadcast batch: [1, SeqLen, EmbedDim]
+        pe_slice = self.pe[:seq_len, :]
+        pe_slice = ops.expand_dims(pe_slice, 0)
+        
+        return x + pe_slice
+
+
 class AdaLayerNorm(layers.Layer):
     """Adaptive Layer Normalization conditioned on time embedding."""
     def __init__(self, embed_dim, **kwargs):
@@ -50,14 +81,9 @@ class AdaLayerNorm(layers.Layer):
 
     def build(self, input_shape):
         # Initialize ada_lin to identity-like behavior
-        # In Keras, we can do this with kernel_initializer, but doing it in build
-        # ensures we access the weights after creation.
-        # Ideally, we want scale=1, shift=0.
-        # Dense output is [scale, shift]. So we want [1...1, 0...0].
-        # We can achieve this by initializing bias to this vector and weight to near-zero.
-        input_dim = input_shape[-1]
-        # Custom initialization is tricky in pure functional output, relying on default initialization usually works fine
-        # with sufficient training, but let's try to be precise if possible.
+        # Dense creates kernel and bias.
+        # We want bias to be [1...1, 0...0] (scale=1, shift=0).
+        # We want kernel to be near zero.
         pass
 
     def call(self, x, time_embed):
@@ -69,10 +95,18 @@ class AdaLayerNorm(layers.Layer):
         ada_params = self.ada_lin(time_embed) # [B, 2*embed_dim]
         scale, shift = ops.split(ada_params, 2, axis=-1)
         
-        # Expand dims for broadcasting to [B, Seq, embed_dim]
-        # Assuming x is rank 3 [B, S, D]
-        scale = ops.expand_dims(scale, 1)
-        shift = ops.expand_dims(shift, 1)
+        # Expand dims for broadcasting
+        # Handle arbitrary rank input x (usually [B, S, D] or [B, D] if pooled)
+        # scale/shift are [B, D]. 
+        # We need to expand to match x's rank.
+        
+        # If x is Rank 3 [B, S, D], we need [B, 1, D]
+        # If x is Rank 2 [B, D], we keep [B, D]
+        
+        # Robust expansion:
+        while len(scale.shape) < len(x.shape):
+             scale = ops.expand_dims(scale, 1)
+             shift = ops.expand_dims(shift, 1)
         
         return scale * x_norm + shift
 
@@ -86,6 +120,8 @@ class WaveletTransformerBlock(layers.Layer):
         self.dropout1 = layers.Dropout(dropout)
         
         self.norm2 = AdaLayerNorm(embed_dim)
+        # PyTorch impl uses: Linear -> GELU -> Dropout -> Linear -> Dropout
+        # Our Keras layers usually default to relu, so explicit gelu is good.
         self.mlp = keras.Sequential([
             layers.Dense(embed_dim * 4, activation="gelu"),
             layers.Dropout(dropout),
@@ -98,16 +134,20 @@ class WaveletTransformerBlock(layers.Layer):
         # time_embed: [B, T_D]
         
         # Self Attention
-        residual = x
-        x = self.norm1(x, time_embed)
-        x = self.attn(x, x, training=training)
-        x = self.dropout1(x, training=training)
-        x = residual + x
+        # Note: PyTorch impl applies Norm BEFORE attention (Pre-Norm)
+        # x_norm1 = self.norm1(x, time_embed)
+        # attn_out = self.attn(x_norm1, x_norm1, x_norm1)
+        # x = x + self.dropout(attn_out)
+        
+        x_norm1 = self.norm1(x, time_embed)
+        # Pass use_causal_mask=False? It's bidirectional for coefficients usually? 
+        # Source uses nn.MultiheadAttention default (bidirectional).
+        attn_out = self.attn(x_norm1, x_norm1, training=training)
+        x = x + self.dropout1(attn_out, training=training)
         
         # MLP
-        residual = x
-        x = self.norm2(x, time_embed)
-        x = self.mlp(x, training=training)
-        x = residual + x
+        x_norm2 = self.norm2(x, time_embed)
+        mlp_out = self.mlp(x_norm2, training=training)
+        x = x + mlp_out
         
         return x

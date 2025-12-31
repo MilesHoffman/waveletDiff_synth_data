@@ -52,18 +52,41 @@ def init_model(info, config):
     
     model = ktrans.WaveletDiffusionTransformer(info, model_config)
     
-    # 2. Compile (XLA)
-    optimizer = keras.optimizers.AdamW(
-        learning_rate=config['LEARNING_RATE'],
-        weight_decay=config.get('WEIGHT_DECAY', 1e-5),
-        clipnorm=1.0 # Soft global clipping
-    )
+    # 2. Optimizer & Schedule
+    # Match source: Cosine with Warmup is standard
+    lr = config['LEARNING_RATE']
+    steps_per_epoch = config.get('STEPS_PER_EPOCH')
+    # If using infinite dataset or unknown steps, we might need a fixed decay steps
+    # For now, assume EPOCHS * STEPS or a fixed large number.
+    # Keras CosineDecay needs total steps.
+    
+    if steps_per_epoch:
+        decay_steps = config['EPOCHS'] * steps_per_epoch
+        warmup_steps = int(0.05 * decay_steps) # 5% warmup default
+        
+        lr_schedule = keras.optimizers.schedules.CosineDecay(
+            initial_learning_rate=lr,
+            decay_steps=decay_steps,
+            warmup_target=lr,
+            warmup_steps=warmup_steps,
+            alpha=1e-6 # Minimum LR
+        )
+        print(f"✅ Scheduler: CosineDecay (Warmup={warmup_steps}, Steps={decay_steps})")
+        optimizer = keras.optimizers.AdamW(
+            learning_rate=lr_schedule,
+            weight_decay=config.get('WEIGHT_DECAY', 1e-5),
+            clipnorm=1.0 
+        )
+    else:
+        # Fallback to constant LR if steps unknown
+        print("⚠️ Scheduler: Constant LR (Steps per epoch unknown)")
+        optimizer = keras.optimizers.AdamW(
+            learning_rate=lr,
+            weight_decay=config.get('WEIGHT_DECAY', 1e-5),
+            clipnorm=1.0 
+        )
     
     model.compile(optimizer=optimizer, jit_compile=True)
-    
-    # 3. Build (Optional, for summary)
-    # We can pass a dummy batch if we want to print summary immediately, 
-    # but lazy build on first fit is standard in Keras 3.
     
     return model
 
