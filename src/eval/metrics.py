@@ -10,41 +10,26 @@ repo_root = current_dir.parent.parent
 wd_source = repo_root / "src" / "copied_waveletDiff" / "src"
 if str(wd_source) not in sys.path and wd_source.exists():
     sys.path.append(str(wd_source))
+    
+# Also add 'evaluation' submodule to path for internal imports (like metric_utils)
+wd_eval = wd_source / "evaluation"
+if str(wd_eval) not in sys.path and wd_eval.exists():
+    sys.path.append(str(wd_eval))
 
-try:
-    from evaluation.discriminative_metrics import discriminative_score_metrics
-except ImportError as e:
-    print(f"Warning: Could not import discriminative_metrics: {e}")
-    discriminative_score_metrics = None
-
-try:
-    from evaluation.predictive_metrics import predictive_score_metrics
-except ImportError as e:
-    print(f"Warning: Could not import predictive_metrics: {e}")
-    predictive_score_metrics = None
-
+# Imports (Exceptions removed to allow debugging of missing dependencies)
+from evaluation.discriminative_metrics import discriminative_score_metrics
+from evaluation.predictive_metrics import predictive_score_metrics
 try:
     from evaluation.context_fid import Context_FID
-except ImportError as e:
-    print(f"Warning: Could not import Context_FID: {e}")
+except ImportError:
+    # Optional dependency, might fail if torch-fidelity not installed
     Context_FID = None
-
 try:
     from evaluation.cross_correlation import CrossCorrelLoss
-except ImportError as e:
-    print(f"Warning: Could not import CrossCorrelLoss: {e}")
+except ImportError:
     CrossCorrelLoss = None
-
-try:
-    from evaluation.dtw import dtw_js_divergence_distance
-except ImportError as e:
-    print(f"Warning: Could not import dtw: {e}")
-    dtw_js_divergence_distance = None
-
-try:
-    from evaluation.metric_utils import display_scores
-except ImportError as e:
-    print(f"Warning: Could not import metric_utils: {e}")
+from evaluation.dtw import dtw_js_divergence_distance
+from evaluation.metric_utils import display_scores
 
 class MetricsEvaluator:
     def __init__(self, real_data, generated_data, device='cuda'):
