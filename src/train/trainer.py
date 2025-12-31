@@ -49,7 +49,7 @@ def setup_fabric(accelerator="auto", devices="auto", precision=None):
         
     return fabric
 
-def get_dataloaders(fabric, repo_dir, dataset_name, seq_len, batch_size, wavelet_type="db2", wavelet_levels="auto"):
+def get_dataloaders(fabric, repo_dir, dataset_name, seq_len, batch_size, wavelet_type="db2", wavelet_levels="auto", data_path=None):
     """
     Loads data and creates Fabric-optimized DataLoaders.
     """
@@ -57,8 +57,17 @@ def get_dataloaders(fabric, repo_dir, dataset_name, seq_len, batch_size, wavelet
     from data.loaders import create_sliding_windows
     from data.module import WaveletTimeSeriesDataModule
 
-    stocks_path = os.path.join(repo_dir, "WaveletDiff_source", "data", "stocks", "stock_data.csv")
-    data_dir = os.path.join(repo_dir, "WaveletDiff_source", "data")
+    if data_path:
+        if os.path.isabs(data_path):
+            stocks_path = data_path
+        else:
+            stocks_path = os.path.join(repo_dir, data_path)
+    else:
+        # Fallback (Legacy)
+        stocks_path = os.path.join(repo_dir, "WaveletDiff_source", "data", "stocks", "stock_data.csv")
+
+    # Data Dir is usually the parent of the specific dataset file or a broader folder
+    data_dir = os.path.dirname(stocks_path)
 
     if fabric.is_global_zero:
         print(f"Loading data from {stocks_path}...")
