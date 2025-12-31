@@ -64,6 +64,19 @@ def load_model(checkpoint_path, config, device='cuda'):
     # If we are just doing inference, maybe we don't need the full dataset loaded,
     # but the model needs `input_dim`, `wavelet_levels` etc.
     
+    # Ensure minimal config values are present to prevent KeyErrors
+    # This acts as a robust fallback if the user provides an empty or partial config
+    config.setdefault('dataset', {})
+    config['dataset'].setdefault('name', 'stocks')
+    config['dataset'].setdefault('seq_len', 24) # Default used in training nb
+    
+    config.setdefault('training', {})
+    config['training'].setdefault('batch_size', 512)
+    
+    config.setdefault('data', {})
+    config['data'].setdefault('data_dir', 'data') # Dummy path if not real loading
+    
+    # Initialize DataModule with robust config
     datamodule = WaveletTimeSeriesDataModule(config=config)
     # We might need to manually set properties if they are derived from data
     # datamodule.get_input_dim() etc. 
