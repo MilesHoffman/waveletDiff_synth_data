@@ -182,6 +182,12 @@ class WaveletDiffusionTransformer(Model):
         sqrt_alpha = ops.sqrt(alpha_bar_t)
         sqrt_one_minus_alpha = ops.sqrt(1.0 - alpha_bar_t)
         
+        # Cast to x_0 dtype (likely bfloat16 on TPU)
+        dtype = x_0.dtype
+        sqrt_alpha = ops.cast(sqrt_alpha, dtype)
+        sqrt_one_minus_alpha = ops.cast(sqrt_one_minus_alpha, dtype)
+        noise = ops.cast(noise, dtype)
+        
         x_t = sqrt_alpha * x_0 + sqrt_one_minus_alpha * noise
         
         # 3. Predict & Compute Loss
