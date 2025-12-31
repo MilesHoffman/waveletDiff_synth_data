@@ -30,7 +30,7 @@ def load_model(checkpoint_path, config, device='cuda'):
     # PATH RESOLUTION: Define repo_root early for robust path handling
     current_dir = Path(__file__).parent.absolute()
     repo_root = current_dir.parent.parent # src/inference -> src -> root
-    wd_source = repo_root / "WaveletDiff_source" / "src"
+    wd_source = repo_root / "src" / "copied_waveletDiff" / "src"
 
     # Try standard import first, if fails, patch sys.path
     try:
@@ -43,7 +43,7 @@ def load_model(checkpoint_path, config, device='cuda'):
              from models.transformer import WaveletDiffusionTransformer
              from data.module import WaveletTimeSeriesDataModule
         else:
-             raise ImportError("Could not find WaveletDiff_source/src. Please ensure the repository is cloned and paths are correct.")
+             raise ImportError("Could not find src/copied_waveletDiff/src. Please ensure the repository is updated and paths are correct.")
 
     # Create dummy datamodule for model init (needed for shapes)
     # Ideally config has the necessary info
@@ -80,7 +80,7 @@ def load_model(checkpoint_path, config, device='cuda'):
     config['data'].setdefault('data_dir', 'data') # Dummy path if not real loading
     
     # DYNAMIC PATH FIX: Override data_dir to match current environment
-    current_repo_data_dir = repo_root / "WaveletDiff_source" / "data"
+    current_repo_data_dir = repo_root / "src" / "copied_waveletDiff" / "data"
     if current_repo_data_dir.exists():
         full_data_path = str(current_repo_data_dir.absolute())
         config.setdefault('data', {})

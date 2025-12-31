@@ -7,7 +7,7 @@ from tqdm.auto import tqdm
 # Ensure WaveletDiff_source/src is in path
 current_dir = Path(__file__).parent.absolute()
 repo_root = current_dir.parent.parent
-wd_source = repo_root / "WaveletDiff_source" / "src"
+wd_source = repo_root / "src" / "copied_waveletDiff" / "src"
 if str(wd_source) not in sys.path and wd_source.exists():
     sys.path.append(str(wd_source))
 

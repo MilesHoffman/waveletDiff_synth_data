@@ -46,16 +46,16 @@ class WaveletDiffGenerator:
             for i in tqdm(range(num_batches), desc="Generating Batches"):
                 current_batch_size = min(batch_size, num_samples - i * batch_size)
                 
-                # Disable internal progress to avoid spamming
+                # Enable internal progress to see the live step-by-step progress bar
                 generated_wavelets = trainer_util.generate_samples(
                     current_batch_size, 
                     use_ddim=use_ddim, 
-                    show_progress=False
+                    show_progress=True
                 )
                 
                 # Convert to time series batch by batch to save GPU memory
                 samples_ts_batch = self.datamodule.convert_wavelet_to_timeseries(generated_wavelets)
                 all_samples.append(samples_ts_batch.cpu().numpy())
-                
+                    
         # Concatenate all batches
         return np.concatenate(all_samples, axis=0)
