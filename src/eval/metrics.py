@@ -13,15 +13,38 @@ if str(wd_source) not in sys.path and wd_source.exists():
 
 try:
     from evaluation.discriminative_metrics import discriminative_score_metrics
+except ImportError as e:
+    print(f"Warning: Could not import discriminative_metrics: {e}")
+    discriminative_score_metrics = None
+
+try:
     from evaluation.predictive_metrics import predictive_score_metrics
+except ImportError as e:
+    print(f"Warning: Could not import predictive_metrics: {e}")
+    predictive_score_metrics = None
+
+try:
     from evaluation.context_fid import Context_FID
+except ImportError as e:
+    print(f"Warning: Could not import Context_FID: {e}")
+    Context_FID = None
+
+try:
     from evaluation.cross_correlation import CrossCorrelLoss
+except ImportError as e:
+    print(f"Warning: Could not import CrossCorrelLoss: {e}")
+    CrossCorrelLoss = None
+
+try:
     from evaluation.dtw import dtw_js_divergence_distance
+except ImportError as e:
+    print(f"Warning: Could not import dtw: {e}")
+    dtw_js_divergence_distance = None
+
+try:
     from evaluation.metric_utils import display_scores
 except ImportError as e:
-    print(f"Warning: Could not import evaluation metrics: {e}")
-    # Define dummy functions or re-raise depending on strictness
-    pass
+    print(f"Warning: Could not import metric_utils: {e}")
 
 class MetricsEvaluator:
     def __init__(self, real_data, generated_data, device='cuda'):

@@ -19,7 +19,7 @@ except ImportError:
     from inference.generator import WaveletDiffGenerator
     from eval.metrics import MetricsEvaluator
 
-def run_evaluation(checkpoint_path, data_path, output_dir, num_samples=None, device='cuda'):
+def run_evaluation(checkpoint_path, data_path, output_dir, num_samples=None, device='cuda', batch_size=None):
     """
     Main evaluation pipeline.
     """
@@ -79,7 +79,7 @@ def run_evaluation(checkpoint_path, data_path, output_dir, num_samples=None, dev
         num_samples = len(real_data)
         
     generator = WaveletDiffGenerator(model, datamodule, fabric, config)
-    generated_data = generator.generate(num_samples)
+    generated_data = generator.generate(num_samples, batch_size=batch_size)
     
     # Save Generated Data
     os.makedirs(output_dir, exist_ok=True)
