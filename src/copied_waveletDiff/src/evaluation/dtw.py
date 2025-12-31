@@ -232,7 +232,7 @@ def dtw_js_divergence_distance(
     
     # Set number of jobs for multiprocessing
     if n_jobs is None:
-        n_jobs = mp.cpu_count()
+        n_jobs = 1 # Default to serial to avoid pickling errors in Notebooks with custom paths
     
     def compute_distance_distribution(samples, reference_set):
         """Compute DTW distances from samples to reference set using multiprocessing."""

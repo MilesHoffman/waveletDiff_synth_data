@@ -98,7 +98,7 @@ def predictive_score_metrics(ori_data, generated_data, window_size=20):
 
     # Training loop
     model.train()
-    for _ in tqdm(range(iterations), desc="training", total=iterations):
+    for _ in tqdm(range(iterations), desc="training", total=iterations, leave=False):
         batch_indices = np.random.choice(len(generated_data), batch_size, replace=False)
         X_mb, Y_mb = prepare_batch(generated_data, batch_indices)
 
