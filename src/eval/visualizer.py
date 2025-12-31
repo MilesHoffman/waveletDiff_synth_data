@@ -170,19 +170,14 @@ def visualize_evaluation(real_data, generated_data, output_dir, eval_results_pat
     # Only exclude if it looks like volume (orders of magnitude larger)
     # If all similar scale (normalized?), then don't exclude.
     # Users data passed here is likely RAW (unnormalized) because plot_samples uses it.
-    # So max_val check is valid.
-    exclude_indices = [vol_idx]
-    
-    # Use my new visualizations module for distributions to support exclusion
-    # But for backward compat/consistency with existing files, I'll update existing or call new.
-    # I'll call NEW module for cleaner code.
+    # 2. Distributions
     features = ["Open", "High", "Low", "Close", "Volume"]
     if real_data.shape[-1] != len(features):
         features = [f"Feature {i}" for i in range(real_data.shape[-1])]
         
     visualizations.plot_distributions(real_data, generated_data, 
                                      feature_names=features, 
-                                     exclude_indices=exclude_indices,
+                                     exclude_indices=[], # Plot all features including Volume
                                      save_path=os.path.join(output_dir, "distribution_comparison.png"))
     
     # 3. t-SNE (New)

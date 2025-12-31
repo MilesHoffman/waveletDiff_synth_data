@@ -242,31 +242,29 @@ def dtw_js_divergence_distance(
             
             # Use multiprocessing
             with mp.Pool(processes=n_jobs) as pool:
-                distances = list(tqdm(
-                    pool.imap(_compute_sample_distances, args_list),
-                    total=len(samples),
-                    desc="Computing DTW distances (Parallel)"
-                ))
-            
-            tqdm.close()
+                with tqdm(total=len(samples), desc="Computing DTW distances (Parallel)", leave=False) as pbar:
+                    distances = []
+                    for res in pool.imap(_compute_sample_distances, args_list):
+                        distances.append(res)
+                        pbar.update(1)
             
             return np.array(distances)
         else:
             # Fallback to sequential processing
             distances = []
-            for sample in tqdm(samples, desc="Computing DTW distances", leave=False, mininterval=1.0):
-                sample = np.asarray(sample)
-                sample_distances = []
-                
-                for ref_sample in reference_set:
-                    ref_sample = np.asarray(ref_sample)
-                    dist = dtw_distance(sample, ref_sample, window, normalize)
-                    sample_distances.append(dist)
-                
-                # Use mean distance to reference set as the representative distance
-                distances.append(np.mean(sample_distances))
-
-            tqdm.close()
+            with tqdm(total=len(samples), desc="Computing DTW distances", leave=False, mininterval=1.0) as pbar:
+                for sample in samples:
+                    sample = np.asarray(sample)
+                    sample_distances = []
+                    
+                    for ref_sample in reference_set:
+                        ref_sample = np.asarray(ref_sample)
+                        dist = dtw_distance(sample, ref_sample, window, normalize)
+                        sample_distances.append(dist)
+                    
+                    # Use mean distance to reference set as the representative distance
+                    distances.append(np.mean(sample_distances))
+                    pbar.update(1)
             
             return np.array(distances)
     
