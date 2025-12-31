@@ -54,8 +54,15 @@ class PositionalEncoding(layers.Layer):
         pe[:, 0::2] = np.sin(position * div_term)
         pe[:, 1::2] = np.cos(position * div_term)
         
-        # Register as non-trainable weight/constant
-        self.pe = tf.constant(pe) # Use TF constant for graph compatibility
+        # Register as non-trainable weight (Buffer)
+        # This ensures compatibility with JAX/TF/Torch backends
+        self.pe = self.add_weight(
+            name="pe_buffer",
+            shape=(max_len, embed_dim),
+            initializer=keras.initializers.Constant(pe),
+            trainable=False,
+            dtype="float32"
+        )
 
     def call(self, x):
         # x: [B, SeqLen, EmbedDim]
@@ -63,6 +70,7 @@ class PositionalEncoding(layers.Layer):
         
         # Slice pe to seq_len
         # Expand dims to broadcast batch: [1, SeqLen, EmbedDim]
+        # self.pe is a Variable, slicing works
         pe_slice = self.pe[:seq_len, :]
         pe_slice = ops.expand_dims(pe_slice, 0)
         
