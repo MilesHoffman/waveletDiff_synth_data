@@ -27,14 +27,17 @@ def load_model(checkpoint_path, config, device='cuda'):
     fabric.launch()
     
     # Import here to avoid early failures if paths aren't set yet
+    # PATH RESOLUTION: Define repo_root early for robust path handling
+    current_dir = Path(__file__).parent.absolute()
+    repo_root = current_dir.parent.parent # src/inference -> src -> root
+    wd_source = repo_root / "WaveletDiff_source" / "src"
+
+    # Try standard import first, if fails, patch sys.path
     try:
         from models.transformer import WaveletDiffusionTransformer
         from data.module import WaveletTimeSeriesDataModule
     except ImportError:
-        # Try to find the source automatically
-        current_dir = Path(__file__).parent.absolute()
-        repo_root = current_dir.parent.parent # src/inference -> src -> root
-        wd_source = repo_root / "WaveletDiff_source" / "src"
+        # Check if source exists and append to path
         if wd_source.exists():
              sys.path.append(str(wd_source))
              from models.transformer import WaveletDiffusionTransformer
