@@ -213,8 +213,8 @@ class CrossLevelAttention(nn.Module):
         # Step 3: Apply level-to-level attention
         if self.attention_mode == "all_to_all":
             # ALL-TO-ALL: Each level attends to all levels (including itself)
-            cross_attended_levels, _ = self.cross_attention(
-                level_stack, level_stack, level_stack, need_weights=False
+            cross_attended_levels, attention_weights = self.cross_attention(
+                level_stack, level_stack, level_stack
             )
             # cross_attended_levels shape: [batch_size, num_levels, common_dim]
             # attention_weights shape: [batch_size, num_heads, num_levels, num_levels]
@@ -236,7 +236,7 @@ class CrossLevelAttention(nn.Module):
                 
                 # Apply cross-attention (level i attends to all other levels)
                 cross_attended_level, _ = self.cross_attention_layers[i](
-                    query_level, other_levels, other_levels, need_weights=False
+                    query_level, other_levels, other_levels
                 )
                 # cross_attended_level shape: [batch_size, 1, common_dim]
                 cross_attended_levels.append(cross_attended_level.squeeze(1))  # [batch_size, common_dim]

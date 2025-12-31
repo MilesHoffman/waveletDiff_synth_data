@@ -164,7 +164,7 @@ class WaveletTransformerBlock(nn.Module):
         """
         # Self-attention with time conditioning
         x_norm1 = self.norm1(x, time_embed)
-        attn_out, _ = self.attn(x_norm1, x_norm1, x_norm1, attn_mask=mask, need_weights=False)
+        attn_out, _ = self.attn(x_norm1, x_norm1, x_norm1, attn_mask=mask)
         x = x + self.dropout(attn_out)
         
         # Feed-forward with time conditioning
