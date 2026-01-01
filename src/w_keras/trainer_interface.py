@@ -33,14 +33,14 @@ def setup_environment():
 def get_dataloader(data_path, batch_size, seq_len, config=None):
     """
     Returns (ds, info). 
-    If config is provided, applies diffusion noise mapping (x->(x_t, t), y).
     """
-    ds, info = kdata.load_dataset(data_path, batch_size, seq_len)
-    
-    if config:
-        print("⚡ Applying Diffusion Noise Pipeline...")
-        ds = kdata.prepare_diffusion_dataset(ds, config)
-        
+    # Pass config as diffusion_config to handle efficient pipeline construction
+    ds, info = kdata.load_dataset(
+        data_path, 
+        batch_size, 
+        seq_len, 
+        diffusion_config=config
+    )
     return ds, info
 
 def init_model(info, config):
@@ -65,9 +65,20 @@ def init_model(info, config):
     # Match source: Cosine with Warmup is standard
     lr = config['LEARNING_RATE']
     steps_per_epoch = config.get('STEPS_PER_EPOCH')
-    # If using infinite dataset or unknown steps, we might need a fixed decay steps
-    # For now, assume EPOCHS * STEPS or a fixed large number.
-    # Keras CosineDecay needs total steps.
+    
+    # If steps not provided, infer from dataset info
+    if not steps_per_epoch and 'n_samples' in info:
+        # We don't have batch_size here easily unless passed.
+        pass
+
+    if steps_per_epoch is None:
+        # Try to calc
+        if 'n_samples' in info:
+             # We need batch size. 
+             # Let's assume generic 512 if not found, or modify notebook to add BATCH_SIZE to config.
+             bs = config.get('BATCH_SIZE', 512)
+             steps_per_epoch = info['n_samples'] // bs
+             print(f"ℹ️ Inferred Steps per Epoch: {steps_per_epoch} (Samples: {info['n_samples']}, Batch: {bs})")
     
     if steps_per_epoch:
         decay_steps = config['EPOCHS'] * steps_per_epoch

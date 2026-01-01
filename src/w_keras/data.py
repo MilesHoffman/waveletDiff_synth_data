@@ -88,47 +88,71 @@ def prepare_wavelet_data(csv_path, seq_len, wavelet_type='db2', levels='auto'):
             c_flat = np.concatenate([arr.flatten() for arr in c])
             wavelet_data[i, :, f] = c_flat
             
+    
     wavelet_info = {
         'levels': levels,
         'level_dims': level_dims,
         'level_start_indices': [0] + list(np.cumsum(level_dims[:-1])),
         'n_features': n_features,
-        'original_seq_len': seq_len
+        'original_seq_len': seq_len,
+        'n_samples': n_samples
     }
     
     return wavelet_data, wavelet_info
 
-def load_dataset(csv_path, batch_size, seq_len, wavelet_type='db2', levels='auto'):
+def load_dataset(csv_path, batch_size, seq_len, wavelet_type='db2', levels='auto', diffusion_config=None):
     """
     Creates a tf.data.Dataset for training.
+    If diffusion_config is present, applies noise addition pipeline.
     """
     print("Preparing data...")
     data, info = prepare_wavelet_data(csv_path, seq_len, wavelet_type, levels)
     
     # Convert to tf.data.Dataset
-    # This places the data in memory (similar to TensorDataset) but optimized for TF/JAX ops
     ds = tf.data.Dataset.from_tensor_slices(data)
     
     # Optimization pipeline
-    ds = ds.cache() # Cache in memory
+    ds = ds.cache() 
     
-    # OPTIMIZATION: Disable Order Determinism (Crucial for TPU v5/v6)
-    # Removes CPU syncing overhead
     options = tf.data.Options()
     options.experimental_deterministic = False
     ds = ds.with_options(options)
     
     ds = ds.shuffle(buffer_size=min(len(data), 10000))
-    
-    # OPTIMIZATION: Vectorized Mapping
-    # Batch FIRST, then cast. significantly reduces CPU overhead.
     ds = ds.batch(batch_size, drop_remainder=True) 
     
-    def optimize_transfer(batch):
-        # Cast to bfloat16 for optimal TPU bandwidth (v5e/v6e)
-        return tf.cast(batch, tf.bfloat16)
+    if diffusion_config:
+        # Diffusion Training Mode
+        # Apply noise logic. 
+        # Note: Input is float32 (from prepare func).
+        # We assume mapper produces tuple ((x_t, t), target)
+        # We can let the mapper handle precisions.
         
-    ds = ds.map(optimize_transfer, num_parallel_calls=tf.data.AUTOTUNE)
-    ds = ds.prefetch(tf.data.AUTOTUNE) # Async fetch to TPU
+        ts_mapper = get_diffusion_mapper(
+            T=1000, 
+            prediction_target=diffusion_config.get('PREDICTION_TARGET', 'noise')
+        )
+        ds = ds.map(ts_mapper, num_parallel_calls=tf.data.AUTOTUNE)
+        
+        # Output of mapper is float32 usually.
+        # We can cast to bfloat16 here for TPU transfer if desired, 
+        # but Keras Mixed Precision handles inputs largely.
+        # Explicit casting to bfloat16 helps bandwidth.
+        def cast_tuple(inputs, target):
+            (x_t, t), y = inputs, target
+            x_t = tf.cast(x_t, tf.bfloat16)
+            # t is float32 normalized, keep it or cast? t used in embeddings usually float32 is safer for sin/cos
+            y = tf.cast(y, tf.bfloat16)
+            return (x_t, t), y
+            
+        ds = ds.map(cast_tuple, num_parallel_calls=tf.data.AUTOTUNE)
+        
+    else:
+        # Standard Inference/Raw Mode
+        def optimize_transfer(batch):
+            return tf.cast(batch, tf.bfloat16)
+        ds = ds.map(optimize_transfer, num_parallel_calls=tf.data.AUTOTUNE)
+        
+    ds = ds.prefetch(tf.data.AUTOTUNE)
     
     return ds, info

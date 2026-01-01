@@ -126,7 +126,7 @@ class WaveletDiffusionTransformer(Model):
         )
         self.alpha_bar.assign(alpha_bar)
 
-    def call(self, inputs):
+    def call(self, inputs, training=None):
         # inputs: tuple (x_t, t_norm)
         x_all, t_norm = inputs
         
@@ -142,11 +142,12 @@ class WaveletDiffusionTransformer(Model):
             # 1. Get Embeddings
             for i, (start, dim) in enumerate(zip(self.level_starts, self.level_dims)):
                 level_data = x_all[:, start:start+dim, :]
-                emb = self.level_transformers[i].call(level_data, time_embed, return_embeddings=True)
+                # Pass training arg
+                emb = self.level_transformers[i](level_data, time_embed, return_embeddings=True, training=training)
                 level_embeddings.append(emb)
                 
             # 2. Cross Attn
-            cross_embeddings = self.cross_attn(level_embeddings, time_embed)
+            cross_embeddings = self.cross_attn(level_embeddings, time_embed, training=training)
             
             # 3. Final Projection
             for i, emb in enumerate(cross_embeddings):
@@ -156,7 +157,7 @@ class WaveletDiffusionTransformer(Model):
         else:
             for i, (start, dim) in enumerate(zip(self.level_starts, self.level_dims)):
                 level_data = x_all[:, start:start+dim, :]
-                out = self.level_transformers[i].call(level_data, time_embed)
+                out = self.level_transformers[i](level_data, time_embed, training=training)
                 level_outputs.append(out)
                 
         # Concat

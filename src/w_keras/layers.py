@@ -26,8 +26,11 @@ class TimeEmbedding(layers.Layer):
         ])
 
     def call(self, t):
-        # t: [batch_size], range [0, 1]
-        t = ops.cast(t, "float32") * 1000.0
+        # t: [batch_size] or [batch_size, 1]
+        t = ops.cast(t, "float32")
+        if len(t.shape) == 2:
+            t = ops.squeeze(t, axis=-1)
+        t = t * 1000.0
         t = ops.expand_dims(t, -1) # [B, 1]
         
         # Sinusoidal encoding

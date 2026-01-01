@@ -122,14 +122,16 @@ class CrossLevelAttention(layers.Layer):
             expanded = self.expanders[i](attended_repr)
             
             # Broadcast to sequence length: [B, S_i, D_i]
+            # Broadcast to sequence length using Tile
             seq_len = ops.shape(original_emb)[1]
             expanded = ops.expand_dims(expanded, 1)
-            expanded = ops.broadcast_to(expanded, ops.shape(original_emb))
+            # Tile: [1 (Batch), seq_len, 1 (Dim)]
+            expanded = ops.tile(expanded, [1, seq_len, 1])
             
             # AdaNorm
             normed = self.cross_norm[i](expanded, time_embed)
             
-            # Gate
+            # Gate Input
             # Gate needs concatenation of original and time. 
             # PyTorch implementation: Linear(embed_dim + time_dim) -> embed_dim
             # But the gate in __init__ is defined as Dense(dim). 
@@ -141,7 +143,8 @@ class CrossLevelAttention(layers.Layer):
             # So input dim is D + T.
             
             time_expanded = ops.expand_dims(time_embed, 1)
-            time_expanded = ops.broadcast_to(time_expanded, (ops.shape(original_emb)[0], seq_len, ops.shape(time_embed)[-1]))
+            # Tile: [1 (Batch), seq_len, 1 (TimeDim)]
+            time_expanded = ops.tile(time_expanded, [1, seq_len, 1])
             
             gate_in = ops.concatenate([original_emb, time_expanded], axis=-1)
             gate_val = self.gates[i](gate_in)

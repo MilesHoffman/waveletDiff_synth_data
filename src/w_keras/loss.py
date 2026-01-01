@@ -72,6 +72,10 @@ class WaveletLoss(keras.losses.Loss):
         return losses
 
     def call(self, y_true, y_pred):
+        # Cast to float32 for stability
+        y_true = ops.cast(y_true, "float32")
+        y_pred = ops.cast(y_pred, "float32")
+        
         # 1. Reconstruction Loss (Weighted Sum of Level MSEs)
         level_losses = self.get_level_losses(y_true, y_pred)
         
@@ -80,14 +84,37 @@ class WaveletLoss(keras.losses.Loss):
             recon_loss += l_loss * weight
             
         # 2. Energy Term (Optional)
-        # Energy = sum(squared coeffs)
-        # We want predicted energy to match target energy
+        # Matches Source: Energy per level per feature, L1 Loss
         if self.use_energy_term and self.energy_weight > 0:
-            energy_true = ops.mean(ops.square(y_true), axis=1) # [B, F] - Mean energy across sequence
-            energy_pred = ops.mean(ops.square(y_pred), axis=1) # [B, F]
+            energy_loss_acc = 0.0
+            num_features = ops.shape(y_true)[-1]
             
-            # Loss is MSE of energies
-            energy_loss = ops.mean(ops.square(energy_true - energy_pred))
+            # We can reusing slicing logic from get_level_losses but tailored for energy
+            # Energy = sum(squared coeffs) per level
+            
+            energies_true = []
+            energies_pred = []
+            
+            for start, dim in zip(self.level_start_indices, self.level_dims):
+                 yt = y_true[:, start:start+dim, :] # [B, Dim, F]
+                 yp = y_pred[:, start:start+dim, :]
+                 
+                 # Sum squares across dimension 1 (time/coeffs in level)
+                 e_t = ops.sum(ops.square(yt), axis=1) # [B, F]
+                 e_p = ops.sum(ops.square(yp), axis=1) # [B, F]
+                 
+                 energies_true.append(e_t)
+                 energies_pred.append(e_p)
+            
+            # Stack: [B, Levels, F]
+            # Since Keras ops.stack handles list of tensors
+            e_stack_true = ops.stack(energies_true, axis=1)
+            e_stack_pred = ops.stack(energies_pred, axis=1)
+            
+            # L1 Loss (MAE) across all (Batch, Levels, Features)
+            # Source uses mean over all.
+            energy_diff = ops.abs(e_stack_true - e_stack_pred)
+            energy_loss = ops.mean(energy_diff)
             
             return recon_loss + self.energy_weight * energy_loss
             
