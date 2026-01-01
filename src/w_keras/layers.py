@@ -40,6 +40,9 @@ class TimeEmbedding(layers.Layer):
         
         return self.mlp(emb)
 
+    def build(self, input_shape):
+        self.built = True
+
 
 class PositionalEncoding(layers.Layer):
     """Sinusoidal positional encoding to match PyTorch implementation."""
@@ -118,6 +121,8 @@ class AdaLayerNorm(layers.Layer):
         x_norm = self.norm(x)
         
         ada_params = self.ada_lin(time_embed) # [B, 2*embed_dim]
+        # Cast to x dtype to ensure mixed precision compatibility
+        ada_params = ops.cast(ada_params, x.dtype)
         scale, shift = ops.split(ada_params, 2, axis=-1)
         
         # Expand dims for broadcasting

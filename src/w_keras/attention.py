@@ -63,6 +63,9 @@ class CrossLevelAttention(layers.Layer):
             name="level_pos_emb"
         )
 
+    def build(self, input_shape):
+        self.built = True
+
     def call(self, level_embeddings, time_embed, training=None):
         # level_embeddings: List of [B, S_i, D_i]
         
@@ -145,6 +148,7 @@ class CrossLevelAttention(layers.Layer):
             time_expanded = ops.expand_dims(time_embed, 1)
             # Tile: [1 (Batch), seq_len, 1 (TimeDim)]
             time_expanded = ops.tile(time_expanded, [1, seq_len, 1])
+            time_expanded = ops.cast(time_expanded, original_emb.dtype)
             
             gate_in = ops.concatenate([original_emb, time_expanded], axis=-1)
             gate_val = self.gates[i](gate_in)

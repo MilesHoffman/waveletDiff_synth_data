@@ -24,6 +24,9 @@ class WaveletLevelTransformer(layers.Layer):
         
         self.output_proj = layers.Dense(num_features)
         self.dropout = layers.Dropout(dropout)
+
+    def build(self, input_shape):
+        self.built = True
         
     def call(self, x, time_embed, return_embeddings=False, training=None):
         # x: [B, level_dim, num_features]
