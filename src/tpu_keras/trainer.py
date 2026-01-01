@@ -28,14 +28,14 @@ class TPUTrainer:
         # Optimizer
         self.tx = optax.adamw(learning_rate)
         
-        # Dummy init to get params
-        # Note: In real usage, you'd pass representative inputs
-        self.params = model.trainable_variables # Simplified for Keras 3
+        # Extract trainable parameter values from Keras model
+        # Keras 3 Variables have a .value property which returns the backend tensor (jax array)
+        self.params = [v.value for v in model.trainable_variables]
         
         # Train state
         self.state = train_state.TrainState.create(
-            apply_fn=model.call,
-            params=model.variables, # Keras variables
+            apply_fn=None, # Not used directly, we use stateless_call in train_step
+            params=self.params, 
             tx=self.tx
         )
         

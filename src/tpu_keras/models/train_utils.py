@@ -3,22 +3,21 @@ import jax.numpy as jnp
 from keras import ops
 
 def create_train_step(model, scheduler, loss_fn, optimizer):
-    """Creates a JIT-compiled training step."""
+    """Creates a JIT-compiled training step for Keras 3 + JAX."""
     
+    # Capture non-trainable variables (assumed constant for this architecture)
+    # If using BatchNormalization, this would need to obtain updated values.
+    non_trainable_weights = [v.value for v in model.non_trainable_variables]
+
     @jax.jit
     def train_step(state, batch, key):
-        # batch: (batch_size, seq_len, channels)
-        # We need to decompose batch into wavelet levels first
-        # For efficiency, this might happen in the data loader, 
-        # but let's assume raw data for now and use model's DWT if it has one.
+        # batch: List of wavelet coefficients [A_L, D_L, ..., D_1]
         
-        # 1. Decompose (using model's internal DWT or external)
-        # Assuming batch is already wavelet coefficients list for now?
-        # Let's assume the caller handles DWT for now or we add it here.
-        coeffs = batch # List of [A_L, D_L, ..., D_1]
+        # 1. Setup Data
+        coeffs = batch
+        batch_size = coeffs[0].shape[0]
         
         # 2. Sample time steps
-        batch_size = coeffs[0].shape[0]
         key, t_key, n_key = jax.random.split(key, 3)
         t = jax.random.randint(t_key, (batch_size,), 0, scheduler.num_steps)
         
@@ -26,20 +25,29 @@ def create_train_step(model, scheduler, loss_fn, optimizer):
         noisy_coeffs = []
         noises = []
         for c in coeffs:
-            noise = jax.random.normal(n_key, c.shape) # Same n_key or split? Usually split.
+            noise = jax.random.normal(n_key, c.shape)
             n_key, _ = jax.random.split(n_key)
             noisy_c = scheduler.q_sample(c, t, noise)
             noisy_coeffs.append(noisy_c)
             noises.append(noise)
             
-        # 4. Predict
-        def loss_forward(params):
-            preds = model.apply(params, [noisy_coeffs, t], training=True)
-            loss = loss_fn(noises, preds) # Predicting noise
+        # 4. Predict & Loss
+        def loss_forward(trainable_params):
+            # Use stateless_call for Keras 3 compatibility
+            preds = model.stateless_call(
+                trainable_params, 
+                non_trainable_weights, 
+                [noisy_coeffs, t], 
+                training=True
+            )
+            # Ensure output is list (stateless_call might return different structure depending on model output)
+            if not isinstance(preds, (list, tuple)):
+                preds = [preds]
+                
+            loss = loss_fn(noises, preds)
             return loss
             
-        grad_fn = jax.value_and_grad(loss_forward)
-        loss, grads = grad_fn(state.params)
+        loss, grads = jax.value_and_grad(loss_forward)(state.params)
         
         # 5. Update
         state = state.apply_gradients(grads=grads)
@@ -51,9 +59,11 @@ def create_train_step(model, scheduler, loss_fn, optimizer):
 def create_sample_fn(model, scheduler):
     """Creates a sample function using jax.lax.scan."""
     
+    non_trainable_weights = [v.value for v in model.non_trainable_variables]
+    
     @jax.jit
     def sample(params, shape_list, key):
-        # shape_list: list of shapes for each level [(batch, n_i, c), ...]
+        # params: trainable parameters (state.params)
         
         # Initial noise for each level
         key, *n_keys = jax.random.split(key, len(shape_list) + 1)
@@ -64,19 +74,22 @@ def create_sample_fn(model, scheduler):
             curr_coeffs, curr_key = carry_coeffs
             t = ops.ones((shape_list[0][0],), dtype='int32') * t_idx
             
-            # Predict noise
-            preds = model.apply(params, [curr_coeffs, t], training=False)
+            # Predict noise using stateless_call
+            preds = model.stateless_call(
+                params, 
+                non_trainable_weights, 
+                [curr_coeffs, t], 
+                training=False
+            )
             
             # Step back
             next_coeffs = []
             new_key, step_key = jax.random.split(curr_key)
             
             for i in range(len(curr_coeffs)):
-                # Simplified DDPM step
                 z = jax.random.normal(step_key, curr_coeffs[i].shape) if t_idx > 0 else 0
                 
-                # Equation: x_{t-1} = 1/sqrt(alpha_t) * (x_t - (1-alpha_t)/sqrt(1-alpha_prod_t) * eps) + sigma_t * z
-                # This logic is inside DiffusionScheduler or we inline it.
+                # Equation: x_{t-1} = ...
                 x_0_pred = scheduler.predict_start_from_noise(curr_coeffs[i], t, preds[i])
                 mean, log_var = scheduler.q_posterior(x_0_pred, curr_coeffs[i], t)
                 
