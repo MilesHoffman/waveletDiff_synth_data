@@ -129,7 +129,7 @@ def get_dataloaders(fabric, repo_dir, dataset_name, seq_len, batch_size, wavelet
 def init_model(fabric, datamodule, config, 
                embed_dim=256, num_heads=8, num_layers=8, time_embed_dim=128, 
                dropout=0.1, prediction_target="noise", use_cross_level_attention=True,
-               learning_rate=2e-4, weight_decay=1e-5):
+               learning_rate=2e-4, weight_decay=1e-5, max_lr=None, pct_start=0.3):
     """
     Initializes the WaveletDiffusionTransformer model and optimizer.
     """
@@ -152,7 +152,9 @@ def init_model(fabric, datamodule, config,
         'optimizer': {
             'scheduler_type': 'onecycle',
             'lr': learning_rate,
-            'warmup_epochs': 5,
+            'max_lr': max_lr,
+            'pct_start': pct_start,
+            'warmup_epochs': 5, # Legacy, overriden by pct_start in train_loop implementation below
             'cosine_eta_min': 1e-6
         }
     })
@@ -229,11 +231,19 @@ def train_loop(fabric, model, optimizer, train_loader, config,
             print(f"PROFILER ENABLED: Overriding total steps to {effective_steps}")
 
     # Scheduler
+    # Scheduler
+    # Use max_lr from config if available, else default to lr * 4
+    max_lr = config['optimizer'].get('max_lr')
+    if max_lr is None:
+        max_lr = config['optimizer']['lr'] * 4
+    
+    pct_start = config['optimizer'].get('pct_start', 0.3)
+
     scheduler = torch.optim.lr_scheduler.OneCycleLR(
         optimizer,
-        max_lr=config['optimizer']['lr'] * 4,
+        max_lr=max_lr,
         total_steps=total_steps,
-        pct_start=0.3
+        pct_start=pct_start
     )
 
     train_iter = iter(train_loader)
