@@ -9,10 +9,11 @@ from datetime import datetime
 # Import local modules
 # Assuming running from repo root or src is in path
 try:
-    from src.inference.loader import load_model
-    from src.inference.generator import WaveletDiffGenerator
-    from src.eval.metrics import MetricsEvaluator
-except ImportError:
+    from ..inference.loader import load_model
+    from ..inference.generator import WaveletDiffGenerator
+    from .metrics import MetricsEvaluator
+except (ImportError, ValueError):
+    # Fallback for direct execution
     import sys
     sys.path.append(str(Path(__file__).parent.parent))
     from inference.loader import load_model

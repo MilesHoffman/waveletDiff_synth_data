@@ -8,12 +8,12 @@ from sklearn.manifold import TSNE
 
 # Local imports
 try:
-    from src.eval import visualizations
-    from src.eval.metrics import BASELINE_STOCKS, INTERPRETATION
-except ImportError:
-    # relative import fallback if running as package
     from . import visualizations
     from .metrics import BASELINE_STOCKS, INTERPRETATION
+except (ImportError, ValueError):
+    # Fallback if src is in path or direct execution
+    from eval import visualizations
+    from eval.metrics import BASELINE_STOCKS, INTERPRETATION
 
 def plot_samples(real_data, generated_data, output_dir, n_samples=5):
     """

@@ -29,7 +29,8 @@ def load_model(checkpoint_path, config, device='cuda'):
     # Import here to avoid early failures if paths aren't set yet
     # PATH RESOLUTION: Define repo_root early for robust path handling
     current_dir = Path(__file__).parent.absolute()
-    repo_root = current_dir.parent.parent # src/inference -> src -> root
+    # Path is src/torch_gpu_waveletDiff/inference -> src/torch_gpu_waveletDiff -> src -> root
+    repo_root = current_dir.parent.parent.parent
     wd_source = repo_root / "src" / "copied_waveletDiff" / "src"
 
     # Try standard import first, if fails, patch sys.path
