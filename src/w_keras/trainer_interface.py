@@ -61,7 +61,19 @@ def init_model(info, config):
     
     model = ktrans.WaveletDiffusionTransformer(info, model_config)
     
-    # 2. Optimizer & Schedule
+    # 2. Functional Wrapper
+    # This solves the multi-input stripping issue in Keras 3/TPU
+    total_coeffs = sum(info['level_dims'])
+    x_input = keras.Input(shape=(total_coeffs, info['n_features']), name='x', dtype="float32")
+    t_input = keras.Input(shape=(1,), name='t', dtype="float32")
+    
+    # Connect subclassed model
+    outputs = model({'x': x_input, 't': t_input})
+    
+    # Create Functional Model
+    functional_model = keras.Model(inputs={'x': x_input, 't': t_input}, outputs=outputs)
+    
+    # 3. Optimizer & Schedule
     # Match source: Cosine with Warmup is standard
     lr = config['LEARNING_RATE']
     steps_per_epoch = config.get('STEPS_PER_EPOCH')
@@ -106,26 +118,12 @@ def init_model(info, config):
             clipnorm=1.0 
         )
     
-    model.compile(optimizer=optimizer, jit_compile=True)
+    functional_model.compile(optimizer=optimizer, jit_compile=True)
     
-    # 3. Force Build
-    try:
-        # Create dummy inputs to initialize weights
-        total_coeffs = sum(info['level_dims'])
-        n_features = info.get('n_features', 5) # Default 5 if missing
-        
-        # Batch size 1
-        dummy_x = jax.numpy.zeros((1, total_coeffs, n_features), dtype="float32")
-        dummy_t = jax.numpy.zeros((1, 1), dtype="float32")
-        
-        # Call model to trigger build
-        # Pass dictionary which call() will unpack
-        _ = model({'x': dummy_x, 't': dummy_t})
-        print("✅ Model built successfully (Weights initialized).")
-    except Exception as e:
-        print(f"⚠️ Model build warning: {e}")
+    # 4. Force Build (Already handled by functional mapping but good for summary)
+    functional_model.summary()
     
-    return model
+    return functional_model
 
 def train_loop(model, dataset, config):
     """

@@ -4,13 +4,26 @@ Backend: jax
 Initializing Model...
 WaveletLoss initialized. Weights: [0.5714285714285715, 0.28571428571428575, 0.14285714285714288], Energy: True (0.05)
 ✅ Scheduler: CosineDecay (Warmup=0, Steps=10)
-✅ Model built successfully (Weights initialized).
+Model: "functional_15"
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ Layer (type)                  ┃ Output Shape              ┃         Param # ┃ Connected to               ┃
+┡━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━┩
+│ t (InputLayer)                │ (None, 1)                 │               0 │ -                          │
+├───────────────────────────────┼───────────────────────────┼─────────────────┼────────────────────────────┤
+│ x (InputLayer)                │ (None, 24, 1)             │               0 │ -                          │
+├───────────────────────────────┼───────────────────────────┼─────────────────┼────────────────────────────┤
+│ wavelet_diffusion_transformer │ (None, 24, 1)             │         362,494 │ t[0][0], x[0][0]           │
+│ (WaveletDiffusionTransformer) │                           │                 │                            │
+└───────────────────────────────┴───────────────────────────┴─────────────────┴────────────────────────────┘
+ Total params: 362,494 (1.38 MB)
+ Trainable params: 360,534 (1.38 MB)
+ Non-trainable params: 1,960 (7.66 KB)
 Model initialized.
 Running Dummy Forward Pass...
 Forward pass successful.
 Output shape: (4, 24, 1)
 Verifying Loss Function...
 WaveletLoss initialized. Weights: [0.5714285714285715, 0.28571428571428575, 0.14285714285714288], Energy: True (0.1)
-Loss value: 4.656131267547607
+Loss value: 6.632427215576172
 
 SUCCESS: Build Verification Passed!

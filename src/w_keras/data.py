@@ -135,8 +135,8 @@ def get_diffusion_mapper(T=1000, prediction_target='noise'):
         else:
             target = x # x_start
             
-        # Return as Tuple (x, t) for robust positional unpacking in fit()
-        return (x_t, t), target
+        # Return as Dictionary for Functional API Mapping
+        return {'x': x_t, 't': t}, target
         
     return mapper
 
@@ -169,14 +169,15 @@ def load_dataset(csv_path, batch_size, seq_len, wavelet_type='db2', levels='auto
         )
         ds = ds.map(ts_mapper, num_parallel_calls=tf.data.AUTOTUNE)
         
-        # Output of mapper is ((x, t), y)
+        # Output of mapper is ({x, t}, y)
         def cast_tuple(inputs, target):
-            x_t, t = inputs
+            x_t = inputs['x']
+            t = inputs['t']
             
             x_t = tf.cast(x_t, tf.bfloat16)
             y = tf.cast(target, tf.bfloat16)
             
-            return (x_t, t), y
+            return {'x': x_t, 't': t}, y
             
         ds = ds.map(cast_tuple, num_parallel_calls=tf.data.AUTOTUNE)
         

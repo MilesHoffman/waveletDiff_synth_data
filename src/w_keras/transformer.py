@@ -129,20 +129,17 @@ class WaveletDiffusionTransformer(Model):
         )
         self.alpha_bar.assign(alpha_bar)
 
-    def call(self, x, t=None, training=None, **kwargs):
+    def call(self, inputs, training=None, **kwargs):
         # Support various input formats
-        # 1. Dictionary passed as first arg (Manual call)
-        if isinstance(x, dict):
-            t = x['t']
-            x = x['x']
-        # 2. Tuple/List passed as first arg
-        elif t is None and isinstance(x, (tuple, list)):
-            x, t = x
+        if isinstance(inputs, dict):
+            x_all = inputs['x']
+            t_norm = inputs['t']
+        elif isinstance(inputs, (tuple, list)):
+            x_all, t_norm = inputs
+        else:
+            x_all = inputs
+            t_norm = kwargs.get('t')
             
-        x_all = x
-        t_norm = t
-        
-        # Ensure t is present
         if t_norm is None:
             raise ValueError("Time embedding 't' is missing. Ensure inputs provide 't'.")
         

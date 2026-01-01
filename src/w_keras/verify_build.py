@@ -107,11 +107,11 @@ def main():
     # Transformer expects (x_all, t) where x_all is concatenated levels
     x_concat = np.concatenate(x_inputs, axis=1)
     
-    # Use List inputs to verify tuple unpacking logic
-    inputs = [x_concat, t_input]
+    # Use Dict inputs matching updated functional API
+    inputs = {'x': x_concat, 't': t_input}
     
     try:
-        # Run forward (List unpack)
+        # Run forward
         output = model(inputs)
         print("Forward pass successful.")
         print(f"Output shape: {output.shape}")
