@@ -312,22 +312,24 @@ class WaveletDiffusionTransformer(pl.LightningModule):
         x_0 = batch[0]
         
         # Check input for NaN
-        if torch.isnan(x_0).any():
-            print(f"WARNING: NaN detected in batch input at step {batch_idx}")
-            x_0 = torch.nan_to_num(x_0, nan=0.0, posinf=1.0, neginf=-1.0)
+        # PERFORMANCE OPTIMIZATION: Removed synchronous NaN check to prevent graph break
+        # if torch.isnan(x_0).any():
+        #     print(f"WARNING: NaN detected in batch input at step {batch_idx}")
+        #     x_0 = torch.nan_to_num(x_0, nan=0.0, posinf=1.0, neginf=-1.0)
         
         t = torch.randint(0, self.T, (x_0.size(0),), device=self.device)
         loss = self.compute_loss(x_0, t)
         
         # Enhanced loss monitoring and stability
-        if torch.isnan(loss) or torch.isinf(loss):
-            print(f"CRITICAL: NaN/Inf loss detected at step {batch_idx}")
-            print(f"Input stats: mean={x_0.mean().item():.6f}, std={x_0.std().item():.6f}")
-            print(f"Time step range: {t.min().item()}-{t.max().item()}")
+        # PERFORMANCE OPTIMIZATION: Removed synchronous loss check to prevent graph break
+        # if torch.isnan(loss) or torch.isinf(loss):
+        #     print(f"CRITICAL: NaN/Inf loss detected at step {batch_idx}")
+        #     print(f"Input stats: mean={x_0.mean().item():.6f}, std={x_0.std().item():.6f}")
+        #     print(f"Time step range: {t.min().item()}-{t.max().item()}")
             
-            # Create a small loss with same shape and properties as original loss
-            # This maintains compatibility with AMP gradient scaler
-            loss = torch.full_like(loss, 0.01, requires_grad=True)
+        #     # Create a small loss with same shape and properties as original loss
+        #     # This maintains compatibility with AMP gradient scaler
+        #     loss = torch.full_like(loss, 0.01, requires_grad=True)
         
         self.training_losses.append(loss.item())
         return loss

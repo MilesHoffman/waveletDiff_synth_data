@@ -214,9 +214,9 @@ class CrossLevelAttention(nn.Module):
         if self.attention_mode == "all_to_all":
             # ALL-TO-ALL: Each level attends to all levels (including itself)
             # Adaptive TPU optimization
-            is_tpu = level_stack.device.type == "xla"
-            cross_attended_levels, attention_weights = self.cross_attention(
-                level_stack, level_stack, level_stack, need_weights=not is_tpu
+            # Adaptive Optimization: Always disable weights to enable Flash Attention
+            cross_attended_levels, _ = self.cross_attention(
+                level_stack, level_stack, level_stack, need_weights=False
             )
             # cross_attended_levels shape: [batch_size, num_levels, common_dim]
             # attention_weights shape: [batch_size, num_heads, num_levels, num_levels]
@@ -238,9 +238,9 @@ class CrossLevelAttention(nn.Module):
                 
                 # Apply cross-attention (level i attends to all other levels)
                 # Adaptive TPU optimization
-                is_tpu = query_level.device.type == "xla"
+                # Adaptive Optimization: Always disable weights to enable Flash Attention
                 cross_attended_level, _ = self.cross_attention_layers[i](
-                    query_level, other_levels, other_levels, need_weights=not is_tpu
+                    query_level, other_levels, other_levels, need_weights=False
                 )
                 # cross_attended_level shape: [batch_size, 1, common_dim]
                 cross_attended_levels.append(cross_attended_level.squeeze(1))  # [batch_size, common_dim]
