@@ -24,6 +24,6 @@ Forward pass successful.
 Output shape: (4, 24, 1)
 Verifying Loss Function...
 WaveletLoss initialized. Weights: [0.5714285714285715, 0.28571428571428575, 0.14285714285714288], Energy: True (0.1)
-Loss value: 6.632427215576172
+Loss value: 5.179107666015625
 
 SUCCESS: Build Verification Passed!

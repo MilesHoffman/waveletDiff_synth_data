@@ -106,8 +106,8 @@ def get_diffusion_mapper(T=1000, prediction_target='noise'):
     """
     def mapper(x):
         # x: (TotalCoeffs, Features)
-        # Sample t uniform [0, 1]
-        t = tf.random.uniform([], 0, 1, dtype=tf.float32)
+        # Sample t uniform [0, 1] with shape (1,) to ensure correct batching
+        t = tf.random.uniform([1], 0, 1, dtype=tf.float32)
         
         # Signal Scaling (Exponential Schedule approximation)
         # alpha_bar = exp(-5 * t^2) roughly
@@ -159,8 +159,6 @@ def load_dataset(csv_path, batch_size, seq_len, wavelet_type='db2', levels='auto
     ds = ds.with_options(options)
     
     ds = ds.shuffle(buffer_size=min(len(data), 10000))
-    ds = ds.batch(batch_size, drop_remainder=True) 
-    
     if diffusion_config:
         # Diffusion Training Mode
         ts_mapper = get_diffusion_mapper(
@@ -187,6 +185,7 @@ def load_dataset(csv_path, batch_size, seq_len, wavelet_type='db2', levels='auto
             return tf.cast(batch, tf.bfloat16)
         ds = ds.map(optimize_transfer, num_parallel_calls=tf.data.AUTOTUNE)
         
+    ds = ds.batch(batch_size, drop_remainder=True) 
     ds = ds.prefetch(tf.data.AUTOTUNE)
     
     return ds, info

@@ -3,6 +3,7 @@ import sys
 sys.path.append('src')
 
 import tensorflow as tf
+import numpy as np
 from w_keras import trainer_interface
 
 # Mock config
@@ -17,13 +18,8 @@ config = {
     'BATCH_SIZE': 4 
 }
 
-# Path to data (assuming user paths)
 data_path = r'c:\Users\Miles\personal\repos\waveletDiff_synth_data\src\copied_waveletDiff\data\stocks\stock_data.csv' 
-# Just use dummy CSV if needed or try to find existing one. 
-# Attempting to verify with existing logic if possible.
-# If CSV doesn't exist, we might need to mock prepare_wavelet_data.
 
-# Let's verify what load_dataset returns
 print("Loading dataset...")
 try:
     ds, info = trainer_interface.get_dataloader(
@@ -33,27 +29,24 @@ try:
         config=config
     )
     
-    print("Inspecting element spec...")
-    print(ds.element_spec)
+    print(f"Element Spec: {ds.element_spec}")
     
     print("Taking one batch...")
     for batch in ds.take(1):
         inputs, targets = batch
         print(f"Inputs type: {type(inputs)}")
-        if isinstance(inputs, (tuple, list)):
-            print(f"Input is tuple/list of length {len(inputs)}")
-            if len(inputs) == 2:
-                x, t = inputs
-                print(f"x shape: {x.shape}, dtype: {x.dtype}")
-                print(f"t shape: {t.shape}, dtype: {t.dtype}")
-            else:
-                 print(f"Inputs: {inputs}")
-        elif isinstance(inputs, dict):
-            print(f"Keys: {inputs.keys()}")
+        
+        if isinstance(inputs, dict):
+            for k, v in inputs.items():
+                print(f"Key '{k}' shape: {v.shape}, dtype: {v.dtype}")
+        elif isinstance(inputs, (tuple, list)):
+             for i, v in enumerate(inputs):
+                print(f"Index {i} shape: {v.shape}, dtype: {v.dtype}")
         else:
-            print(f"Inputs shape: {inputs.shape}")
+            print(f"Single input shape: {inputs.shape}")
             
         print(f"Targets shape: {targets.shape}, dtype: {targets.dtype}")
         
 except Exception as e:
-    print(f"Error: {e}")
+    import traceback
+    traceback.print_exc()
