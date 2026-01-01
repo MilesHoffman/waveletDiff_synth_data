@@ -25,10 +25,18 @@ except ImportError:
     # or just trusting the notebook flow.
     pass
 
-def setup_fabric(accelerator="auto", devices="auto", precision=None):
+def setup_fabric(accelerator="auto", devices="auto", precision=None, matmul_precision="high"):
     """
     Initializes Lightning Fabric.
     """
+    # Set Matmul Precision (Global)
+    if torch.cuda.is_available():
+        try:
+            torch.set_float32_matmul_precision(matmul_precision)
+            print(f"[Rank 0] Matmul precision set to: {matmul_precision}")
+        except Exception as e:
+             print(f"[WARNING] Could not set matmul precision: {e}")
+
     # Dynamic Precision Detection if not provided
     if precision is None:
         is_tpu = 'COLAB_TPU_ADDR' in os.environ or 'TPU_NAME' in os.environ
@@ -36,8 +44,6 @@ def setup_fabric(accelerator="auto", devices="auto", precision=None):
             precision = "bf16-true"
         elif torch.cuda.is_available():
             precision = "bf16-mixed"
-            # Set Matmul Precision for GPUs
-            torch.set_float32_matmul_precision('high')
         else:
             precision = "bf16-true" # Fallback/CPU
 
