@@ -1,6 +1,6 @@
 import jax
 import jax.numpy as jnp
-from keras_core import ops
+from keras import ops
 
 class DiffusionScheduler:
     """

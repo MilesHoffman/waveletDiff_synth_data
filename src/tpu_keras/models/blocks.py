@@ -1,5 +1,5 @@
-import keras_core as keras
-from keras_core import ops
+import keras
+from keras import ops
 import jax.numpy as jnp
 import math
 
