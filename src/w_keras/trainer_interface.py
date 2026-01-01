@@ -119,6 +119,7 @@ def init_model(info, config):
         dummy_t = jax.numpy.zeros((1, 1), dtype="float32")
         
         # Call model to trigger build
+        # Pass dictionary which call() will unpack
         _ = model({'x': dummy_x, 't': dummy_t})
         print("✅ Model built successfully (Weights initialized).")
     except Exception as e:

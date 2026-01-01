@@ -1,0 +1,16 @@
+Verifying WaveletDiff Keras Build...
+Keras version: 3.13.0
+Backend: jax
+Initializing Model...
+WaveletLoss initialized. Weights: [0.5714285714285715, 0.28571428571428575, 0.14285714285714288], Energy: True (0.05)
+✅ Scheduler: CosineDecay (Warmup=0, Steps=10)
+✅ Model built successfully (Weights initialized).
+Model initialized.
+Running Dummy Forward Pass...
+Forward pass successful.
+Output shape: (4, 24, 1)
+Verifying Loss Function...
+WaveletLoss initialized. Weights: [0.5714285714285715, 0.28571428571428575, 0.14285714285714288], Energy: True (0.1)
+Loss value: 4.289331912994385
+
+SUCCESS: Build Verification Passed!

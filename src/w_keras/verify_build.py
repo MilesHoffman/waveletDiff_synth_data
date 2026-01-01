@@ -111,7 +111,7 @@ def main():
     inputs = {'x': x_concat, 't': t_input}
     
     try:
-        # Run forward
+        # Run forward (Dictionary unpack)
         output = model(inputs)
         print("Forward pass successful.")
         print(f"Output shape: {output.shape}")
