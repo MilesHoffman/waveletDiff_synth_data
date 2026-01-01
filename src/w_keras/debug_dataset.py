@@ -40,10 +40,16 @@ try:
     for batch in ds.take(1):
         inputs, targets = batch
         print(f"Inputs type: {type(inputs)}")
-        if isinstance(inputs, dict):
+        if isinstance(inputs, (tuple, list)):
+            print(f"Input is tuple/list of length {len(inputs)}")
+            if len(inputs) == 2:
+                x, t = inputs
+                print(f"x shape: {x.shape}, dtype: {x.dtype}")
+                print(f"t shape: {t.shape}, dtype: {t.dtype}")
+            else:
+                 print(f"Inputs: {inputs}")
+        elif isinstance(inputs, dict):
             print(f"Keys: {inputs.keys()}")
-            print(f"x shape: {inputs['x'].shape}, dtype: {inputs['x'].dtype}")
-            print(f"t shape: {inputs['t'].shape}, dtype: {inputs['t'].dtype}")
         else:
             print(f"Inputs shape: {inputs.shape}")
             
