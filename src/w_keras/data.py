@@ -100,6 +100,46 @@ def prepare_wavelet_data(csv_path, seq_len, wavelet_type='db2', levels='auto'):
     
     return wavelet_data, wavelet_info
 
+def get_diffusion_mapper(T=1000, prediction_target='noise'):
+    """
+    Returns a function that takes 'x' (coefficients) and returns ((x_t, t), target).
+    """
+    def mapper(x):
+        # x: (TotalCoeffs, Features)
+        # Sample t uniform [0, 1]
+        t = tf.random.uniform([], 0, 1, dtype=tf.float32)
+        
+        # Signal Scaling (Exponential Schedule approximation)
+        # alpha_bar = exp(-5 * t^2) roughly
+        # Let's use cosine schedule for better quality (WaveletDiff source uses exponential, we can mimic)
+        # Simple Linear for now to ensure robustness, or Cosine.
+        # User config said "exponential".
+        # alpha_t = tf.math.exp(-5.0 * (t**2)) # Example exponential
+        # signal_rate = tf.math.sqrt(alpha_t)
+        # noise_rate = tf.math.sqrt(1.0 - alpha_t)
+        
+        # Cosine Schedule (standard)
+        # f(t) = cos( (t+s)/(1+s) * pi/2 )^2
+        s = 0.008
+        angle = (t + s) / (1 + s) * (3.14159 / 2)
+        alpha_bar = tf.math.pow(tf.math.cos(angle), 2)
+        
+        signal_rate = tf.math.sqrt(alpha_bar)
+        noise_rate = tf.math.sqrt(1.0 - alpha_bar)
+        
+        noise = tf.random.normal(tf.shape(x), dtype=tf.float32)
+        x_t = signal_rate * x + noise_rate * noise
+        
+        if prediction_target == 'noise':
+            target = noise
+        else:
+            target = x # x_start
+            
+        # Return as Dictionary to avoid Keras unpacking issues
+        return {'x': x_t, 't': t}, target
+        
+    return mapper
+
 def load_dataset(csv_path, batch_size, seq_len, wavelet_type='db2', levels='auto', diffusion_config=None):
     """
     Creates a tf.data.Dataset for training.
@@ -123,27 +163,21 @@ def load_dataset(csv_path, batch_size, seq_len, wavelet_type='db2', levels='auto
     
     if diffusion_config:
         # Diffusion Training Mode
-        # Apply noise logic. 
-        # Note: Input is float32 (from prepare func).
-        # We assume mapper produces tuple ((x_t, t), target)
-        # We can let the mapper handle precisions.
-        
         ts_mapper = get_diffusion_mapper(
             T=1000, 
             prediction_target=diffusion_config.get('PREDICTION_TARGET', 'noise')
         )
         ds = ds.map(ts_mapper, num_parallel_calls=tf.data.AUTOTUNE)
         
-        # Output of mapper is float32 usually.
-        # We can cast to bfloat16 here for TPU transfer if desired, 
-        # but Keras Mixed Precision handles inputs largely.
-        # Explicit casting to bfloat16 helps bandwidth.
+        # Output of mapper is ({x, t}, y)
         def cast_tuple(inputs, target):
-            (x_t, t), y = inputs, target
+            x_t = inputs['x']
+            t = inputs['t']
+            
             x_t = tf.cast(x_t, tf.bfloat16)
-            # t is float32 normalized, keep it or cast? t used in embeddings usually float32 is safer for sin/cos
-            y = tf.cast(y, tf.bfloat16)
-            return (x_t, t), y
+            y = tf.cast(target, tf.bfloat16)
+            
+            return {'x': x_t, 't': t}, y
             
         ds = ds.map(cast_tuple, num_parallel_calls=tf.data.AUTOTUNE)
         

@@ -108,6 +108,22 @@ def init_model(info, config):
     
     model.compile(optimizer=optimizer, jit_compile=True)
     
+    # 3. Force Build
+    try:
+        # Create dummy inputs to initialize weights
+        total_coeffs = sum(info['level_dims'])
+        n_features = info.get('n_features', 5) # Default 5 if missing
+        
+        # Batch size 1
+        dummy_x = jax.numpy.zeros((1, total_coeffs, n_features), dtype="float32")
+        dummy_t = jax.numpy.zeros((1, 1), dtype="float32")
+        
+        # Call model to trigger build
+        _ = model({'x': dummy_x, 't': dummy_t})
+        print("✅ Model built successfully (Weights initialized).")
+    except Exception as e:
+        print(f"⚠️ Model build warning: {e}")
+    
     return model
 
 def train_loop(model, dataset, config):

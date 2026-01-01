@@ -107,7 +107,8 @@ def main():
     # Transformer expects (x_all, t) where x_all is concatenated levels
     x_concat = np.concatenate(x_inputs, axis=1)
     
-    inputs = [x_concat, t_input]
+    # Use Dict inputs matching updated pipeline
+    inputs = {'x': x_concat, 't': t_input}
     
     try:
         # Run forward

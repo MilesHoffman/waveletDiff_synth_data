@@ -127,8 +127,12 @@ class WaveletDiffusionTransformer(Model):
         self.alpha_bar.assign(alpha_bar)
 
     def call(self, inputs, training=None):
-        # inputs: tuple (x_t, t_norm)
-        x_all, t_norm = inputs
+        # inputs: dict {'x': x_all, 't': t_norm} or tuple
+        if isinstance(inputs, dict):
+            x_all = inputs['x']
+            t_norm = inputs['t']
+        else:
+            x_all, t_norm = inputs
         
         # Time Embed
         time_embed = self.time_embedding(t_norm)
