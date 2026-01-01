@@ -28,6 +28,27 @@ class TPUTrainer:
         # Optimizer
         self.tx = optax.adamw(learning_rate)
         
+        # Build model if not built (required for stateless_call)
+        if not model.built:
+            print("Model not built. Building with dummy inputs...")
+            # Infer input shapes from loss_fn.level_dims
+            # Input is [coeffs_list, t]
+            # coeffs_list items shape: (batch, dim, input_dim) -> input_dim=1 usually
+            # We assume input_dim=1 as per typical time series usage (or infer from model)
+            input_dim = getattr(model, 'input_dim', 1) 
+            
+            # Create dummy inputs
+            dummy_batch_size = 1
+            dummy_coeffs = [
+                jnp.zeros((dummy_batch_size, d, input_dim)) 
+                for d in self.loss_fn.level_dims
+            ]
+            dummy_t = jnp.zeros((dummy_batch_size,), dtype="int32")
+            
+            # Build
+            model.build([dummy_coeffs, dummy_t])
+            print("Model built successfully.")
+
         # Extract trainable parameter values from Keras model
         # Keras 3 Variables have a .value property which returns the backend tensor (jax array)
         self.params = [v.value for v in model.trainable_variables]
