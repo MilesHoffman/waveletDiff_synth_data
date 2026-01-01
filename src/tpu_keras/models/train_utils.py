@@ -34,8 +34,8 @@ def create_train_step(model, scheduler, loss_fn, optimizer):
         # 4. Predict & Loss
         def loss_forward(trainable_params):
             # Use stateless_call for Keras 3 compatibility
-            # Returns: (outputs, non_trainable_variables, losses)
-            preds, _, _ = model.stateless_call(
+            # Returns: (outputs, non_trainable_variables) - Default when return_losses=False
+            preds, _ = model.stateless_call(
                 trainable_params, 
                 non_trainable_weights, 
                 [noisy_coeffs, t], 
@@ -78,7 +78,8 @@ def create_sample_fn(model, scheduler):
             t = ops.ones((shape_list[0][0],), dtype='int32') * t_idx
             
             # Predict noise using stateless_call
-            preds, _, _ = model.stateless_call(
+            # Returns: (outputs, non_trainable_variable_updates)
+            preds, _ = model.stateless_call(
                 params, 
                 non_trainable_weights, 
                 [curr_coeffs, t], 
