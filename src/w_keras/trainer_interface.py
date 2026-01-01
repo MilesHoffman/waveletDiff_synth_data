@@ -118,7 +118,7 @@ def init_model(info, config):
             clipnorm=1.0 
         )
     
-    functional_model.compile(optimizer=optimizer, jit_compile=True)
+    functional_model.compile(optimizer=optimizer, loss=model.loss_fn, jit_compile=True)
     
     # 4. Force Build (Already handled by functional mapping but good for summary)
     functional_model.summary()
