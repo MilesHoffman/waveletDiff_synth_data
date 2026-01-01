@@ -84,14 +84,28 @@ class AdaLayerNorm(layers.Layer):
         self.embed_dim = embed_dim
         self.norm = layers.LayerNormalization(axis=-1, center=False, scale=False)
         
-        # Predict scale and shift from time_embed
-        self.ada_lin = layers.Dense(2 * embed_dim)
+    # Predict scale and shift from time_embed
+        
+        # Identity Initialization:
+        # Kernel = 0
+        # Bias = [1 (scale), 0 (shift)]
+        # This makes output = 1 * x + 0 = x initially (Identity)
+        
+        def identity_bias_init(shape, dtype=None):
+            # Shape is (2 * embed_dim,)
+            # We want first half 1s, second half 0s
+            half = shape[0] // 2
+            ones = ops.ones((half,), dtype=dtype)
+            zeros = ops.zeros((half,), dtype=dtype)
+            return ops.concatenate([ones, zeros])
+            
+        self.ada_lin = layers.Dense(
+            2 * embed_dim,
+            kernel_initializer='zeros',
+            bias_initializer=identity_bias_init
+        )
 
     def build(self, input_shape):
-        # Initialize ada_lin to identity-like behavior
-        # Dense creates kernel and bias.
-        # We want bias to be [1...1, 0...0] (scale=1, shift=0).
-        # We want kernel to be near zero.
         pass
 
     def call(self, x, time_embed):

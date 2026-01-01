@@ -29,23 +29,32 @@ class WaveletLoss(keras.losses.Loss):
         num_levels = len(level_dims)
         
         if strategy == "coefficient_weighted":
-            # Weight = 1.0 / sqrt(num_coeffs)
+            # Weight = 1.0 / num_coeffs (Inverse Linear)
             # Level 0 gets extra approximation_weight
             for i, dim in enumerate(level_dims):
-                w = 1.0 / float(dim)**0.5
+                w = 1.0 / float(dim)
                 if i == 0:
                     w *= approximation_weight
                 self.level_weights.append(w)
                 
+            # Normalize weights to sum to 1.0 (or total_weight in PyTorch)
+            # Source uses total_weight = sum([1/dim ...]) and divides by it.
+            total_weight = sum(self.level_weights)
+            self.level_weights = [w / total_weight for w in self.level_weights]
+            
         elif strategy == "approximation_heavy":
             for i in range(num_levels):
                 if i == 0:
                     self.level_weights.append(approximation_weight)
                 else:
                     self.level_weights.append(1.0)
+            
+            # Normalize? Source usually does. Let's normalize here too for consistency.
+            total_weight = sum(self.level_weights)
+            self.level_weights = [w / total_weight for w in self.level_weights]
         else:
-            # Default ones
-            self.level_weights = [1.0] * num_levels
+            # Default ones (Uniform)
+            self.level_weights = [1.0 / num_levels] * num_levels
             
         print(f"WaveletLoss initialized. Weights: {self.level_weights}, Energy: {use_energy_term} ({energy_weight})")
 
