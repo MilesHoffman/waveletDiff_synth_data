@@ -1,6 +1,6 @@
 import jax
 import jax.numpy as jnp
-import keras_core as keras
+import keras
 from flax.training import train_state
 import optax
 import time

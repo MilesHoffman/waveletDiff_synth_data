@@ -4,7 +4,7 @@ os.environ["KERAS_BACKEND"] = "jax"
 import numpy as np
 import torch
 import torch.nn as nn
-import keras_core as keras
+import keras
 import jax
 import jax.numpy as jnp
 from src.tpu_keras.models.blocks import AdaLayerNorm, WaveletTransformerBlock, TimeEmbedding, LevelEmbedding

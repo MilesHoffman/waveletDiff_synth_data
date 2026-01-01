@@ -3,7 +3,7 @@ os.environ["KERAS_BACKEND"] = "jax"
 
 import numpy as np
 import pywt
-import keras_core as keras
+import keras
 import jax
 import jax.numpy as jnp
 from src.tpu_keras.layers.wavelet import DWT1D, IDWT1D
