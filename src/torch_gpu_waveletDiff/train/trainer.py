@@ -116,34 +116,17 @@ def get_dataloaders(fabric, repo_dir, dataset_name, seq_len, batch_size, wavelet
              if fabric.is_global_zero: print(f"Optimizing: Casting data to bfloat16 for {fabric.device.type}...")
              full_data_tensor = full_data_tensor.to(torch.bfloat16)
 
-    # DATASET PLACEMENT OPTIMIZATION
-    # Move entire dataset to GPU to eliminate CPU-GPU copy overhead
-    # User requested to ALWAYS do this regardless of size
-    if fabric.device.type != "cpu":
-        if fabric.is_global_zero: 
-            print(f"Optimizing: Moving entire dataset to {fabric.device}...")
-        full_data_tensor = full_data_tensor.to(fabric.device)
-        is_dataset_on_gpu = True
-    else:
-        is_dataset_on_gpu = False
-
     dataset = TensorDataset(full_data_tensor)
 
     # Workers
-    # If dataset is ON GPU, we MUST use 0 workers and NO pin_memory.
-    if is_dataset_on_gpu:
+    # Optimization: If dataset is in-memory (TensorDataset), using workers adds IPC overhead. Use 0.
+    if isinstance(dataset, TensorDataset):
         num_workers = 0
-        pin_memory = False
-        if fabric.is_global_zero: print(f"Using 0 num_workers & pin_memory=False (Dataset on {fabric.device}).")
-    elif isinstance(dataset, TensorDataset):
-        num_workers = 0
-        pin_memory = True if fabric.device.type == "cuda" else False
-        if fabric.is_global_zero: print(f"Using 0 num_workers (Main Process) for in-memory TensorDataset. Pin memory: {pin_memory}")
+        if fabric.is_global_zero: print("Using 0 num_workers (Main Process) for in-memory TensorDataset optimization.")
     else:
         cpu_count = multiprocessing.cpu_count()
         num_workers = min(4, max(0, cpu_count - 2))
-        pin_memory = True if fabric.device.type == "cuda" else False
-        if fabric.is_global_zero: print(f"Using {num_workers} num_workers... Pin memory: {pin_memory}")
+        if fabric.is_global_zero: print(f"Using {num_workers} num_workers...")
 
     loader = DataLoader(
         dataset,
@@ -151,7 +134,7 @@ def get_dataloaders(fabric, repo_dir, dataset_name, seq_len, batch_size, wavelet
         shuffle=True,
         drop_last=True,
         num_workers=num_workers,
-        pin_memory=pin_memory,
+        pin_memory=True if fabric.device.type == "cuda" else False,
         persistent_workers=True if num_workers > 0 else False
     )
 
