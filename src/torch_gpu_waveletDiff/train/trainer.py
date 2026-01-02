@@ -11,6 +11,11 @@ from torch.utils.data import TensorDataset, DataLoader
 from tqdm.auto import tqdm
 from contextlib import nullcontext
 from torch.profiler import profile, record_function, ProfilerActivity, schedule, tensorboard_trace_handler
+import logging
+
+# Suppress verbose compilation logs
+torch._inductor.config.disable_progress = True
+torch._logging.set_logs(inductor=logging.ERROR, dynamo=logging.ERROR)
 
 # Delayed imports to allow sys.path setup in notebook
 # These imports will be done inside functions or we assume sys.path is already set when this module is imported.
