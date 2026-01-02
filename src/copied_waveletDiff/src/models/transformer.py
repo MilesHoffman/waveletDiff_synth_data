@@ -254,6 +254,9 @@ class WaveletDiffusionTransformer(pl.LightningModule):
             
             for i, (start_idx, dim) in enumerate(zip(self.level_start_indices, self.level_dims)):
                 # Extract coefficients for this level from all features
+                # Explicit runtime cast to avoid Dynamo "Dynamic slicing" errors
+                start_idx = int(start_idx)
+                dim = int(dim)
                 end_idx = start_idx + dim
                 level_coeffs = x[:, start_idx:end_idx, :]  # (batch_size, dim, num_features)
                 level_coeffs_list.append(level_coeffs)
@@ -276,6 +279,9 @@ class WaveletDiffusionTransformer(pl.LightningModule):
             level_outputs = []
             for i, (start_idx, dim) in enumerate(zip(self.level_start_indices, self.level_dims)):
                 # Extract coefficients for this level
+                # Explicit runtime cast to avoid Dynamo "Dynamic slicing" errors
+                start_idx = int(start_idx)
+                dim = int(dim)
                 end_idx = start_idx + dim
                 level_coeffs = x[:, start_idx:end_idx, :]
                 

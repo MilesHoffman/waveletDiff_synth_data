@@ -124,6 +124,8 @@ class WaveletBalancedLoss:
         level_feature_energies = []
         
         for i, (start_idx, dim) in enumerate(zip(self.level_start_indices, self.level_dims)):
+            start_idx = int(start_idx)
+            dim = int(dim)
             end_idx = start_idx + dim
             level_coeffs = squared_coeffs[:, start_idx:end_idx, :]  # [batch_size, dim, num_features]
             level_energy = torch.sum(level_coeffs, dim=1)  # [batch_size, num_features]
@@ -202,6 +204,8 @@ class WaveletBalancedLoss:
             for i, (start_idx, dim, weight) in enumerate(zip(
                 self.level_start_indices, self.level_dims, self.level_weights
             )):
+                start_idx = int(start_idx)
+                dim = int(dim)
                 end_idx = start_idx + dim
                 level_target = target_feature[:, start_idx:end_idx]
                 level_pred = pred_feature[:, start_idx:end_idx]
@@ -225,6 +229,8 @@ class WaveletBalancedLoss:
         level_losses = []
 
         for i, (start_idx, dim) in enumerate(zip(self.level_start_indices, self.level_dims)):
+            start_idx = int(start_idx)
+            dim = int(dim)
             end_idx = start_idx + dim
             level_loss_total = 0.0
             
