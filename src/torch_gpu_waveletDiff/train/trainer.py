@@ -1,4 +1,7 @@
 import os
+# CRITICAL: Must be set BEFORE import torch to suppress "Autotune Choices Stats"
+os.environ["TORCHINDUCTOR_MAX_AUTOTUNE_REPORT_CHOICES_STATS"] = "0"
+
 import sys
 import torch
 import time
@@ -11,10 +14,9 @@ from torch.utils.data import TensorDataset, DataLoader
 from tqdm.auto import tqdm
 from contextlib import nullcontext
 from torch.profiler import profile, record_function, ProfilerActivity, schedule, tensorboard_trace_handler
+from contextlib import nullcontext
+from torch.profiler import profile, record_function, ProfilerActivity, schedule, tensorboard_trace_handler
 import logging
-
-# Suppress verbose compilation logs
-os.environ["TORCHINDUCTOR_MAX_AUTOTUNE_REPORT_CHOICES_STATS"] = "0"
 
 # Suppress verbose compilation logs
 torch._inductor.config.disable_progress = True
