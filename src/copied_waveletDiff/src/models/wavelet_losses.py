@@ -222,7 +222,8 @@ class WaveletBalancedLoss(torch.nn.Module):
         # Expand weight mask to match: [1, total_coeffs, 1]
         # Safety: Slice weight_mask to match input size if mismatch exists
         # This handles potential edge cases where input might be truncated/different
-        active_weights = self.weight_mask[:current_total_coeffs]
+        # CRITICAL: Ensure weighs are on same device as target (handles Dynamo/FakeTensor issues)
+        active_weights = self.weight_mask[:current_total_coeffs].to(target.device)
         weights = active_weights.view(1, -1, 1)
         
         # Weighted Squared Error
