@@ -135,7 +135,8 @@ def get_dataloaders(fabric, repo_dir, dataset_name, seq_len, batch_size, wavelet
 def init_model(fabric, datamodule, config, 
                embed_dim=256, num_heads=8, num_layers=8, time_embed_dim=128, 
                dropout=0.1, prediction_target="noise", use_cross_level_attention=True,
-               learning_rate=2e-4, weight_decay=1e-5, max_lr=None, pct_start=0.3, compile_mode="default"):
+               learning_rate=2e-4, weight_decay=1e-5, max_lr=None, pct_start=0.3, 
+               compile_mode="default", compile_fullgraph=False):
     """
     Initializes the WaveletDiffusionTransformer model and optimizer.
     """
@@ -190,13 +191,13 @@ def init_model(fabric, datamodule, config,
     if fabric.device.type == "cuda":
         # COMPILE_MODE passed from argument
         if fabric.is_global_zero: 
-            print(f"[Rank 0] Applying torch.compile(mode='{compile_mode}')...")
+            print(f"[Rank 0] Applying torch.compile(mode='{compile_mode}', fullgraph={compile_fullgraph})...")
             if compile_mode == "reduce-overhead":
                  print("[Rank 0] Standard Warning: reduce-overhead may cause OOM on cold start. Use 'default' or 'max-autotune' if crashing.")
             print("[Rank 0] Note: You will see a delay at Step 0 while kernels are built.")
         
         try:
-            model = torch.compile(model, mode=compile_mode)
+            model = torch.compile(model, mode=compile_mode, fullgraph=compile_fullgraph)
         except Exception as e:
             print(f"[WARNING] Compilation failed: {e}. Falling back to eager execution.")
 
