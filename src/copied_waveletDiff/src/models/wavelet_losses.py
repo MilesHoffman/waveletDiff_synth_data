@@ -11,7 +11,7 @@ import torch.nn.functional as F
 from typing import List, Callable
 
 
-class WaveletBalancedLoss:
+class WaveletBalancedLoss(torch.nn.Module):
     """Balanced loss computation for wavelet coefficients across multiple levels.
     
     Addresses the issue where levels with more coefficients dominate the loss
@@ -35,6 +35,7 @@ class WaveletBalancedLoss:
             approximation_weight: Weight multiplier for approximation level (only used for strategy "coefficient_weighted")
             energy_weight: Weight for the energy preservation term
         """
+        super().__init__()
         # Validate inputs
         if len(level_dims) == 0:
             raise ValueError("level_dims cannot be empty")
