@@ -66,6 +66,21 @@ class WaveletBalancedLoss:
         self.level_weights = self._initialize_weights()
         
         
+        # Pre-compute weighted mask for vectorized loss computation
+        # Shape: [total_coeffs] (same as 2nd dim of target/prediction)
+        # Value at index k = weight_of_level / dim_of_level
+        total_coeffs = sum(self.level_dims)
+        weight_mask = torch.zeros(total_coeffs, dtype=torch.float32)
+        
+        current_idx = 0
+        for dim, weight in zip(self.level_dims, self.level_weights):
+            # Each coefficient in this level contributes (weight / dim) to the feature loss
+            # The sum of (weight/dim) * dim = weight, which matches the original logic
+            weight_mask[current_idx : current_idx + dim] = weight
+            current_idx += dim
+            
+        self.register_buffer('weight_mask', weight_mask)
+
         print(f"Initialized {strategy} wavelet loss:")
         for i, (dim, weight) in enumerate(zip(level_dims, self.level_weights)):
             print(f"  Level {i}: {dim} coeffs, weight={weight:.4f}")
@@ -191,32 +206,30 @@ class WaveletBalancedLoss:
             return reconstruction_loss
     
     def _compute_weighted_loss(self, target: torch.Tensor, prediction: torch.Tensor) -> torch.Tensor:
-        """Compute weighted loss across levels."""
-        batch_size, total_coeffs_per_feature, num_features = target.shape
-        total_loss = 0.0
-
-        # Compute loss for each feature separately, then average
-        for feature_idx in range(num_features):
-            feature_total_loss = 0.0
-            target_feature = target[:, :, feature_idx]  # [batch_size, total_coeffs_per_feature]
-            pred_feature = prediction[:, :, feature_idx]  # [batch_size, total_coeffs_per_feature]
-            
-            for i, (start_idx, dim, weight) in enumerate(zip(
-                self.level_start_indices, self.level_dims, self.level_weights
-            )):
-                start_idx = int(start_idx)
-                dim = int(dim)
-                end_idx = start_idx + dim
-                level_target = target_feature[:, start_idx:end_idx]
-                level_pred = pred_feature[:, start_idx:end_idx]
-                
-                level_loss = F.mse_loss(level_target, level_pred)
-                feature_total_loss += weight * level_loss
-
-            total_loss += feature_total_loss
-
-        # Average across features
-        return total_loss / num_features
+        """
+        Compute weighted loss across levels using vectorized operations.
+        
+        This implementation avoids loops over features and levels, massively reducing
+        kernel launch overhead on GPUs.
+        """
+        # Squared Error: [batch, total_coeffs, features]
+        squared_error = (target - prediction) ** 2
+        
+        # Expand weight mask to match: [1, total_coeffs, 1]
+        # self.weight_mask is [total_coeffs]
+        weights = self.weight_mask.view(1, -1, 1)
+        
+        # Weighted Squared Error
+        weighted_error = squared_error * weights
+        
+        # Sum everything
+        total_loss = torch.sum(weighted_error)
+        
+        # Normalize by (batch_size * num_features)
+        # We don't divide by total_coeffs because dimensions were already handled by the weights
+        # (weight = level_weight / level_dim), so summing effectively averages within levels
+        batch_size, _, num_features = target.shape
+        return total_loss / (batch_size * num_features)
     
     
     def get_level_losses(self, target: torch.Tensor, prediction: torch.Tensor) -> List[torch.Tensor]:
