@@ -14,6 +14,9 @@ from torch.profiler import profile, record_function, ProfilerActivity, schedule,
 import logging
 
 # Suppress verbose compilation logs
+os.environ["TORCHINDUCTOR_MAX_AUTOTUNE_REPORT_CHOICES_STATS"] = "0"
+
+# Suppress verbose compilation logs
 torch._inductor.config.disable_progress = True
 torch._logging.set_logs(inductor=logging.ERROR, dynamo=logging.ERROR)
 
