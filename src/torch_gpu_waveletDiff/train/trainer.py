@@ -145,6 +145,20 @@ def init_model(fabric, datamodule, config,
     """
     Initializes the WaveletDiffusionTransformer model and optimizer.
     """
+    import importlib
+    import models.transformer
+    import models.wavelet_losses
+    import models.layers
+    import models.attention
+    
+    # Force reload to pick up any code changes (critical for interactive debugging)
+    if fabric.is_global_zero:
+        print("[Rank 0] Reloading model modules to ensure latest code is used...")
+    importlib.reload(models.layers)
+    importlib.reload(models.attention)
+    importlib.reload(models.wavelet_losses)
+    importlib.reload(models.transformer)
+    
     from models.transformer import WaveletDiffusionTransformer
 
     # Update Config with Model Hyperparams

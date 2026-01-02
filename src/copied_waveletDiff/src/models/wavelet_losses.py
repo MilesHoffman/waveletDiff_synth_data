@@ -50,8 +50,9 @@ class WaveletBalancedLoss:
                 raise ValueError(f"Inconsistent start index at level {i}: expected {expected_start}, got {start_idx}")
             expected_start += dim
         
-        self.level_dims = level_dims
-        self.level_start_indices = level_start_indices
+        # torch.compile(fullgraph=True) fix: Ensure these are Python ints
+        self.level_dims = [int(x) for x in level_dims]
+        self.level_start_indices = [int(x) for x in level_start_indices]
         self.strategy = strategy
         self.num_levels = len(level_dims)
         self.approximation_weight = approximation_weight
