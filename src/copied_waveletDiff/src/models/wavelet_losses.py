@@ -216,9 +216,14 @@ class WaveletBalancedLoss(torch.nn.Module):
         # Squared Error: [batch, total_coeffs, features]
         squared_error = (target - prediction) ** 2
         
+        # Get actual coefficient count from input
+        batch_size, current_total_coeffs, num_features = target.shape
+        
         # Expand weight mask to match: [1, total_coeffs, 1]
-        # self.weight_mask is [total_coeffs]
-        weights = self.weight_mask.view(1, -1, 1)
+        # Safety: Slice weight_mask to match input size if mismatch exists
+        # This handles potential edge cases where input might be truncated/different
+        active_weights = self.weight_mask[:current_total_coeffs]
+        weights = active_weights.view(1, -1, 1)
         
         # Weighted Squared Error
         weighted_error = squared_error * weights
