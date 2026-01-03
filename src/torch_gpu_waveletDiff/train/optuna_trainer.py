@@ -204,13 +204,12 @@ class OptunaWaveletDiffTrainer:
                         'grad': f'{total_norm:.2f}'
                     })
                     last_update_step = step
-        
-        # Close progress bar
-        if pbar is not None:
-            pbar.close()
-            
-            # Report intermediate value for pruning (single-objective only)
-            if not is_multi_objective and (step + 1) % self.eval_interval == 0:
+
+            # Report intermediate value for pruning (Enabled for ALL modes)
+            if (step + 1) % self.eval_interval == 0:
+                # Use training loss as proxy for pruning in both SO and MOO
+                # In MOO, we can't report multiple values to trial.report() yet (Optuna limitation),
+                # so we stick to the primary objective (loss) for the "should I stop?" signal.
                 intermediate_loss = self.tracker.get_intermediate_loss(window=100)
                 trial.report(intermediate_loss, step)
                 
@@ -218,8 +217,10 @@ class OptunaWaveletDiffTrainer:
                 if trial.should_prune():
                     if self.fabric.is_global_zero:
                         print(f"\n⚠️ Trial {trial.number} pruned at step {step+1}")
+                    # Close progress bar before raising
+                    if pbar is not None:
+                        pbar.close()
                     raise optuna.TrialPruned()
-            
             
             # Early termination checks
             if self.tracker.has_exploding_gradients(threshold=100.0):
@@ -233,6 +234,10 @@ class OptunaWaveletDiffTrainer:
                     print(f"\n⚠️ Trial {trial.number} stopped: Loss diverged")
                 trial.set_user_attr("stopped_reason", "diverged_loss")
                 break
+        
+        # Close progress bar
+        if pbar is not None:
+            pbar.close()
         
         # Get final objectives
         avg_loss, avg_step_time, grad_norm_variance = self.tracker.get_objectives(window=500)
