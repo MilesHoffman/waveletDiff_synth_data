@@ -67,16 +67,22 @@ def setup_environment(repo_url, repo_dir, drive_base_path, optuna_db_path, check
     print("Installing dependencies...")
     deps = ["lightning", "pywavelets", "scipy", "pandas", "tqdm", 
             "optuna", "optuna-dashboard", "plotly", "kaleido", "pyngrok"]
-    subprocess.run(["pip", "install", "-q"] + deps, check=True)
+    
+    # Use sys.executable to ensure we're installing to the correct environment
+    subprocess.run([sys.executable, "-m", "pip", "install", "-q"] + deps, check=True)
+    
+    import importlib
+    importlib.invalidate_caches()
+    
     print("✅ Dependencies installed")
     status['deps'] = 'installed'
     
     # Setup Paths
     if repo_dir not in sys.path:
-        sys.path.append(repo_dir)
+        sys.path.insert(0, repo_dir)
     source_path = os.path.join(repo_dir, "src", "copied_waveletDiff", "src")
     if source_path not in sys.path:
-        sys.path.append(source_path)
+        sys.path.insert(0, source_path)
     
     # Create Directories
     os.makedirs(os.path.dirname(optuna_db_path), exist_ok=True)
