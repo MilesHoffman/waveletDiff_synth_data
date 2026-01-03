@@ -7,6 +7,7 @@ import optuna
 from optuna.trial import Trial
 from typing import Dict, Tuple
 import numpy as np
+import gc
 from tqdm.auto import tqdm
 
 from ..optuna_config.search_space import WaveletDiffSearchSpace
@@ -34,7 +35,9 @@ class OptunaWaveletDiffTrainer:
         checkpoint_dir: str = "/content/drive/MyDrive/personal_drive/trading/optuna_trials",
         trial_steps: int = 2000,
         eval_interval: int = 100,
-        compile_mode: str = None
+        compile_mode: str = None,
+        min_params: int = None,
+        max_params: int = None
     ):
         """
         Initialize Optuna trainer.
@@ -58,6 +61,8 @@ class OptunaWaveletDiffTrainer:
         self.trial_steps = trial_steps
         self.eval_interval = eval_interval
         self.compile_mode = compile_mode
+        self.min_params = min_params
+        self.max_params = max_params
         
         self.search_space = WaveletDiffSearchSpace(tune_flags)
         self.default_hyperparams = default_hyperparams
@@ -127,10 +132,16 @@ class OptunaWaveletDiffTrainer:
         if self.fabric.is_global_zero:
             print(f"🧠 Model Size: {total_params / 1e6:.2f}M params")
         
-        # Hard constraint: 40M - 100M
-        if total_params < 40_000_000 or total_params > 100_000_000:
+        # Check Max Params
+        if self.max_params is not None and total_params > self.max_params:
             if self.fabric.is_global_zero:
-                print(f"⚠️ Pruning trial {trial.number}: Size {total_params/1e6:.2f}M is out of bounds (40M-100M Params)")
+                print(f"⚠️ Pruning trial {trial.number}: Size {total_params/1e6:.2f}M > limit {self.max_params/1e6:.2f}M")
+            raise optuna.TrialPruned()
+            
+        # Check Min Params
+        if self.min_params is not None and total_params < self.min_params:
+            if self.fabric.is_global_zero:
+                print(f"⚠️ Pruning trial {trial.number}: Size {total_params/1e6:.2f}M < minimum {self.min_params/1e6:.2f}M")
             raise optuna.TrialPruned()
 
         # Scheduler
@@ -247,6 +258,26 @@ class OptunaWaveletDiffTrainer:
         # Close progress bar
         if pbar is not None:
             pbar.close()
+        
+        # === MEMORY CLEANUP ===
+        # Critical for preventing OOM in long Optuna studies
+        del model
+        del optimizer
+        del scheduler
+        if 'train_iter' in locals(): del train_iter
+        if 'train_loader' in locals(): del train_loader
+        
+        # Clear compilation cache if used
+        if self.compile_mode:
+            try:
+                torch._dynamo.reset()
+            except:
+                pass
+        
+        # Force garbage collection
+        gc.collect()
+        torch.cuda.empty_cache()
+        # ======================
         
         # Get final objectives
         avg_loss, avg_step_time, grad_norm_variance = self.tracker.get_objectives(window=500)
