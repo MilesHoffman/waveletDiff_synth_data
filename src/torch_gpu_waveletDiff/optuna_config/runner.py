@@ -106,6 +106,10 @@ def create_study(study_name, storage_url, sampler_type, n_startup_trials,
     Returns:
         optuna.Study: Created or loaded study
     """
+    import optuna
+    from optuna.pruners import HyperbandPruner, MedianPruner, NopPruner
+    from optuna.samplers import TPESampler, RandomSampler
+    
     print(f"📁 Storage: {storage_url}")
     
     # Sampler
@@ -137,6 +141,8 @@ def create_study(study_name, storage_url, sampler_type, n_startup_trials,
             n_warmup_steps=500
         )
         print("✂️ Pruner: Median")
+    
+    import optuna
     
     # Create study
     if use_multi_objective:
@@ -257,6 +263,7 @@ def run_optimization(study, fabric, base_config, repo_dir, data_path,
     Returns:
         dict: Summary of optimization results
     """
+    import optuna
     from src.torch_gpu_waveletDiff.train.optuna_trainer import OptunaWaveletDiffTrainer
     
     # Launch Dashboard (if enabled)
@@ -298,6 +305,8 @@ def run_optimization(study, fabric, base_config, repo_dir, data_path,
     print(f"Tuning {len([v for v in tune_flags.values() if v])} hyperparameters")
     print("="*60)
     
+    import optuna
+    
     try:
         study.optimize(
             objective_fn,
@@ -338,6 +347,14 @@ def analyze_results(study_name, storage_url, use_multi_objective):
     Returns:
         dict: Analysis summary
     """
+    import optuna
+    from optuna.visualization import (
+        plot_optimization_history,
+        plot_param_importances,
+        plot_parallel_coordinate,
+        plot_pareto_front
+    )
+    
     # Reload study
     study = optuna.load_study(
         study_name=study_name,
@@ -417,6 +434,7 @@ def export_best_configs(study_name, storage_url, checkpoint_dir, use_multi_objec
     Returns:
         list: Paths to exported config files
     """
+    import optuna
     study = optuna.load_study(
         study_name=study_name,
         storage=storage_url
