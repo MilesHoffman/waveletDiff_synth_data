@@ -275,6 +275,10 @@ def run_optimization(study, fabric, base_config, repo_dir, data_path,
         dict: Summary of optimization results
     """
     import optuna
+    import importlib
+    # Force reload trainer to pick up git updates without kernel restart
+    from src.torch_gpu_waveletDiff.train import optuna_trainer
+    importlib.reload(optuna_trainer)
     from src.torch_gpu_waveletDiff.train.optuna_trainer import OptunaWaveletDiffTrainer
     
     # Launch Dashboard (if enabled)
