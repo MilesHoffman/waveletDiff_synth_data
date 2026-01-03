@@ -200,12 +200,20 @@ def launch_dashboard(storage_url, dashboard_port, ngrok_token=None):
     
     # Start dashboard in background
     dashboard_process = subprocess.Popen(
-        ["optuna-dashboard", storage_url, "--port", str(dashboard_port)],
+        ["optuna-dashboard", storage_url, "--port", str(dashboard_port), "--host", "127.0.0.1"],
         stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE
+        stderr=subprocess.PIPE,
+        text=True
     )
     
-    time.sleep(3)
+    time.sleep(4) # Give it a moment to spin up
+    
+    # Check if it crashed immediately
+    if dashboard_process.poll() is not None:
+        stdout, stderr = dashboard_process.communicate()
+        print(f"❌ Dashboard failed to start (Return Code: {dashboard_process.returncode})")
+        print(f"   STDERR: {stderr}")
+        return None, None
     
     public_url = None
     

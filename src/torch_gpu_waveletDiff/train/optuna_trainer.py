@@ -122,6 +122,17 @@ class OptunaWaveletDiffTrainer:
             compile_fullgraph=False
         )
         
+        # Check Parameter Count Constraint
+        total_params = sum(p.numel() for p in model.parameters())
+        if self.fabric.is_global_zero:
+            print(f"🧠 Model Size: {total_params / 1e6:.2f}M params")
+        
+        # Hard constraint: 40M - 100M
+        if total_params < 40_000_000 or total_params > 100_000_000:
+            if self.fabric.is_global_zero:
+                print(f"⚠️ Pruning trial {trial.number}: Size {total_params/1e6:.2f}M is out of bounds (40M-100M Params)")
+            raise optuna.TrialPruned()
+
         # Scheduler
         scheduler = torch.optim.lr_scheduler.OneCycleLR(
             optimizer,
