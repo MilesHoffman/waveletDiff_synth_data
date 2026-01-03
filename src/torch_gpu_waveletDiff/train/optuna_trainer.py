@@ -72,7 +72,7 @@ class OptunaWaveletDiffTrainer:
         Returns:
             (avg_loss, avg_step_time_ms, grad_norm_variance)
         """
-        from .train import trainer
+        from . import trainer
         
         self.tracker.reset()
         
