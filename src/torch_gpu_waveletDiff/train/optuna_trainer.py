@@ -137,20 +137,19 @@ class OptunaWaveletDiffTrainer:
         # Check if multi-objective (for pruning logic)
         is_multi_objective = len(trial.study.directions) > 1
         
-        # Progress bar only on rank 0
+        # Progress bar setup (Rank 0 only)
+        pbar = None
+        update_interval = max(1, int(self.trial_steps * 0.05))
         if self.fabric.is_global_zero:
-            # Update every 5% of steps
-            update_interval = max(1, int(self.trial_steps * 0.05))
-            
-            pbar = tqdm(range(self.trial_steps), 
-                       desc=f"Trial {trial.number}", 
-                       leave=False,  # Disappear after completion
-                       miniters=update_interval) # Only update every 5%
-        else:
-            pbar = range(self.trial_steps)
-            update_interval = self.trial_steps # Dummy for rank > 0
+            pbar = tqdm(
+                total=self.trial_steps,
+                desc=f"Trial {trial.number}", 
+                leave=False, # Disappear after completion
+                miniters=update_interval
+            )
         
-        for step in pbar:
+        last_update_step = 0
+        for step in range(self.trial_steps):
             step_start = time.time()
             
             # Get batch
@@ -194,16 +193,21 @@ class OptunaWaveletDiffTrainer:
             step_time = time.time() - step_start
             self.tracker.add_step(loss.item(), step_time, total_norm)
             
-            # Update progress bar metrics only on interval (to prevent spam)
-            if self.fabric.is_global_zero:
+            # Update progress bar every 5% (to prevent spam)
+            if pbar is not None:
                 if step % update_interval == 0 or step == self.trial_steps - 1:
                     current_lr = scheduler.get_last_lr()[0]
-                    if hasattr(pbar, 'set_postfix'):
-                        pbar.set_postfix({
-                            'loss': f'{loss.item():.4f}',
-                            'lr': f'{current_lr:.2e}',
-                            'grad': f'{total_norm:.2f}'
-                        })
+                    pbar.update(step - last_update_step)
+                    pbar.set_postfix({
+                        'loss': f'{loss.item():.4f}',
+                        'lr': f'{current_lr:.2e}',
+                        'grad': f'{total_norm:.2f}'
+                    })
+                    last_update_step = step
+        
+        # Close progress bar
+        if pbar is not None:
+            pbar.close()
             
             # Report intermediate value for pruning (single-objective only)
             if not is_multi_objective and (step + 1) % self.eval_interval == 0:
