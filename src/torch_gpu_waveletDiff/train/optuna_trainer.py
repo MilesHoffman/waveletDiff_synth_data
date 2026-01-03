@@ -7,7 +7,7 @@ import optuna
 from optuna.trial import Trial
 from typing import Dict, Tuple
 import numpy as np
-from tqdm import tqdm
+from tqdm.auto import tqdm
 
 from ..optuna_config.search_space import WaveletDiffSearchSpace
 from ..optuna_config.objectives import MultiObjectiveTracker
