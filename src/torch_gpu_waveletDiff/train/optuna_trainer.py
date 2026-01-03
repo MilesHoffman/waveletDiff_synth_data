@@ -8,8 +8,8 @@ from optuna.trial import Trial
 from typing import Dict, Tuple
 import numpy as np
 
-from .optuna_config.search_space import WaveletDiffSearchSpace
-from .optuna_config.objectives import MultiObjectiveTracker
+from ..optuna_config.search_space import WaveletDiffSearchSpace
+from ..optuna_config.objectives import MultiObjectiveTracker
 
 
 class OptunaWaveletDiffTrainer:
