@@ -144,10 +144,8 @@ class OptunaWaveletDiffTrainer:
             
             pbar = tqdm(range(self.trial_steps), 
                        desc=f"Trial {trial.number}", 
-                       ncols=100,
                        leave=False,  # Disappear after completion
-                       miniters=update_interval, # Only update every 5%
-                       bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]')
+                       miniters=update_interval) # Only update every 5%
         else:
             pbar = range(self.trial_steps)
             update_interval = self.trial_steps # Dummy for rank > 0
@@ -200,12 +198,12 @@ class OptunaWaveletDiffTrainer:
             if self.fabric.is_global_zero:
                 if step % update_interval == 0 or step == self.trial_steps - 1:
                     current_lr = scheduler.get_last_lr()[0]
-                    if isinstance(pbar, tqdm):
+                    if hasattr(pbar, 'set_postfix'):
                         pbar.set_postfix({
                             'loss': f'{loss.item():.4f}',
                             'lr': f'{current_lr:.2e}',
                             'grad': f'{total_norm:.2f}'
-                        }, refresh=True)
+                        })
             
             # Report intermediate value for pruning (single-objective only)
             if not is_multi_objective and (step + 1) % self.eval_interval == 0:
