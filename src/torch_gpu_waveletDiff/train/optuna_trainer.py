@@ -176,7 +176,10 @@ class OptunaWaveletDiffTrainer:
             self.tracker.add_step(loss.item(), step_time, total_norm)
             
             # Report intermediate value for pruning
-            if (step + 1) % self.eval_interval == 0:
+            # Note: Pruning is NOT supported by Optuna for multi-objective studies
+            is_multi_objective = len(trial.study.directions) > 1
+            
+            if not is_multi_objective and (step + 1) % self.eval_interval == 0:
                 intermediate_loss = self.tracker.get_intermediate_loss(window=100)
                 trial.report(intermediate_loss, step)
                 
@@ -192,6 +195,15 @@ class OptunaWaveletDiffTrainer:
                     if self.fabric.is_global_zero:
                         print(f"\n⚠️ Trial {trial.number} pruned at step {step+1}")
                     raise optuna.TrialPruned()
+            elif is_multi_objective and (step + 1) % self.eval_interval == 0:
+                 # Just log for multi-objective (no pruning)
+                 if self.fabric.is_global_zero:
+                    intermediate_loss = self.tracker.get_intermediate_loss(window=100)
+                    current_lr = scheduler.get_last_lr()[0]
+                    pct_complete = ((step + 1) / self.trial_steps) * 100
+                    print(f"[Trial {trial.number} | Step {step+1:4d}/{self.trial_steps} | "
+                          f"{pct_complete:3.0f}%] MOO-Log loss: {intermediate_loss:.4f} | "
+                          f"lr: {current_lr:.2e} | grad_norm: {total_norm:.2f}")
             
             # Early termination checks
             if self.tracker.has_exploding_gradients(threshold=100.0):
