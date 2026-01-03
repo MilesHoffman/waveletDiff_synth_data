@@ -212,7 +212,7 @@ def init_model(fabric, datamodule, config,
     model.to(fabric.device)
 
     # Compile
-    if fabric.device.type == "cuda":
+    if fabric.device.type == "cuda" and compile_mode not in [None, "none", "False", False]:
         # COMPILE_MODE passed from argument
         if fabric.is_global_zero: 
             print(f"[Rank 0] Applying torch.compile(mode='{compile_mode}', fullgraph={compile_fullgraph})...")
@@ -224,6 +224,8 @@ def init_model(fabric, datamodule, config,
             model = torch.compile(model, mode=compile_mode, fullgraph=compile_fullgraph)
         except Exception as e:
             print(f"[WARNING] Compilation failed: {e}. Falling back to eager execution.")
+    elif fabric.is_global_zero:
+        print("[Rank 0] Skipping torch.compile (compile_mode is None/False)...")
 
     # Optimizer
     use_fused = fabric.device.type == "cuda"

@@ -32,7 +32,8 @@ class OptunaWaveletDiffTrainer:
         default_hyperparams: Dict,
         checkpoint_dir: str = "/content/drive/MyDrive/personal_drive/trading/optuna_trials",
         trial_steps: int = 2000,
-        eval_interval: int = 100
+        eval_interval: int = 100,
+        compile_mode: str = None
     ):
         """
         Initialize Optuna trainer.
@@ -55,6 +56,7 @@ class OptunaWaveletDiffTrainer:
         self.checkpoint_dir = checkpoint_dir
         self.trial_steps = trial_steps
         self.eval_interval = eval_interval
+        self.compile_mode = compile_mode
         
         self.search_space = WaveletDiffSearchSpace(tune_flags)
         self.default_hyperparams = default_hyperparams
@@ -115,7 +117,7 @@ class OptunaWaveletDiffTrainer:
             weight_decay=hp['weight_decay'],
             max_lr=hp['max_lr'],
             pct_start=hp['pct_start'],
-            compile_mode="default",
+            compile_mode=self.compile_mode,
             compile_fullgraph=False
         )
         
