@@ -198,7 +198,7 @@ class OptunaWaveletDiffTrainer:
             
             # Update progress bar metrics only on interval (to prevent spam)
             if self.fabric.is_global_zero:
-                 if step % update_interval == 0 or step == self.trial_steps - 1:
+                if step % update_interval == 0 or step == self.trial_steps - 1:
                     current_lr = scheduler.get_last_lr()[0]
                     if isinstance(pbar, tqdm):
                         pbar.set_postfix({
