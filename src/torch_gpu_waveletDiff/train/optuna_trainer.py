@@ -7,6 +7,7 @@ import optuna
 from optuna.trial import Trial
 from typing import Dict, Tuple
 import numpy as np
+from tqdm import tqdm
 
 from ..optuna_config.search_space import WaveletDiffSearchSpace
 from ..optuna_config.objectives import MultiObjectiveTracker
@@ -133,7 +134,19 @@ class OptunaWaveletDiffTrainer:
         model.train()
         train_iter = iter(train_loader)
         
-        for step in range(self.trial_steps):
+        # Check if multi-objective (for pruning logic)
+        is_multi_objective = len(trial.study.directions) > 1
+        
+        # Progress bar only on rank 0
+        if self.fabric.is_global_zero:
+            pbar = tqdm(range(self.trial_steps), 
+                       desc=f"Trial {trial.number}", 
+                       ncols=100,
+                       bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]')
+        else:
+            pbar = range(self.trial_steps)
+        
+        for step in pbar:
             step_start = time.time()
             
             # Get batch
@@ -177,35 +190,26 @@ class OptunaWaveletDiffTrainer:
             step_time = time.time() - step_start
             self.tracker.add_step(loss.item(), step_time, total_norm)
             
-            # Report intermediate value for pruning
-            # Note: Pruning is NOT supported by Optuna for multi-objective studies
-            is_multi_objective = len(trial.study.directions) > 1
+            # Update progress bar with current metrics
+            if self.fabric.is_global_zero and isinstance(pbar, tqdm):
+                current_lr = scheduler.get_last_lr()[0]
+                pbar.set_postfix({
+                    'loss': f'{loss.item():.4f}',
+                    'lr': f'{current_lr:.2e}',
+                    'grad': f'{total_norm:.2f}'
+                })
             
+            # Report intermediate value for pruning (single-objective only)
             if not is_multi_objective and (step + 1) % self.eval_interval == 0:
                 intermediate_loss = self.tracker.get_intermediate_loss(window=100)
                 trial.report(intermediate_loss, step)
-                
-                if self.fabric.is_global_zero:
-                    current_lr = scheduler.get_last_lr()[0]
-                    pct_complete = ((step + 1) / self.trial_steps) * 100
-                    print(f"[Trial {trial.number} | Step {step+1:4d}/{self.trial_steps} | "
-                          f"{pct_complete:3.0f}%] loss: {intermediate_loss:.4f} | "
-                          f"lr: {current_lr:.2e} | grad_norm: {total_norm:.2f}")
                 
                 # Check for pruning
                 if trial.should_prune():
                     if self.fabric.is_global_zero:
                         print(f"\n⚠️ Trial {trial.number} pruned at step {step+1}")
                     raise optuna.TrialPruned()
-            elif is_multi_objective and (step + 1) % self.eval_interval == 0:
-                 # Just log for multi-objective (no pruning)
-                 if self.fabric.is_global_zero:
-                    intermediate_loss = self.tracker.get_intermediate_loss(window=100)
-                    current_lr = scheduler.get_last_lr()[0]
-                    pct_complete = ((step + 1) / self.trial_steps) * 100
-                    print(f"[Trial {trial.number} | Step {step+1:4d}/{self.trial_steps} | "
-                          f"{pct_complete:3.0f}%] MOO-Log loss: {intermediate_loss:.4f} | "
-                          f"lr: {current_lr:.2e} | grad_norm: {total_norm:.2f}")
+            
             
             # Early termination checks
             if self.tracker.has_exploding_gradients(threshold=100.0):
