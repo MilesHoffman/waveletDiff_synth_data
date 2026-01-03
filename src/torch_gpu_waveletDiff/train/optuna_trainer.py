@@ -205,11 +205,9 @@ class OptunaWaveletDiffTrainer:
                     })
                     last_update_step = step
 
-            # Report intermediate value for pruning (Enabled for ALL modes)
-            if (step + 1) % self.eval_interval == 0:
-                # Use training loss as proxy for pruning in both SO and MOO
-                # In MOO, we can't report multiple values to trial.report() yet (Optuna limitation),
-                # so we stick to the primary objective (loss) for the "should I stop?" signal.
+            # Report intermediate value for pruning (Single-Objective ONLY)
+            # Optuna does NOT support trial.report() for multi-objective optimization.
+            if not is_multi_objective and (step + 1) % self.eval_interval == 0:
                 intermediate_loss = self.tracker.get_intermediate_loss(window=100)
                 trial.report(intermediate_loss, step)
                 
