@@ -199,20 +199,46 @@ def launch_dashboard(storage_url, dashboard_port, ngrok_token=None):
                   stderr=subprocess.DEVNULL, check=False)
     
     # Start dashboard in background
-    dashboard_process = subprocess.Popen(
-        ["optuna-dashboard", storage_url, "--port", str(dashboard_port), "--host", "127.0.0.1"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True
-    )
+    # Loop to find an available port if default is taken
+    max_retries = 10
+    final_port = dashboard_port
     
-    time.sleep(4) # Give it a moment to spin up
-    
-    # Check if it crashed immediately
-    if dashboard_process.poll() is not None:
-        stdout, stderr = dashboard_process.communicate()
-        print(f"❌ Dashboard failed to start (Return Code: {dashboard_process.returncode})")
-        print(f"   STDERR: {stderr}")
+    for i in range(max_retries):
+        current_port = dashboard_port + i
+        
+        # Kill anything on this specific port to be safe
+        subprocess.run(["fuser", "-k", f"{current_port}/tcp"], 
+                       stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL, check=False)
+        
+        print(f"🔄 Attempting to launch dashboard on port {current_port}...")
+        
+        dashboard_process = subprocess.Popen(
+            ["optuna-dashboard", storage_url, "--port", str(current_port), "--host", "127.0.0.1"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+        
+        time.sleep(3) # Give it a moment to spin up
+        
+        # Check if it crashed
+        if dashboard_process.poll() is None:
+            # It's alive!
+            final_port = current_port
+            print(f"✅ Dashboard successfully running on port {final_port}")
+            break
+        else:
+            # It crashed, check if it was a port error
+            stdout, stderr = dashboard_process.communicate()
+            if "Address already in use" in stderr:
+                print(f"⚠️ Port {current_port} is busy. Retrying...")
+            else:
+                # Fatal error unrelated to port
+                print(f"❌ Dashboard failed to start (Return Code: {dashboard_process.returncode})")
+                print(f"   STDERR: {stderr}")
+                return None, None
+    else:
+        print("❌ Could not find an open port after 10 retries.")
         return None, None
     
     public_url = None
@@ -222,7 +248,13 @@ def launch_dashboard(storage_url, dashboard_port, ngrok_token=None):
         try:
             from pyngrok import ngrok
             ngrok.set_auth_token(ngrok_token)
-            public_url = ngrok.connect(dashboard_port)
+            
+            # Kill existing tunnels to avoid "too many tunnels" error
+            tunnels = ngrok.get_tunnels()
+            for t in tunnels:
+                ngrok.disconnect(t.public_url)
+                
+            public_url = ngrok.connect(final_port)
             
             print("="*60)
             print("🎨 OPTUNA DASHBOARD ACTIVE")
@@ -232,7 +264,7 @@ def launch_dashboard(storage_url, dashboard_port, ngrok_token=None):
             print("\n Dashboard will remain active during optimization\n")
         except Exception as e:
             print(f"⚠️ Dashboard started locally but ngrok tunnel failed: {e}")
-            print(f"   Dashboard available at localhost:{dashboard_port}")
+            print(f"   Dashboard available at localhost:{final_port}")
             
     # Fallback: Check if running in Colab and offer proxy URL
     if not public_url:
@@ -242,10 +274,10 @@ def launch_dashboard(storage_url, dashboard_port, ngrok_token=None):
             print("🎨 OPTUNA DASHBOARD (Colab Native)")
             print("="*60)
             print(f"To view the dashboard, click the link below:")
-            output.serve_kernel_port_as_window(dashboard_port, path="/dashboard/")
+            output.serve_kernel_port_as_window(final_port, path="/dashboard/")
             print("="*60)
         except ImportError:
-            print(f"📊 Dashboard running at localhost:{dashboard_port}")
+            print(f"📊 Dashboard running at localhost:{final_port}")
             print("   (Use SSH tunneling or ngrok to access from outside)")
     
     return dashboard_process, public_url
