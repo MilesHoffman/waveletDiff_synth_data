@@ -139,12 +139,18 @@ class OptunaWaveletDiffTrainer:
         
         # Progress bar only on rank 0
         if self.fabric.is_global_zero:
+            # Update every 5% of steps
+            update_interval = max(1, int(self.trial_steps * 0.05))
+            
             pbar = tqdm(range(self.trial_steps), 
                        desc=f"Trial {trial.number}", 
                        ncols=100,
+                       leave=False,  # Disappear after completion
+                       miniters=update_interval, # Only update every 5%
                        bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]')
         else:
             pbar = range(self.trial_steps)
+            update_interval = self.trial_steps # Dummy for rank > 0
         
         for step in pbar:
             step_start = time.time()
@@ -190,14 +196,16 @@ class OptunaWaveletDiffTrainer:
             step_time = time.time() - step_start
             self.tracker.add_step(loss.item(), step_time, total_norm)
             
-            # Update progress bar with current metrics
-            if self.fabric.is_global_zero and isinstance(pbar, tqdm):
-                current_lr = scheduler.get_last_lr()[0]
-                pbar.set_postfix({
-                    'loss': f'{loss.item():.4f}',
-                    'lr': f'{current_lr:.2e}',
-                    'grad': f'{total_norm:.2f}'
-                })
+            # Update progress bar metrics only on interval (to prevent spam)
+            if self.fabric.is_global_zero:
+                 if step % update_interval == 0 or step == self.trial_steps - 1:
+                    current_lr = scheduler.get_last_lr()[0]
+                    if isinstance(pbar, tqdm):
+                        pbar.set_postfix({
+                            'loss': f'{loss.item():.4f}',
+                            'lr': f'{current_lr:.2e}',
+                            'grad': f'{total_norm:.2f}'
+                        }, refresh=True)
             
             # Report intermediate value for pruning (single-objective only)
             if not is_multi_objective and (step + 1) % self.eval_interval == 0:

@@ -225,9 +225,20 @@ def launch_dashboard(storage_url, dashboard_port, ngrok_token=None):
         except Exception as e:
             print(f"⚠️ Dashboard started locally but ngrok tunnel failed: {e}")
             print(f"   Dashboard available at localhost:{dashboard_port}")
-    else:
-        print(f"📊 Dashboard running at localhost:{dashboard_port}")
-        print("   💡 Tip: Set NGROK_AUTH_TOKEN for public URL")
+            
+    # Fallback: Check if running in Colab and offer proxy URL
+    if not public_url:
+        try:
+            from google.colab import output
+            print("="*60)
+            print("🎨 OPTUNA DASHBOARD (Colab Native)")
+            print("="*60)
+            print(f"To view the dashboard, click the link below:")
+            output.serve_kernel_port_as_window(dashboard_port, path="/dashboard/")
+            print("="*60)
+        except ImportError:
+            print(f"📊 Dashboard running at localhost:{dashboard_port}")
+            print("   (Use SSH tunneling or ngrok to access from outside)")
     
     return dashboard_process, public_url
 
