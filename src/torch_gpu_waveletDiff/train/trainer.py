@@ -402,7 +402,10 @@ def train_loop(fabric, model, optimizer, train_loader, config,
 
             # End of Epoch
             epoch_avg_loss = epoch_loss.item() / steps_per_epoch
-            if fabric.is_global_zero:
+            
+            # Log summary every 1% of total epochs (or every epoch if short run)
+            log_epoch_interval = max(1, int(num_epochs / 100))
+            if fabric.is_global_zero and ((epoch + 1) % log_epoch_interval == 0 or epoch == 0 or epoch == num_epochs - 1):
                 epoch_iterator.write(f"Epoch {epoch+1}/{num_epochs} complete | Avg Loss: {epoch_avg_loss:.4f}")
 
             # Epoch Checkpointing
