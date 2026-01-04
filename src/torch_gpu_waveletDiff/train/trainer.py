@@ -251,9 +251,13 @@ def init_model(fabric, datamodule, config,
 def train_loop(fabric, model, optimizer, train_loader, config,
                total_steps=15000, log_interval=None, save_interval=5000,
                checkpoint_dir="checkpoints", enable_profiler=False,
-               enable_grad_clipping=True):
+               enable_grad_clipping=True, enable_diagnostics=False):
     """
     Executes the training loop.
+    
+    Args:
+        enable_diagnostics: If True, logs per-level loss breakdown and gradient norms
+                           at each log_interval. Useful for debugging instability.
     """
     
     if log_interval is None:
@@ -337,10 +341,18 @@ def train_loop(fabric, model, optimizer, train_loader, config,
             with record_function("backward_pass"):
                 fabric.backward(loss)
 
+            # Compute gradient norm BEFORE clipping (for diagnostics)
+            grad_norm = None
+            if enable_diagnostics or enable_grad_clipping:
+                total_norm_sq = 0.0
+                for p in model.parameters():
+                    if p.grad is not None:
+                        total_norm_sq += p.grad.data.norm(2).item() ** 2
+                grad_norm = total_norm_sq ** 0.5
+
             # Optimization
             with record_function("optimizer_step"):
                 if enable_grad_clipping:
-                    # Get clip norm from config (default 1.0)
                     clip_norm = config['training'].get('grad_clip_norm', 1.0)
                     fabric.clip_gradients(model, optimizer, max_norm=clip_norm, error_if_nonfinite=False)
                 
@@ -348,13 +360,9 @@ def train_loop(fabric, model, optimizer, train_loader, config,
                 scheduler.step()
 
             # Logging Accumulation
-            # Unified efficient logging: Accumulate on device to prevent sync
-            # This is safe for both TPU (prevents graph break) and GPU (prevents CPU sync)
             running_loss += loss.detach()
 
             if (step + 1) % log_interval == 0 and not enable_profiler:
-                # Calculate Avg Loss
-                # Sync only once per interval
                 avg_loss = running_loss.item() / log_interval
                 running_loss.zero_()
 
@@ -364,10 +372,23 @@ def train_loop(fabric, model, optimizer, train_loader, config,
                 if fabric.is_global_zero:
                     current_lr = scheduler.get_last_lr()[0]
                     pct = ((step + 1) / total_steps) * 100
-                    # TQDM update
                     pbar.set_postfix({"loss": f"{avg_loss:.4f}", "lr": f"{current_lr:.2e}"})
-                    # Use standard print for logs to persist in notebook output cells
                     print(f"[Step {step+1:5d} | {pct:3.0f}%] loss: {avg_loss:.4f} | lr: {current_lr:.2e}")
+                    
+                    # Diagnostic logging: gradient norm and per-level losses
+                    if enable_diagnostics:
+                        print(f"  └─ grad_norm (pre-clip): {grad_norm:.4f}")
+                        
+                        # Compute per-level losses on current batch
+                        with torch.no_grad():
+                            x_t, noise = model.compute_forward_process(x_0, t)
+                            t_norm = t.float() / model.T
+                            prediction = model(x_t, t_norm)
+                            target = noise if model.prediction_target == "noise" else x_0
+                            
+                            level_losses = model.wavelet_loss_fn.get_level_losses(target, prediction)
+                            level_str = " | ".join([f"L{i}:{ll.item():.4f}" for i, ll in enumerate(level_losses)])
+                            print(f"  └─ level_losses: {level_str}")
 
             # Checkpointing
             if (step + 1) % save_interval == 0 and not enable_profiler:
