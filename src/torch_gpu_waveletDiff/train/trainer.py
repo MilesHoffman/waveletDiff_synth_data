@@ -318,7 +318,6 @@ def train_loop(fabric, model, optimizer, train_loader, config,
         os.makedirs(checkpoint_dir, exist_ok=True)
 
     with profiler_ctx as prof:
-    with profiler_ctx as prof:
         if fabric.is_global_zero:
             desc = "PROFILING" if enable_profiler else f"Training {num_epochs} Epochs"
             epoch_iterator = tqdm(range(effective_epochs), desc=desc, unit="epoch")
