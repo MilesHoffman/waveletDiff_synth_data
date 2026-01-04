@@ -294,7 +294,7 @@ def run_optimization(study, fabric, base_config, repo_dir, data_path,
                     trial_steps, eval_interval, compile_mode,
                     n_trials, timeout_hours, use_multi_objective,
                     enable_dashboard, dashboard_port, ngrok_token, storage_url,
-                    min_params=None, max_params=None):
+                    min_params=None, max_params=None, param_ranges=None):
     """
     Run Optuna optimization with optional live dashboard.
     
@@ -319,6 +319,7 @@ def run_optimization(study, fabric, base_config, repo_dir, data_path,
         storage_url: Storage URL for dashboard
         min_params: Minimum parameter count (int) or None
         max_params: Maximum parameter count (int) or None
+        param_ranges: Dict of custom hyperparameter ranges
     
     Returns:
         dict: Summary of optimization results
@@ -350,7 +351,8 @@ def run_optimization(study, fabric, base_config, repo_dir, data_path,
         eval_interval=eval_interval,
         compile_mode=compile_mode,
         min_params=min_params,
-        max_params=max_params
+        max_params=max_params,
+        param_ranges=param_ranges
     )
     
     # Select objective function

@@ -37,7 +37,8 @@ class OptunaWaveletDiffTrainer:
         eval_interval: int = 100,
         compile_mode: str = None,
         min_params: int = None,
-        max_params: int = None
+        max_params: int = None,
+        param_ranges: Dict = None
     ):
         """
         Initialize Optuna trainer.
@@ -52,6 +53,10 @@ class OptunaWaveletDiffTrainer:
             checkpoint_dir: Directory for trial checkpoints
             trial_steps: Number of training steps per trial
             eval_interval: Steps between reporting intermediate values
+            compile_mode: Compilation mode
+            min_params: Minimum parameter count constraint
+            max_params: Maximum parameter count constraint
+            param_ranges: Optional custom search ranges
         """
         self.fabric = fabric
         self.config_base = config_base
@@ -64,7 +69,7 @@ class OptunaWaveletDiffTrainer:
         self.min_params = min_params
         self.max_params = max_params
         
-        self.search_space = WaveletDiffSearchSpace(tune_flags)
+        self.search_space = WaveletDiffSearchSpace(tune_flags, param_ranges)
         self.default_hyperparams = default_hyperparams
         self.tracker = MultiObjectiveTracker()
         
