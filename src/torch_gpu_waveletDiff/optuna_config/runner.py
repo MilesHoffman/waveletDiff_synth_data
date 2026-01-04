@@ -194,24 +194,21 @@ def launch_dashboard(storage_url, dashboard_port, ngrok_token=None):
     Returns:
         tuple: (dashboard_process, public_url or None)
     """
-    # Kill any existing dashboard
-    subprocess.run(["pkill", "-f", "optuna-dashboard"], 
-                  stderr=subprocess.DEVNULL, check=False)
-    
     # Start dashboard in background
     # Loop to find an available port if default is taken
     max_retries = 10
     final_port = dashboard_port
     
+    # 1. Kill any existing optuna-dashboard instances first (safe cleanup)
+    subprocess.run(["pkill", "-f", "optuna-dashboard"], 
+                  stderr=subprocess.DEVNULL, check=False)
+    
     for i in range(max_retries):
         current_port = dashboard_port + i
         
-        # Kill anything on this specific port to be safe
-        subprocess.run(["fuser", "-k", f"{current_port}/tcp"], 
-                       stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL, check=False)
-        
         print(f"🔄 Attempting to launch dashboard on port {current_port}...")
         
+        # Launch process
         dashboard_process = subprocess.Popen(
             ["optuna-dashboard", storage_url, "--port", str(current_port), "--host", "127.0.0.1"],
             stdout=subprocess.PIPE,
@@ -221,22 +218,31 @@ def launch_dashboard(storage_url, dashboard_port, ngrok_token=None):
         
         time.sleep(3) # Give it a moment to spin up
         
-        # Check if it crashed
+        # Check if it's still running
         if dashboard_process.poll() is None:
             # It's alive!
             final_port = current_port
             print(f"✅ Dashboard successfully running on port {final_port}")
             break
         else:
-            # It crashed, check if it was a port error
+            # It crashed. Read error.
             stdout, stderr = dashboard_process.communicate()
+            
+            # Clean up just in case
+            try:
+                dashboard_process.kill()
+            except:
+                pass
+                
             if "Address already in use" in stderr:
-                print(f"⚠️ Port {current_port} is busy. Retrying...")
+                print(f"⚠️ Port {current_port} is busy. Retrying next port...")
+                continue # Try next port
             else:
-                # Fatal error unrelated to port
+                # Fatal error unrelated to port (e.g. database lock, missing lib)
                 print(f"❌ Dashboard failed to start (Return Code: {dashboard_process.returncode})")
                 print(f"   STDERR: {stderr}")
                 return None, None
+                
     else:
         print("❌ Could not find an open port after 10 retries.")
         return None, None
