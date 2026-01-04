@@ -249,16 +249,21 @@ def init_model(fabric, datamodule, config,
     return model, optimizer, config
 
 def train_loop(fabric, model, optimizer, train_loader, config,
-               total_steps=15000, log_interval=None, save_interval=5000,
+               num_epochs=100, log_interval=None, save_epoch_interval=10,
                checkpoint_dir="checkpoints", enable_profiler=False,
                enable_grad_clipping=True, enable_diagnostics=False):
     """
-    Executes the training loop.
+    Executes the epoch-based training loop (mirrors source repo).
     
     Args:
-        enable_diagnostics: If True, logs per-level loss breakdown and gradient norms
-                           at each log_interval. Useful for debugging instability.
+        num_epochs: Number of full passes through the dataset.
+        log_interval: Steps between logging (default: 1% of total steps).
+        save_epoch_interval: Epochs between checkpoint saves.
+        enable_diagnostics: If True, logs per-level loss breakdown and gradient norms.
     """
+    
+    steps_per_epoch = len(train_loader)
+    total_steps = num_epochs * steps_per_epoch
     
     if log_interval is None:
         log_interval = max(1, int(total_steps * 0.01))
@@ -267,15 +272,14 @@ def train_loop(fabric, model, optimizer, train_loader, config,
     PROFILER_WARMUP = 25
     PROFILER_ACTIVE = 5
 
-    effective_steps = total_steps
     if enable_profiler:
-        effective_steps = PROFILER_WARMUP + PROFILER_ACTIVE + 2
+        effective_epochs = 1
         if fabric.is_global_zero:
-            print(f"PROFILER ENABLED: Overriding total steps to {effective_steps}")
+            print(f"PROFILER ENABLED: Overriding to {effective_epochs} epoch(s)")
+    else:
+        effective_epochs = num_epochs
 
-    # Scheduler
-    # Scheduler
-    # Use max_lr from config if available, else default to lr * 4
+    # Scheduler (OneCycleLR needs total_steps)
     max_lr = config['optimizer'].get('max_lr')
     if max_lr is None:
         max_lr = config['optimizer']['lr'] * 4
@@ -289,19 +293,12 @@ def train_loop(fabric, model, optimizer, train_loader, config,
         pct_start=pct_start
     )
 
-    train_iter = iter(train_loader)
-
     if fabric.is_global_zero:
-        desc = "PROFILING" if enable_profiler else f"{fabric.device.type.upper()} Training"
-        pbar = tqdm(range(effective_steps), desc=desc)
-    else:
-        pbar = range(effective_steps)
+        print(f"Training for {num_epochs} epochs ({steps_per_epoch} steps/epoch, {total_steps} total steps)")
 
     model.train()
-    # Logging State
-    # Logging State
-    # Unified efficient logging for all devices
     running_loss = torch.zeros((), device=fabric.device)
+    global_step = 0
 
     # Profiler Context
     if enable_profiler:
@@ -321,102 +318,107 @@ def train_loop(fabric, model, optimizer, train_loader, config,
         os.makedirs(checkpoint_dir, exist_ok=True)
 
     with profiler_ctx as prof:
-        for step in pbar:
-            # Data Loading
-            with record_function("data_loading"):
-                try:
-                    batch = next(train_iter)
-                except StopIteration:
-                    train_iter = iter(train_loader)
-                    batch = next(train_iter)
+        for epoch in range(effective_epochs):
+            epoch_loss = torch.zeros((), device=fabric.device)
+            
+            if fabric.is_global_zero:
+                desc = "PROFILING" if enable_profiler else f"Epoch {epoch+1}/{num_epochs}"
+                pbar = tqdm(enumerate(train_loader), total=steps_per_epoch, desc=desc)
+            else:
+                pbar = enumerate(train_loader)
+
+            for batch_idx, batch in pbar:
                 x_0 = batch[0]
 
-            # Forward & Loss
-            optimizer.zero_grad(set_to_none=True)
-            with record_function("forward_pass"):
-                t = torch.randint(0, model.T, (x_0.size(0),), device=fabric.device)
-                loss = model.compute_loss(x_0, t)
+                # Forward & Loss
+                optimizer.zero_grad(set_to_none=True)
+                with record_function("forward_pass"):
+                    t = torch.randint(0, model.T, (x_0.size(0),), device=fabric.device)
+                    loss = model.compute_loss(x_0, t)
 
-            # Backward
-            with record_function("backward_pass"):
-                fabric.backward(loss)
+                # Backward
+                with record_function("backward_pass"):
+                    fabric.backward(loss)
 
-            # Compute gradient norm ONLY for diagnostics (not needed for clipping - Fabric handles that)
-            grad_norm = None
-            if enable_diagnostics:
-                total_norm_sq = 0.0
-                for p in model.parameters():
-                    if p.grad is not None:
-                        total_norm_sq += p.grad.data.norm(2).item() ** 2
-                grad_norm = total_norm_sq ** 0.5
+                # Compute gradient norm for diagnostics
+                grad_norm = None
+                if enable_diagnostics:
+                    total_norm_sq = 0.0
+                    for p in model.parameters():
+                        if p.grad is not None:
+                            total_norm_sq += p.grad.data.norm(2).item() ** 2
+                    grad_norm = total_norm_sq ** 0.5
 
-            # Optimization
-            with record_function("optimizer_step"):
-                if enable_grad_clipping:
-                    clip_norm = config['training'].get('grad_clip_norm', 1.0)
-                    fabric.clip_gradients(model, optimizer, max_norm=clip_norm, error_if_nonfinite=False)
-                
-                optimizer.step()
-                scheduler.step()
-
-            # Logging Accumulation
-            running_loss += loss.detach()
-
-            if (step + 1) % log_interval == 0 and not enable_profiler:
-                avg_loss = running_loss.item() / log_interval
-                running_loss.zero_()
-
-                if fabric.world_size > 1:
-                    avg_loss = fabric.all_reduce(avg_loss, reduce_op="mean")
-
-                if fabric.is_global_zero:
-                    current_lr = scheduler.get_last_lr()[0]
-                    pct = ((step + 1) / total_steps) * 100
-                    pbar.set_postfix({"loss": f"{avg_loss:.4f}", "lr": f"{current_lr:.2e}"})
-                    print(f"[Step {step+1:5d} | {pct:3.0f}%] loss: {avg_loss:.4f} | lr: {current_lr:.2e}")
+                # Optimization
+                with record_function("optimizer_step"):
+                    if enable_grad_clipping:
+                        clip_norm = config['training'].get('grad_clip_norm', 1.0)
+                        fabric.clip_gradients(model, optimizer, max_norm=clip_norm, error_if_nonfinite=False)
                     
-                    # Diagnostic logging: gradient norm and per-level losses
-                    if enable_diagnostics:
-                        print(f"  └─ grad_norm (pre-clip): {grad_norm:.4f}")
-                        
-                        # Compute per-level losses on current batch
-                        # Use inference_mode and fresh tensors to avoid Dynamo tracing issues
-                        with torch.inference_mode():
-                            # Create fresh timesteps to avoid Dynamo shape confusion
-                            t_diag = torch.randint(0, model.T, (x_0.size(0),), device=fabric.device, dtype=torch.long)
-                            x_t_diag, noise_diag = model.compute_forward_process(x_0.detach(), t_diag)
-                            t_norm_diag = t_diag.float() / model.T
-                            prediction_diag = model(x_t_diag, t_norm_diag)
-                            target_diag = noise_diag if model.prediction_target == "noise" else x_0.detach()
-                            
-                            level_losses = model.wavelet_loss_fn.get_level_losses(target_diag, prediction_diag)
-                            level_str = " | ".join([f"L{i}:{ll.item():.4f}" for i, ll in enumerate(level_losses)])
-                            print(f"  └─ level_losses: {level_str}")
+                    optimizer.step()
+                    scheduler.step()
 
-            # Checkpointing
-            if (step + 1) % save_interval == 0 and not enable_profiler:
-                save_path = os.path.join(checkpoint_dir, f"step_{step+1}.ckpt")
-                state = {"model": model.state_dict(), "optimizer": optimizer.state_dict()}
+                # Logging Accumulation
+                running_loss += loss.detach()
+                epoch_loss += loss.detach()
+                global_step += 1
+
+                if global_step % log_interval == 0 and not enable_profiler:
+                    avg_loss = running_loss.item() / log_interval
+                    running_loss.zero_()
+
+                    if fabric.world_size > 1:
+                        avg_loss = fabric.all_reduce(avg_loss, reduce_op="mean")
+
+                    if fabric.is_global_zero:
+                        current_lr = scheduler.get_last_lr()[0]
+                        pct = (global_step / total_steps) * 100
+                        pbar.set_postfix({"loss": f"{avg_loss:.4f}", "lr": f"{current_lr:.2e}"})
+                        print(f"[Epoch {epoch+1} | Step {global_step:5d} | {pct:3.0f}%] loss: {avg_loss:.4f} | lr: {current_lr:.2e}")
+                        
+                        if enable_diagnostics:
+                            print(f"  └─ grad_norm (pre-clip): {grad_norm:.4f}")
+                            
+                            with torch.inference_mode():
+                                t_diag = torch.randint(0, model.T, (x_0.size(0),), device=fabric.device, dtype=torch.long)
+                                x_t_diag, noise_diag = model.compute_forward_process(x_0.detach(), t_diag)
+                                t_norm_diag = t_diag.float() / model.T
+                                prediction_diag = model(x_t_diag, t_norm_diag)
+                                target_diag = noise_diag if model.prediction_target == "noise" else x_0.detach()
+                                
+                                level_losses = model.wavelet_loss_fn.get_level_losses(target_diag, prediction_diag)
+                                level_str = " | ".join([f"L{i}:{ll.item():.4f}" for i, ll in enumerate(level_losses)])
+                                print(f"  └─ level_losses: {level_str}")
+
+                if enable_profiler:
+                    prof.step()
+                    if global_step >= PROFILER_WARMUP + PROFILER_ACTIVE + 2:
+                        break
+
+            # End of Epoch
+            epoch_avg_loss = epoch_loss.item() / steps_per_epoch
+            if fabric.is_global_zero:
+                print(f"Epoch {epoch+1}/{num_epochs} complete | Avg Loss: {epoch_avg_loss:.4f}")
+
+            # Epoch Checkpointing
+            if (epoch + 1) % save_epoch_interval == 0 and not enable_profiler:
+                save_path = os.path.join(checkpoint_dir, f"epoch_{epoch+1}.ckpt")
+                state = {"model": model.state_dict(), "optimizer": optimizer.state_dict(), "epoch": epoch + 1}
                 fabric.save(save_path, state)
                 
                 if fabric.is_global_zero:
-                    print(f"\nSaved checkpoint to {save_path}", flush=True)
-                    # Save Config
+                    print(f"Saved checkpoint to {save_path}", flush=True)
                     config_path = os.path.join(checkpoint_dir, "config.json")
                     if not os.path.exists(config_path):
                         with open(config_path, 'w') as f:
                             json.dump(config, f, indent=4)
                         print(f"Saved configuration to {config_path}")
 
-            if enable_profiler:
-                prof.step()
-
     # Profiling Report
     if enable_profiler and fabric.is_global_zero:
         print("\n" + "="*80)
         print("PROFILING REPORT")
         print("="*80)
-        # Sort by self CPU time to see what's eating the main process
         print(prof.key_averages().table(sort_by="self_cpu_time_total", row_limit=20))
         if fabric.device.type == "cuda":
             print("\nCUDA Time:")
@@ -426,7 +428,7 @@ def train_loop(fabric, model, optimizer, train_loader, config,
     # Final Save
     if not enable_profiler:
         last_save_path = os.path.join(checkpoint_dir, "last.ckpt")
-        state = {"model": model.state_dict(), "optimizer": optimizer.state_dict()}
+        state = {"model": model.state_dict(), "optimizer": optimizer.state_dict(), "epoch": num_epochs}
         fabric.save(last_save_path, state)
         if fabric.is_global_zero:
              print(f"\nSaved final checkpoint to {last_save_path}", flush=True)
@@ -435,3 +437,4 @@ def train_loop(fabric, model, optimizer, train_loader, config,
                   json.dump(config, f, indent=4)
 
     print("Training/Profiling Finished.")
+
