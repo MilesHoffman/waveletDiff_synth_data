@@ -192,6 +192,8 @@ class WaveletBalancedLoss:
     
     def _compute_weighted_loss(self, target: torch.Tensor, prediction: torch.Tensor) -> torch.Tensor:
         """Compute weighted loss across levels using vectorized operations."""
+        batch_size, total_coeffs_per_feature, num_features = target.shape
+        
         # Initialize total_loss as tensor for graph compatibility
         total_loss = torch.tensor(0.0, device=target.device, dtype=target.dtype)
         
@@ -208,7 +210,8 @@ class WaveletBalancedLoss:
             level_loss = F.mse_loss(level_target, level_pred)
             total_loss = total_loss + weight * level_loss
         
-        return total_loss
+        # Match source repo: average across features
+        return total_loss / num_features
     
     
     def get_level_losses(self, target: torch.Tensor, prediction: torch.Tensor) -> List[torch.Tensor]:

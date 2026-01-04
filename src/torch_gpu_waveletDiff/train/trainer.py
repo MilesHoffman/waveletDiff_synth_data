@@ -372,7 +372,7 @@ def train_loop(fabric, model, optimizer, train_loader, config,
                 epoch_iterator.set_postfix({"loss": f"{epoch_avg_loss:.4f}", "lr": f"{current_lr:.2e}"})
             
             # Log epoch summary at specified interval
-            if fabric.is_global_zero and ((epoch + 1) % epoch_log_interval == 0 or epoch == 0 or epoch == num_epochs - 1):
+            if fabric.is_global_zero and ((epoch + 1) % epoch_log_interval == 0):
                 epoch_iterator.write(f"Epoch {epoch+1}/{num_epochs} | Loss: {epoch_avg_loss:.4f} | LR: {current_lr:.2e}")
                 
                 if enable_diagnostics:
