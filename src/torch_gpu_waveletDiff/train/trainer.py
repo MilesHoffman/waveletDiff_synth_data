@@ -24,11 +24,10 @@ torch._logging.set_logs(inductor=logging.ERROR, dynamo=logging.ERROR)
 
 # Delayed imports to allow sys.path setup in notebook
 # These imports will be done inside functions or we assume sys.path is already set when this module is imported.
-# To be safe and cleaner, we'll put them at top level but assume user runs setup cell first.
 try:
-    from data.loaders import create_sliding_windows
-    from data.module import WaveletTimeSeriesDataModule
-    from models.transformer import WaveletDiffusionTransformer
+    from src.copied_waveletDiff.src.data.loaders import create_sliding_windows
+    from src.copied_waveletDiff.src.data.module import WaveletTimeSeriesDataModule
+    from src.copied_waveletDiff.src.models.transformer import WaveletDiffusionTransformer
 except ImportError:
     # This might happen if imported before sys.path is set. 
     # We will handle it by re-importing inside functions if needed, 
@@ -69,24 +68,8 @@ def get_dataloaders(fabric, repo_dir, dataset_name, seq_len, batch_size, wavelet
     """
     Loads data and creates Fabric-optimized DataLoaders.
     """
-    # Re-import inside to be safe and handle sys.path dynamically
-    try:
-        from data.loaders import create_sliding_windows
-        from data.module import WaveletTimeSeriesDataModule
-    except ImportError:
-        # If REPO_DIR/src isn't in path, add it
-        src_path = os.path.join(repo_dir, "src")
-        if os.path.exists(src_path) and src_path not in sys.path:
-             sys.path.append(src_path)
-             
-        # Try importing from src package as fallback
-        try:
-             from src.data.loaders import create_sliding_windows
-             from src.data.module import WaveletTimeSeriesDataModule
-        except ImportError:
-             # Final attempt: maybe just needed src in path for original import
-             from data.loaders import create_sliding_windows
-             from data.module import WaveletTimeSeriesDataModule
+    from src.copied_waveletDiff.src.data.loaders import create_sliding_windows
+    from src.copied_waveletDiff.src.data.module import WaveletTimeSeriesDataModule
 
     if os.path.isabs(data_path):
         stocks_path = data_path
@@ -167,30 +150,20 @@ def init_model(fabric, datamodule, config,
     Initializes the WaveletDiffusionTransformer model and optimizer.
     """
     import importlib
-    
-    # Ensure sys.path captures module locations
-    # We assume standard structure if imports fail
-    try:
-        import models.transformer
-    except ImportError:
-        # If we are in torch_gpu_waveletDiff/train, we need to go up two levels to find 'models'
-        # But commonly we just need to add the repo root/src
-        pass 
-
-    import models.transformer
-    import models.wavelet_losses
-    import models.layers
-    import models.attention
+    import src.copied_waveletDiff.src.models.transformer as models_transformer
+    import src.copied_waveletDiff.src.models.wavelet_losses as models_wavelet_losses
+    import src.copied_waveletDiff.src.models.layers as models_layers
+    import src.copied_waveletDiff.src.models.attention as models_attention
     
     # Force reload to pick up any code changes (critical for interactive debugging)
     if fabric.is_global_zero:
         print("[Rank 0] Reloading model modules to ensure latest code is used...")
-    importlib.reload(models.layers)
-    importlib.reload(models.attention)
-    importlib.reload(models.wavelet_losses)
-    importlib.reload(models.transformer)
+    importlib.reload(models_layers)
+    importlib.reload(models_attention)
+    importlib.reload(models_wavelet_losses)
+    importlib.reload(models_transformer)
     
-    from models.transformer import WaveletDiffusionTransformer
+    from src.copied_waveletDiff.src.models.transformer import WaveletDiffusionTransformer
 
     # Update Config with Model Hyperparams
     # Ensure nested dicts exist
