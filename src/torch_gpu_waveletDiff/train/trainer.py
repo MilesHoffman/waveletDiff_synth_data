@@ -249,7 +249,7 @@ def init_model(fabric, datamodule, config,
     return model, optimizer, config
 
 def train_loop(fabric, model, optimizer, train_loader, config,
-               num_epochs=100, log_interval=None, save_epoch_interval=10,
+               num_epochs=100, epoch_log_interval=1, save_epoch_interval=10,
                checkpoint_dir="checkpoints", enable_profiler=False,
                enable_grad_clipping=True, enable_diagnostics=False):
     """
@@ -257,16 +257,13 @@ def train_loop(fabric, model, optimizer, train_loader, config,
     
     Args:
         num_epochs: Number of full passes through the dataset.
-        log_interval: Steps between logging (default: 1% of total steps).
+        epoch_log_interval: Epochs between logging (default: 1 = every epoch).
         save_epoch_interval: Epochs between checkpoint saves.
         enable_diagnostics: If True, logs per-level loss breakdown and gradient norms.
     """
     
     steps_per_epoch = len(train_loader)
     total_steps = num_epochs * steps_per_epoch
-    
-    if log_interval is None:
-        log_interval = max(1, int(total_steps * 0.01))
 
     # Profiler settings
     PROFILER_WARMUP = 25
@@ -297,7 +294,6 @@ def train_loop(fabric, model, optimizer, train_loader, config,
         print(f"Training for {num_epochs} epochs ({steps_per_epoch} steps/epoch, {total_steps} total steps)")
 
     model.train()
-    running_loss = torch.zeros((), device=fabric.device)
     global_step = 0
 
     # Profiler Context
@@ -359,41 +355,8 @@ def train_loop(fabric, model, optimizer, train_loader, config,
                     optimizer.step()
                     scheduler.step()
 
-                # Logging Accumulation
-                running_loss += loss.detach()
                 epoch_loss += loss.detach()
                 global_step += 1
-
-                if global_step % log_interval == 0 and not enable_profiler:
-                    avg_loss = running_loss.item() / log_interval
-                    running_loss.zero_()
-
-                    if fabric.world_size > 1:
-                        avg_loss = fabric.all_reduce(avg_loss, reduce_op="mean")
-
-
-                    if fabric.is_global_zero:
-                        current_lr = scheduler.get_last_lr()[0]
-                        pct = (global_step / total_steps) * 100
-                        # Update the main epoch progress bar with current stats
-                        epoch_iterator.set_postfix({"loss": f"{avg_loss:.4f}", "lr": f"{current_lr:.2e}"})
-                        
-                        # Use epoch_iterator.write to avoid breaking the progress bar visual
-                        epoch_iterator.write(f"[Epoch {epoch+1} | Step {global_step:5d} | {pct:3.0f}%] loss: {avg_loss:.4f} | lr: {current_lr:.2e}")
-                        
-                        if enable_diagnostics:
-                            epoch_iterator.write(f"  └─ grad_norm (pre-clip): {grad_norm:.4f}")
-                            
-                            with torch.inference_mode():
-                                t_diag = torch.randint(0, model.T, (x_0.size(0),), device=fabric.device, dtype=torch.long)
-                                x_t_diag, noise_diag = model.compute_forward_process(x_0.detach(), t_diag)
-                                t_norm_diag = t_diag.float() / model.T
-                                prediction_diag = model(x_t_diag, t_norm_diag)
-                                target_diag = noise_diag if model.prediction_target == "noise" else x_0.detach()
-                                
-                                level_losses = model.wavelet_loss_fn.get_level_losses(target_diag, prediction_diag)
-                                level_str = " | ".join([f"L{i}:{ll.item():.4f}" for i, ll in enumerate(level_losses)])
-                                epoch_iterator.write(f"  └─ level_losses: {level_str}")
 
                 if enable_profiler:
                     prof.step()
@@ -402,11 +365,31 @@ def train_loop(fabric, model, optimizer, train_loader, config,
 
             # End of Epoch
             epoch_avg_loss = epoch_loss.item() / steps_per_epoch
+            current_lr = scheduler.get_last_lr()[0]
             
-            # Log summary every 1% of total epochs (or every epoch if short run)
-            log_epoch_interval = max(1, int(num_epochs / 100))
-            if fabric.is_global_zero and ((epoch + 1) % log_epoch_interval == 0 or epoch == 0 or epoch == num_epochs - 1):
-                epoch_iterator.write(f"Epoch {epoch+1}/{num_epochs} complete | Avg Loss: {epoch_avg_loss:.4f}")
+            # Update progress bar with latest metrics
+            if fabric.is_global_zero:
+                epoch_iterator.set_postfix({"loss": f"{epoch_avg_loss:.4f}", "lr": f"{current_lr:.2e}"})
+            
+            # Log epoch summary at specified interval
+            if fabric.is_global_zero and ((epoch + 1) % epoch_log_interval == 0 or epoch == 0 or epoch == num_epochs - 1):
+                epoch_iterator.write(f"Epoch {epoch+1}/{num_epochs} | Loss: {epoch_avg_loss:.4f} | LR: {current_lr:.2e}")
+                
+                if enable_diagnostics:
+                    # Compute gradient norm from the last batch
+                    if grad_norm is not None:
+                        epoch_iterator.write(f"  └─ grad_norm (pre-clip): {grad_norm:.4f}")
+                    
+                    with torch.inference_mode():
+                        t_diag = torch.randint(0, model.T, (x_0.size(0),), device=fabric.device, dtype=torch.long)
+                        x_t_diag, noise_diag = model.compute_forward_process(x_0.detach(), t_diag)
+                        t_norm_diag = t_diag.float() / model.T
+                        prediction_diag = model(x_t_diag, t_norm_diag)
+                        target_diag = noise_diag if model.prediction_target == "noise" else x_0.detach()
+                        
+                        level_losses = model.wavelet_loss_fn.get_level_losses(target_diag, prediction_diag)
+                        level_str = " | ".join([f"L{i}:{ll.item():.4f}" for i, ll in enumerate(level_losses)])
+                        epoch_iterator.write(f"  └─ level_losses: {level_str}")
 
             # Epoch Checkpointing
             if (epoch + 1) % save_epoch_interval == 0 and not enable_profiler:
