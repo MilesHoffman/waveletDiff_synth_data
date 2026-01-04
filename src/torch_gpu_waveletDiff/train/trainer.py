@@ -318,16 +318,18 @@ def train_loop(fabric, model, optimizer, train_loader, config,
         os.makedirs(checkpoint_dir, exist_ok=True)
 
     with profiler_ctx as prof:
-        for epoch in range(effective_epochs):
+    with profiler_ctx as prof:
+        if fabric.is_global_zero:
+            desc = "PROFILING" if enable_profiler else f"Training {num_epochs} Epochs"
+            epoch_iterator = tqdm(range(effective_epochs), desc=desc, unit="epoch")
+        else:
+            epoch_iterator = range(effective_epochs)
+
+        for epoch in epoch_iterator:
             epoch_loss = torch.zeros((), device=fabric.device)
             
-            if fabric.is_global_zero:
-                desc = "PROFILING" if enable_profiler else f"Epoch {epoch+1}/{num_epochs}"
-                pbar = tqdm(enumerate(train_loader), total=steps_per_epoch, desc=desc)
-            else:
-                pbar = enumerate(train_loader)
-
-            for batch_idx, batch in pbar:
+            # Inner loop: simple enumeration, no progress bar
+            for batch_idx, batch in enumerate(train_loader):
                 x_0 = batch[0]
 
                 # Forward & Loss
@@ -370,14 +372,18 @@ def train_loop(fabric, model, optimizer, train_loader, config,
                     if fabric.world_size > 1:
                         avg_loss = fabric.all_reduce(avg_loss, reduce_op="mean")
 
+
                     if fabric.is_global_zero:
                         current_lr = scheduler.get_last_lr()[0]
                         pct = (global_step / total_steps) * 100
-                        pbar.set_postfix({"loss": f"{avg_loss:.4f}", "lr": f"{current_lr:.2e}"})
-                        print(f"[Epoch {epoch+1} | Step {global_step:5d} | {pct:3.0f}%] loss: {avg_loss:.4f} | lr: {current_lr:.2e}")
+                        # Update the main epoch progress bar with current stats
+                        epoch_iterator.set_postfix({"loss": f"{avg_loss:.4f}", "lr": f"{current_lr:.2e}"})
+                        
+                        # Use epoch_iterator.write to avoid breaking the progress bar visual
+                        epoch_iterator.write(f"[Epoch {epoch+1} | Step {global_step:5d} | {pct:3.0f}%] loss: {avg_loss:.4f} | lr: {current_lr:.2e}")
                         
                         if enable_diagnostics:
-                            print(f"  └─ grad_norm (pre-clip): {grad_norm:.4f}")
+                            epoch_iterator.write(f"  └─ grad_norm (pre-clip): {grad_norm:.4f}")
                             
                             with torch.inference_mode():
                                 t_diag = torch.randint(0, model.T, (x_0.size(0),), device=fabric.device, dtype=torch.long)
@@ -388,7 +394,7 @@ def train_loop(fabric, model, optimizer, train_loader, config,
                                 
                                 level_losses = model.wavelet_loss_fn.get_level_losses(target_diag, prediction_diag)
                                 level_str = " | ".join([f"L{i}:{ll.item():.4f}" for i, ll in enumerate(level_losses)])
-                                print(f"  └─ level_losses: {level_str}")
+                                epoch_iterator.write(f"  └─ level_losses: {level_str}")
 
                 if enable_profiler:
                     prof.step()
@@ -398,7 +404,7 @@ def train_loop(fabric, model, optimizer, train_loader, config,
             # End of Epoch
             epoch_avg_loss = epoch_loss.item() / steps_per_epoch
             if fabric.is_global_zero:
-                print(f"Epoch {epoch+1}/{num_epochs} complete | Avg Loss: {epoch_avg_loss:.4f}")
+                epoch_iterator.write(f"Epoch {epoch+1}/{num_epochs} complete | Avg Loss: {epoch_avg_loss:.4f}")
 
             # Epoch Checkpointing
             if (epoch + 1) % save_epoch_interval == 0 and not enable_profiler:
@@ -407,12 +413,12 @@ def train_loop(fabric, model, optimizer, train_loader, config,
                 fabric.save(save_path, state)
                 
                 if fabric.is_global_zero:
-                    print(f"Saved checkpoint to {save_path}", flush=True)
+                    epoch_iterator.write(f"Saved checkpoint to {save_path}")
                     config_path = os.path.join(checkpoint_dir, "config.json")
                     if not os.path.exists(config_path):
                         with open(config_path, 'w') as f:
                             json.dump(config, f, indent=4)
-                        print(f"Saved configuration to {config_path}")
+                        epoch_iterator.write(f"Saved configuration to {config_path}")
 
     # Profiling Report
     if enable_profiler and fabric.is_global_zero:
