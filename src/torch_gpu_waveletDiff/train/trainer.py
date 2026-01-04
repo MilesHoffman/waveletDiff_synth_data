@@ -380,13 +380,16 @@ def train_loop(fabric, model, optimizer, train_loader, config,
                         print(f"  └─ grad_norm (pre-clip): {grad_norm:.4f}")
                         
                         # Compute per-level losses on current batch
-                        with torch.no_grad():
-                            x_t, noise = model.compute_forward_process(x_0, t)
-                            t_norm = t.float() / model.T
-                            prediction = model(x_t, t_norm)
-                            target = noise if model.prediction_target == "noise" else x_0
+                        # Use inference_mode and fresh tensors to avoid Dynamo tracing issues
+                        with torch.inference_mode():
+                            # Create fresh timesteps to avoid Dynamo shape confusion
+                            t_diag = torch.randint(0, model.T, (x_0.size(0),), device=fabric.device, dtype=torch.long)
+                            x_t_diag, noise_diag = model.compute_forward_process(x_0.detach(), t_diag)
+                            t_norm_diag = t_diag.float() / model.T
+                            prediction_diag = model(x_t_diag, t_norm_diag)
+                            target_diag = noise_diag if model.prediction_target == "noise" else x_0.detach()
                             
-                            level_losses = model.wavelet_loss_fn.get_level_losses(target, prediction)
+                            level_losses = model.wavelet_loss_fn.get_level_losses(target_diag, prediction_diag)
                             level_str = " | ".join([f"L{i}:{ll.item():.4f}" for i, ll in enumerate(level_losses)])
                             print(f"  └─ level_losses: {level_str}")
 
