@@ -18,6 +18,7 @@ except (ImportError, ValueError):
 def plot_samples(real_data, generated_data, output_dir, n_samples=5):
     """
     Plot random samples of real and generated data.
+    Separates Volume onto a secondary y-axis if present.
     """
     # Create the plot directory if it doesn't exist
     os.makedirs(output_dir, exist_ok=True)
@@ -34,25 +35,47 @@ def plot_samples(real_data, generated_data, output_dir, n_samples=5):
     
     # Setup subplots
     fig, axes = plt.subplots(n_samples, 2, figsize=(15, 3*n_samples))
+    if n_samples == 1:
+        axes = axes.reshape(1, 2)
     
     features = ["Open", "High", "Low", "Close", "Volume"]
     if real_samples.shape[-1] != len(features):
         features = [f"Feature {i}" for i in range(real_samples.shape[-1])]
     
     for i in range(n_samples):
-        # Real
-        for feat_idx in range(real_samples.shape[-1]):
-            axes[i, 0].plot(real_samples[i, :, feat_idx], label=features[feat_idx])
-        axes[i, 0].set_title("Real Sample")
-        axes[i, 0].legend()
-        axes[i, 0].grid(True, alpha=0.3)
+        # --- Real Data ---
+        ax_real = axes[i, 0]
+        ax_real_vol = None
         
-        # Generated
-        for feat_idx in range(gen_samples.shape[-1]):
-            axes[i, 1].plot(gen_samples[i, :, feat_idx], label=features[feat_idx])
-        axes[i, 1].set_title("Generated Sample")
-        axes[i, 1].legend()
-        axes[i, 1].grid(True, alpha=0.3)
+        for feat_idx, feat_name in enumerate(features):
+            if feat_name.lower() == "volume":
+                if ax_real_vol is None: ax_real_vol = ax_real.twinx()
+                ax_real_vol.fill_between(range(len(real_samples[i])), real_samples[i, :, feat_idx], 
+                                         color='gray', alpha=0.3, label=feat_name)
+                ax_real_vol.set_ylabel("Volume")
+            else:
+                ax_real.plot(real_samples[i, :, feat_idx], label=feat_name)
+        
+        ax_real.set_title("Real Sample")
+        ax_real.legend(loc='upper left')
+        ax_real.grid(True, alpha=0.3)
+        
+        # --- Generated Data ---
+        ax_gen = axes[i, 1]
+        ax_gen_vol = None
+        
+        for feat_idx, feat_name in enumerate(features):
+            if feat_name.lower() == "volume":
+                if ax_gen_vol is None: ax_gen_vol = ax_gen.twinx()
+                ax_gen_vol.fill_between(range(len(gen_samples[i])), gen_samples[i, :, feat_idx], 
+                                        color='gray', alpha=0.3, label=feat_name)
+                ax_gen_vol.set_ylabel("Volume")
+            else:
+                ax_gen.plot(gen_samples[i, :, feat_idx], label=feat_name)
+        
+        ax_gen.set_title("Generated Sample")
+        ax_gen.legend(loc='upper left')
+        ax_gen.grid(True, alpha=0.3)
         
     plt.tight_layout()
     plt.savefig(os.path.join(output_dir, "sample_comparison.png"))
@@ -163,13 +186,6 @@ def visualize_evaluation(real_data, generated_data, output_dir, eval_results_pat
     # 1. Standard Samples
     plot_samples(real_data, generated_data, output_dir)
     
-    # 2. Distributions (Exclude Volume - assumed last index if dim > 4)
-    # Heuristic: Find feature with largest range -> likely volume
-    max_vals = np.max(real_data, axis=(0,1))
-    vol_idx = np.argmax(max_vals)
-    # Only exclude if it looks like volume (orders of magnitude larger)
-    # If all similar scale (normalized?), then don't exclude.
-    # Users data passed here is likely RAW (unnormalized) because plot_samples uses it.
     # 2. Distributions
     features = ["Open", "High", "Low", "Close", "Volume"]
     if real_data.shape[-1] != len(features):
@@ -184,15 +200,15 @@ def visualize_evaluation(real_data, generated_data, output_dir, eval_results_pat
     visualizations.plot_tsne(real_data, generated_data, save_path=os.path.join(output_dir, "tsne.png"))
     
     # 4. Stylized Facts Visuals
-    # Scalogram (Feature 0 - Close?)
-    visualizations.plot_scalogram(real_data[0, :, 3], generated_data[0, :, 3], # Index 3 is Close usually? 
-                                  # "Open, High, Low, Close, Volume" -> Index 3 is Close.
-                                  # If not 5 features, use 0.
-                                  save_path=os.path.join(output_dir, "scalogram.png"))
+    # Scalogram (Use Feature 3=Close if available, else 0)
+    feat_idx_for_stats = 3 if real_data.shape[-1] > 3 else 0
+    visualizations.plot_scalogram(real_data[0, :, feat_idx_for_stats], 
+                                 generated_data[0, :, feat_idx_for_stats], 
+                                 save_path=os.path.join(output_dir, "scalogram.png"))
                                   
-    visualizations.plot_qq(real_data, generated_data, feature_idx=3, save_path=os.path.join(output_dir, "qq_plot.png"))
-    visualizations.plot_acf(real_data, generated_data, feature_idx=3, save_path=os.path.join(output_dir, "acf_plot.png"))
-    visualizations.plot_psd(real_data, generated_data, feature_idx=3, save_path=os.path.join(output_dir, "psd_plot.png"))
+    visualizations.plot_qq(real_data, generated_data, feature_idx=feat_idx_for_stats, save_path=os.path.join(output_dir, "qq_plot.png"))
+    visualizations.plot_acf(real_data, generated_data, feature_idx=feat_idx_for_stats, save_path=os.path.join(output_dir, "acf_plot.png"))
+    visualizations.plot_psd(real_data, generated_data, feature_idx=feat_idx_for_stats, save_path=os.path.join(output_dir, "psd_plot.png"))
 
     print(f"Visualizations saved to {output_dir}")
     
