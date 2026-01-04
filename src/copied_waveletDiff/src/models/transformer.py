@@ -15,7 +15,10 @@ import os
 from .layers import TimeEmbedding, WaveletLevelTransformer
 from .attention import CrossLevelAttention
 from torch.optim.lr_scheduler import CosineAnnealingLR, ReduceLROnPlateau, LambdaLR, OneCycleLR
-from ..utils.noise_schedules import get_noise_schedule
+try:
+    from ..utils.noise_schedules import get_noise_schedule
+except (ImportError, ValueError):
+    from utils.noise_schedules import get_noise_schedule
 
 
 # Hyperparameters
