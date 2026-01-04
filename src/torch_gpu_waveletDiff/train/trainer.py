@@ -146,6 +146,7 @@ def init_model(fabric, datamodule, config,
                embed_dim=256, num_heads=8, num_layers=8, time_embed_dim=128, 
                dropout=0.1, prediction_target="noise", use_cross_level_attention=True,
                learning_rate=2e-4, weight_decay=1e-5, max_lr=None, pct_start=0.3, 
+               grad_clip_norm=1.0,
                compile_mode="default", compile_fullgraph=False):
     """
     Initializes the WaveletDiffusionTransformer model and optimizer.
@@ -167,6 +168,11 @@ def init_model(fabric, datamodule, config,
     from models.transformer import WaveletDiffusionTransformer
 
     # Update Config with Model Hyperparams
+    # Ensure nested dicts exist
+    if 'training' not in config: config['training'] = {}
+    
+    config['training']['grad_clip_norm'] = grad_clip_norm
+    
     config.update({
         'model': {
             'embed_dim': embed_dim,
@@ -336,7 +342,9 @@ def train_loop(fabric, model, optimizer, train_loader, config,
             # Optimization
             with record_function("optimizer_step"):
                 if enable_grad_clipping:
-                    fabric.clip_gradients(model, optimizer, max_norm=1.0, error_if_nonfinite=False)
+                    # Get clip norm from config (default 1.0)
+                    clip_norm = config['training'].get('grad_clip_norm', 1.0)
+                    fabric.clip_gradients(model, optimizer, max_norm=clip_norm, error_if_nonfinite=False)
                 
                 optimizer.step()
                 scheduler.step()
