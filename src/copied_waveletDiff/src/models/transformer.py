@@ -329,17 +329,10 @@ class WaveletDiffusionTransformer(pl.LightningModule):
         
         t = torch.randint(0, self.T, (x_0.size(0),), device=self.device)
         loss = self.compute_loss(x_0, t)
-        
-        # Enhanced loss monitoring and stability
-        # PERFORMANCE OPTIMIZATION: Removed synchronous loss check to prevent graph break
-        # if torch.isnan(loss) or torch.isinf(loss):
-        #     print(f"CRITICAL: NaN/Inf loss detected at step {batch_idx}")
-        #     print(f"Input stats: mean={x_0.mean().item():.6f}, std={x_0.std().item():.6f}")
-        #     print(f"Time step range: {t.min().item()}-{t.max().item()}")
-            
-        #     # Create a small loss with same shape and properties as original loss
-        #     # This maintains compatibility with AMP gradient scaler
-        #     loss = torch.full_like(loss, 0.01, requires_grad=True)
+
+        # Async NaN Recovery (Graph-Safe)
+        # Replaces NaN with 0.0 and Inf with 1.0/-1.0 without CPU sync/graph break
+        loss = torch.nan_to_num(loss, nan=0.0, posinf=1.0, neginf=-1.0)
         
         # Store detached tensor instead of .item() to avoid graph break
         # Convert to scalar only when needed for logging/checkpointing
