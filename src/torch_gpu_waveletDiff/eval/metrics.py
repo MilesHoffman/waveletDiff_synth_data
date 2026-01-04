@@ -61,15 +61,20 @@ INTERPRETATION = {
 }
 
 class MetricsEvaluator:
-    def __init__(self, real_data, generated_data, device='cuda'):
+    def __init__(self, real_data, generated_data, device='cuda', **kwargs):
         """
         Args:
             real_data (np.ndarray): Real samples [N, T, D]
             generated_data (np.ndarray): Generated samples [N, T, D]
+            kwargs: Configuration for metrics
+                - metric_train_steps (int): Training iterations for classifier/predictor
+                - metric_batch_size (int): Batch size for training
+                - dtw_max_samples (int): Number of samples for DTW calculation
         """
         self.real_data = real_data
         self.generated_data = generated_data
         self.device = device
+        self.kwargs = kwargs
         
         # Preprocessing: MinMax Scale (as in evaluation.ipynb)
         self._preprocess()
@@ -102,19 +107,33 @@ class MetricsEvaluator:
     def evaluate_discriminative(self, iterations=5):
         print("Running Discriminative Score...")
         scores = []
+        train_steps = self.kwargs.get('metric_train_steps', 2000)
+        batch_size = self.kwargs.get('metric_batch_size', 128)
+        
         for i in tqdm(range(iterations), desc="Discriminative Score"):
-            score, _, _ = discriminative_score_metrics(self.real_data_norm, self.gen_data_norm)
+            score, _, _ = discriminative_score_metrics(
+                self.real_data_norm, 
+                self.gen_data_norm, 
+                iterations=train_steps, 
+                batch_size=batch_size
+            )
             scores.append(score)
-            # print(f"Iter {i}: {score:.4f}") # Suppress individual print if using tqdm
         return np.mean(scores), scores
 
     def evaluate_predictive(self, iterations=5):
         print("Running Predictive Score...")
         scores = []
+        train_steps = self.kwargs.get('metric_train_steps', 5000)
+        batch_size = self.kwargs.get('metric_batch_size', 128)
+        
         for i in tqdm(range(iterations), desc="Predictive Score"):
-            score = predictive_score_metrics(self.real_data_norm, self.gen_data_norm)
+            score = predictive_score_metrics(
+                self.real_data_norm, 
+                self.gen_data_norm,
+                iterations=train_steps,
+                batch_size=batch_size
+            )
             scores.append(score)
-            # print(f"Iter {i}: {score:.4f}")
         return np.mean(scores), scores
 
     def evaluate_context_fid(self, iterations=5):
@@ -123,7 +142,6 @@ class MetricsEvaluator:
         for i in tqdm(range(iterations), desc="Context-FID"):
             score = Context_FID(self.real_data_norm, self.gen_data_norm)
             scores.append(score)
-            # print(f"Iter {i}: {score:.4f}")
         return np.mean(scores), scores
 
     def evaluate_correlation(self, iterations=5, sample_size=1000):
@@ -139,27 +157,22 @@ class MetricsEvaluator:
             real_idx = np.random.choice(x_real.shape[0], sample_size, replace=False)
             fake_idx = np.random.choice(x_fake.shape[0], sample_size, replace=False)
             
-            # CrossCorrelLoss expects inputs? imports might serve class
-            # Inspecting notebook: 
-            # corr = CrossCorrelLoss(x_real[real_idx], ...)
-            # loss = corr.compute(x_fake[fake_idx])
-            
             corr = CrossCorrelLoss(x_real[real_idx], name='CrossCorrelLoss')
             loss = corr.compute(x_fake[fake_idx])
             scores.append(loss.item())
-            # print(f"Iter {i}: {loss.item():.4f}")
             
         return np.mean(scores), scores
 
     def evaluate_dtw(self, iterations=5):
         print("Running DTW Distance...")
         scores = []
+        n_samples = self.kwargs.get('dtw_max_samples', 100)
+        
         for i in tqdm(range(iterations), desc="DTW Distance"):
             # dtw_js_divergence_distance args: real, fake, n_samples
-            res = dtw_js_divergence_distance(self.real_data_norm, self.gen_data_norm, n_samples=100)
+            res = dtw_js_divergence_distance(self.real_data_norm, self.gen_data_norm, n_samples=n_samples)
             score = res['js_divergence']
             scores.append(score)
-            # print(f"Iter {i}: {score:.4f}")
         return np.mean(scores), scores
 
         return np.mean(scores), scores

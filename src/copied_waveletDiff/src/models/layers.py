@@ -119,9 +119,10 @@ class AdaLayerNorm(nn.Module):
         scale, shift = ada_params.chunk(2, dim=-1)  # Each: (batch_size, embed_dim)
         
         # Expand to match input dimensions
-        while scale.dim() < x_norm.dim():
-            scale = scale.unsqueeze(-2)
-            shift = shift.unsqueeze(-2)
+        # x_norm is always 3D: [batch, seq, embed], scale/shift are 2D: [batch, embed]
+        # Fixed reshape instead of while loop for torch.compile compatibility
+        scale = scale.unsqueeze(1)  # [batch, 1, embed]
+        shift = shift.unsqueeze(1)  # [batch, 1, embed]
         
         # Apply adaptive transformation
         return scale * x_norm + shift

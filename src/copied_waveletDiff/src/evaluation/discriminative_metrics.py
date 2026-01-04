@@ -69,12 +69,14 @@ class Discriminator(nn.Module):
         return logits
 
 
-def discriminative_score_metrics(ori_data, generated_data):
+def discriminative_score_metrics(ori_data, generated_data, iterations=2000, batch_size=128):
     """Use post-hoc RNN to classify original data and synthetic data
 
     Args:
         - ori_data: original data
         - generated_data: generated synthetic data
+        - iterations: number of training steps (batches)
+        - batch_size: size of mini-batch
 
     Returns:
         - discriminative_score: np.abs(classification accuracy - 0.5)
@@ -83,8 +85,6 @@ def discriminative_score_metrics(ori_data, generated_data):
 
     no, seq_len, dim = np.asarray(ori_data).shape
     hidden_dim = max(dim // 2, 2)
-    iterations = 2000
-    batch_size = 128
 
     # Prepare the data
     ori_time, _ = extract_time(ori_data)

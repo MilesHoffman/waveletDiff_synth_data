@@ -341,13 +341,21 @@ class WaveletDiffusionTransformer(pl.LightningModule):
         #     # This maintains compatibility with AMP gradient scaler
         #     loss = torch.full_like(loss, 0.01, requires_grad=True)
         
-        self.training_losses.append(loss.item())
+        # Store detached tensor instead of .item() to avoid graph break
+        # Convert to scalar only when needed for logging/checkpointing
+        self.training_losses.append(loss.detach())
         return loss
 
     def on_train_epoch_end(self):
         """Called at the end of each training epoch."""
-        # Calculate average epoch loss
-        epoch_avg = np.mean(self.training_losses[-len(self.trainer.train_dataloader):])
+        # Calculate average epoch loss (training_losses contains detached tensors)
+        recent_losses = self.training_losses[-len(self.trainer.train_dataloader):]
+        if recent_losses and isinstance(recent_losses[0], torch.Tensor):
+            # Stack tensors and compute mean on GPU, then move to CPU for display
+            epoch_avg = torch.stack(recent_losses).mean().item()
+        else:
+            # Fallback for scalar values
+            epoch_avg = np.mean(recent_losses) if recent_losses else 0.0
         self.epoch_losses.append(epoch_avg)
 
         if self.trainer.is_global_zero:

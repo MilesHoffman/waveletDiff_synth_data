@@ -36,13 +36,15 @@ class Predictor(nn.Module):
         return y_hat
 
 
-def predictive_score_metrics(ori_data, generated_data, window_size=20):
+def predictive_score_metrics(ori_data, generated_data, window_size=20, iterations=5000, batch_size=128):
     """Report the performance of Post-hoc RNN one-step ahead prediction.
 
     Args:
       - ori_data: original data
       - generated_data: generated synthetic data
       - window_size: number of steps ahead to predict in the univariate case
+      - iterations: number of training steps
+      - batch_size: mini-batch size
 
     Returns:
       - predictive_score: MAE of the predictions on the original data
@@ -52,8 +54,6 @@ def predictive_score_metrics(ori_data, generated_data, window_size=20):
 
     # Network parameters
     hidden_dim = max(dim // 2, 2)
-    iterations = 5000
-    batch_size = 128
 
     model = Predictor(input_dim=(dim - 1) if dim > 1 else 1, hidden_dim=hidden_dim).to(
         "cuda" if torch.cuda.is_available() else "cpu"
