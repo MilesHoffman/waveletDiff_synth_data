@@ -341,9 +341,9 @@ def train_loop(fabric, model, optimizer, train_loader, config,
             with record_function("backward_pass"):
                 fabric.backward(loss)
 
-            # Compute gradient norm BEFORE clipping (for diagnostics)
+            # Compute gradient norm ONLY for diagnostics (not needed for clipping - Fabric handles that)
             grad_norm = None
-            if enable_diagnostics or enable_grad_clipping:
+            if enable_diagnostics:
                 total_norm_sq = 0.0
                 for p in model.parameters():
                     if p.grad is not None:
