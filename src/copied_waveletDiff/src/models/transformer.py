@@ -173,6 +173,17 @@ class WaveletDiffusionTransformer(pl.LightningModule):
         
         self.apply(self._init_weights)
         
+        # GPT-Style Residual Scaling (1/sqrt(2 * num_layers))
+        # This dramatically improves stability for deeper transformers (num_layers > 6)
+        # by preventing variance from exploding in the residual stream.
+        scaling_factor = 1.0 / np.sqrt(2 * num_layers)
+        for name, p in self.named_parameters():
+            if ("mlp.3.weight" in name) or ("out_proj.weight" in name): 
+                # mlp.3 is the projection back to dim in FeedForward
+                # out_proj is the projection back to dim in SelfAttention
+                with torch.no_grad():
+                    p.mul_(scaling_factor)
+        
         # Print detailed model information
         self.print_model_info()
         
@@ -187,7 +198,7 @@ class WaveletDiffusionTransformer(pl.LightningModule):
         # Loss tracking
         self.training_losses = []
         self.epoch_losses = []
-
+        
     def _initialize_noise_schedule(self):
         """Initialize the noise schedule based on the specified type."""
         self.schedule_params = get_noise_schedule(
@@ -199,7 +210,8 @@ class WaveletDiffusionTransformer(pl.LightningModule):
     def _init_weights(self, m):
         """Initialize model weights using transformer-optimized initialization."""
         if isinstance(m, nn.Linear):
-            nn.init.xavier_uniform_(m.weight)
+            # Kaiming Normal is slightly better for GELU activists than Xavier
+            nn.init.kaiming_normal_(m.weight, mode='fan_in', nonlinearity='relu')
             if m.bias is not None:
                 nn.init.constant_(m.bias, 0)
         elif isinstance(m, nn.LayerNorm):

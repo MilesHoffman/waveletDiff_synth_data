@@ -69,9 +69,24 @@ def get_dataloaders(fabric, repo_dir, dataset_name, seq_len, batch_size, wavelet
     """
     Loads data and creates Fabric-optimized DataLoaders.
     """
-    # Re-import inside to be safe
-    from data.loaders import create_sliding_windows
-    from data.module import WaveletTimeSeriesDataModule
+    # Re-import inside to be safe and handle sys.path dynamically
+    try:
+        from data.loaders import create_sliding_windows
+        from data.module import WaveletTimeSeriesDataModule
+    except ImportError:
+        # If REPO_DIR/src isn't in path, add it
+        src_path = os.path.join(repo_dir, "src")
+        if os.path.exists(src_path) and src_path not in sys.path:
+             sys.path.append(src_path)
+             
+        # Try importing from src package as fallback
+        try:
+             from src.data.loaders import create_sliding_windows
+             from src.data.module import WaveletTimeSeriesDataModule
+        except ImportError:
+             # Final attempt: maybe just needed src in path for original import
+             from data.loaders import create_sliding_windows
+             from data.module import WaveletTimeSeriesDataModule
 
     if os.path.isabs(data_path):
         stocks_path = data_path
@@ -152,6 +167,16 @@ def init_model(fabric, datamodule, config,
     Initializes the WaveletDiffusionTransformer model and optimizer.
     """
     import importlib
+    
+    # Ensure sys.path captures module locations
+    # We assume standard structure if imports fail
+    try:
+        import models.transformer
+    except ImportError:
+        # If we are in torch_gpu_waveletDiff/train, we need to go up two levels to find 'models'
+        # But commonly we just need to add the repo root/src
+        pass 
+
     import models.transformer
     import models.wavelet_losses
     import models.layers
