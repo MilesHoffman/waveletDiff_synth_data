@@ -97,6 +97,12 @@ class CrossLevelAttention(nn.Module):
                 nn.Sigmoid()
             )
             self.cross_level_gates.append(gate)
+            
+        # Pre-compute indices for cross-only attention to avoid graph breaks
+        if self.attention_mode != "all_to_all":
+            for i in range(self.num_levels):
+                indices = torch.tensor([j for j in range(self.num_levels) if j != i], dtype=torch.long)
+                self.register_buffer(f'other_indices_{i}', indices)
     
     def get_cross_level_attention_weights(self, level_embeddings, time_embed):
         """
@@ -213,37 +219,28 @@ class CrossLevelAttention(nn.Module):
         # Step 3: Apply level-to-level attention
         if self.attention_mode == "all_to_all":
             # ALL-TO-ALL: Each level attends to all levels (including itself)
-            cross_attended_levels, attention_weights = self.cross_attention(
-                level_stack, level_stack, level_stack
+            cross_attended_levels, _ = self.cross_attention(
+                level_stack, level_stack, level_stack, need_weights=False
             )
-            # cross_attended_levels shape: [batch_size, num_levels, common_dim]
-            # attention_weights shape: [batch_size, num_heads, num_levels, num_levels]
-            
         else:  # cross_only
             # CROSS-ONLY: Each level only attends to other levels (not itself)
-            cross_attended_levels = []
-            
+            cross_list = []
             for i in range(self.num_levels):
-                # Create key-value tensor excluding the current level
-                other_levels_indices = [j for j in range(self.num_levels) if j != i]
-                if not other_levels_indices:
-                    # If there's only one level, just return the original representation
-                    cross_attended_levels.append(level_representations[i])
+                indices = getattr(self, f'other_indices_{i}')
+                if indices.numel() == 0:
+                    cross_list.append(level_representations[i])
                     continue
                     
-                other_levels = level_stack[:, other_levels_indices, :]  # [batch_size, num_other_levels, common_dim]
-                query_level = level_stack[:, i:i+1, :]  # [batch_size, 1, common_dim]
+                other_levels = level_stack[:, indices, :]
+                query_level = level_stack[:, i:i+1, :]
                 
-                # Apply cross-attention (level i attends to all other levels)
+                # Apply cross-attention
                 cross_attended_level, _ = self.cross_attention_layers[i](
-                    query_level, other_levels, other_levels
+                    query_level, other_levels, other_levels, need_weights=False
                 )
-                # cross_attended_level shape: [batch_size, 1, common_dim]
-                cross_attended_levels.append(cross_attended_level.squeeze(1))  # [batch_size, common_dim]
+                cross_list.append(cross_attended_level.squeeze(1))
             
-            # Convert to tensor for consistency
-            cross_attended_levels = torch.stack(cross_attended_levels, dim=1)
-            # cross_attended_levels shape: [batch_size, num_levels, common_dim]
+            cross_attended_levels = torch.stack(cross_list, dim=1)
         
         # Step 4: Expand level representations back to coefficient embeddings
         output_embeddings = []
