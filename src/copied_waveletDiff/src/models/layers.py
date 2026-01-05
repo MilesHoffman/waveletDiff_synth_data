@@ -119,10 +119,9 @@ class AdaLayerNorm(nn.Module):
         scale, shift = ada_params.chunk(2, dim=-1)  # Each: (batch_size, embed_dim)
         
         # Expand to match input dimensions
-        # x_norm is always 3D: [batch, seq, embed], scale/shift are 2D: [batch, embed]
-        # Fixed reshape instead of while loop for torch.compile compatibility
-        scale = scale.unsqueeze(1)  # [batch, 1, embed]
-        shift = shift.unsqueeze(1)  # [batch, 1, embed]
+        while scale.dim() < x_norm.dim():
+            scale = scale.unsqueeze(-2)
+            shift = shift.unsqueeze(-2)
         
         # Apply adaptive transformation
         return scale * x_norm + shift
@@ -165,8 +164,7 @@ class WaveletTransformerBlock(nn.Module):
         """
         # Self-attention with time conditioning
         x_norm1 = self.norm1(x, time_embed)
-        # Adaptive Optimization: Always disable weights to enable Flash Attention (SDPA)
-        attn_out, _ = self.attn(x_norm1, x_norm1, x_norm1, attn_mask=mask, need_weights=False)
+        attn_out, _ = self.attn(x_norm1, x_norm1, x_norm1, attn_mask=mask)
         x = x + self.dropout(attn_out)
         
         # Feed-forward with time conditioning

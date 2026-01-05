@@ -15,10 +15,7 @@ import os
 from .layers import TimeEmbedding, WaveletLevelTransformer
 from .attention import CrossLevelAttention
 from torch.optim.lr_scheduler import CosineAnnealingLR, ReduceLROnPlateau, LambdaLR, OneCycleLR
-try:
-    from ..utils.noise_schedules import get_noise_schedule
-except (ImportError, ValueError):
-    from utils.noise_schedules import get_noise_schedule
+from utils.noise_schedules import get_noise_schedule
 
 
 # Hyperparameters
@@ -96,9 +93,8 @@ class WaveletDiffusionTransformer(pl.LightningModule):
             self.input_dim = data_module.get_input_dim()
             self.coeffs_shapes = wavelet_info['coeffs_shapes']
             self.levels = wavelet_info['levels']
-            # torch.compile(fullgraph=True) fix: Ensure these are Python ints, not numpy types
-            self.level_dims = [int(x) for x in wavelet_info['level_dims']]
-            self.level_start_indices = [int(x) for x in wavelet_info['level_start_indices']]
+            self.level_dims = wavelet_info['level_dims']
+            self.level_start_indices = wavelet_info['level_start_indices']
             self.num_features = wavelet_info['n_features']
         else:
             raise ValueError("Data module must be provided to initialize wavelet structure")
@@ -190,7 +186,7 @@ class WaveletDiffusionTransformer(pl.LightningModule):
         # Loss tracking
         self.training_losses = []
         self.epoch_losses = []
-        
+
     def _initialize_noise_schedule(self):
         """Initialize the noise schedule based on the specified type."""
         self.schedule_params = get_noise_schedule(
@@ -200,7 +196,7 @@ class WaveletDiffusionTransformer(pl.LightningModule):
         print(f"Initialized {self.noise_schedule} noise schedule")
 
     def _init_weights(self, m):
-        """Initialize model weights using Xavier uniform (matches source repo)."""
+        """Initialize model weights using transformer-optimized initialization."""
         if isinstance(m, nn.Linear):
             nn.init.xavier_uniform_(m.weight)
             if m.bias is not None:
@@ -257,9 +253,6 @@ class WaveletDiffusionTransformer(pl.LightningModule):
             
             for i, (start_idx, dim) in enumerate(zip(self.level_start_indices, self.level_dims)):
                 # Extract coefficients for this level from all features
-                # Explicit runtime cast to avoid Dynamo "Dynamic slicing" errors
-                start_idx = int(start_idx)
-                dim = int(dim)
                 end_idx = start_idx + dim
                 level_coeffs = x[:, start_idx:end_idx, :]  # (batch_size, dim, num_features)
                 level_coeffs_list.append(level_coeffs)
@@ -282,9 +275,6 @@ class WaveletDiffusionTransformer(pl.LightningModule):
             level_outputs = []
             for i, (start_idx, dim) in enumerate(zip(self.level_start_indices, self.level_dims)):
                 # Extract coefficients for this level
-                # Explicit runtime cast to avoid Dynamo "Dynamic slicing" errors
-                start_idx = int(start_idx)
-                dim = int(dim)
                 end_idx = start_idx + dim
                 level_coeffs = x[:, start_idx:end_idx, :]
                 
@@ -322,33 +312,30 @@ class WaveletDiffusionTransformer(pl.LightningModule):
         x_0 = batch[0]
         
         # Check input for NaN
-        # PERFORMANCE OPTIMIZATION: Removed synchronous NaN check to prevent graph break
-        # if torch.isnan(x_0).any():
-        #     print(f"WARNING: NaN detected in batch input at step {batch_idx}")
-        #     x_0 = torch.nan_to_num(x_0, nan=0.0, posinf=1.0, neginf=-1.0)
+        if torch.isnan(x_0).any():
+            print(f"WARNING: NaN detected in batch input at step {batch_idx}")
+            x_0 = torch.nan_to_num(x_0, nan=0.0, posinf=1.0, neginf=-1.0)
         
         t = torch.randint(0, self.T, (x_0.size(0),), device=self.device)
         loss = self.compute_loss(x_0, t)
-
-        # Async NaN Recovery (Graph-Safe)
-        # Replaces NaN with 0.0 and Inf with 1.0/-1.0 without CPU sync/graph break
-        loss = torch.nan_to_num(loss, nan=0.0, posinf=1.0, neginf=-1.0)
         
-        # Store detached tensor instead of .item() to avoid graph break
-        # Convert to scalar only when needed for logging/checkpointing
-        self.training_losses.append(loss.detach())
+        # Enhanced loss monitoring and stability
+        if torch.isnan(loss) or torch.isinf(loss):
+            print(f"CRITICAL: NaN/Inf loss detected at step {batch_idx}")
+            print(f"Input stats: mean={x_0.mean().item():.6f}, std={x_0.std().item():.6f}")
+            print(f"Time step range: {t.min().item()}-{t.max().item()}")
+            
+            # Create a small loss with same shape and properties as original loss
+            # This maintains compatibility with AMP gradient scaler
+            loss = torch.full_like(loss, 0.01, requires_grad=True)
+        
+        self.training_losses.append(loss.item())
         return loss
 
     def on_train_epoch_end(self):
         """Called at the end of each training epoch."""
-        # Calculate average epoch loss (training_losses contains detached tensors)
-        recent_losses = self.training_losses[-len(self.trainer.train_dataloader):]
-        if recent_losses and isinstance(recent_losses[0], torch.Tensor):
-            # Stack tensors and compute mean on GPU, then move to CPU for display
-            epoch_avg = torch.stack(recent_losses).mean().item()
-        else:
-            # Fallback for scalar values
-            epoch_avg = np.mean(recent_losses) if recent_losses else 0.0
+        # Calculate average epoch loss
+        epoch_avg = np.mean(self.training_losses[-len(self.trainer.train_dataloader):])
         self.epoch_losses.append(epoch_avg)
 
         if self.trainer.is_global_zero:

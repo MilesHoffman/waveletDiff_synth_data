@@ -50,9 +50,8 @@ class WaveletBalancedLoss:
                 raise ValueError(f"Inconsistent start index at level {i}: expected {expected_start}, got {start_idx}")
             expected_start += dim
         
-        # torch.compile(fullgraph=True) fix: Ensure these are Python ints
-        self.level_dims = [int(x) for x in level_dims]
-        self.level_start_indices = [int(x) for x in level_start_indices]
+        self.level_dims = level_dims
+        self.level_start_indices = level_start_indices
         self.strategy = strategy
         self.num_levels = len(level_dims)
         self.approximation_weight = approximation_weight
@@ -124,8 +123,6 @@ class WaveletBalancedLoss:
         level_feature_energies = []
         
         for i, (start_idx, dim) in enumerate(zip(self.level_start_indices, self.level_dims)):
-            start_idx = int(start_idx)
-            dim = int(dim)
             end_idx = start_idx + dim
             level_coeffs = squared_coeffs[:, start_idx:end_idx, :]  # [batch_size, dim, num_features]
             level_energy = torch.sum(level_coeffs, dim=1)  # [batch_size, num_features]
@@ -191,27 +188,30 @@ class WaveletBalancedLoss:
             return reconstruction_loss
     
     def _compute_weighted_loss(self, target: torch.Tensor, prediction: torch.Tensor) -> torch.Tensor:
-        """Compute weighted loss across levels using vectorized operations."""
+        """Compute weighted loss across levels."""
         batch_size, total_coeffs_per_feature, num_features = target.shape
-        
-        # Initialize total_loss as tensor for graph compatibility
-        total_loss = torch.tensor(0.0, device=target.device, dtype=target.dtype)
-        
-        # Compute loss for all features at once per level (no feature loop needed)
-        for i, (start_idx, dim, weight) in enumerate(zip(
-            self.level_start_indices, self.level_dims, self.level_weights
-        )):
-            end_idx = start_idx + dim
-            # Slice all features at once: [batch, dim, num_features]
-            level_target = target[:, start_idx:end_idx, :]
-            level_pred = prediction[:, start_idx:end_idx, :]
+        total_loss = 0.0
+
+        # Compute loss for each feature separately, then average
+        for feature_idx in range(num_features):
+            feature_total_loss = 0.0
+            target_feature = target[:, :, feature_idx]  # [batch_size, total_coeffs_per_feature]
+            pred_feature = prediction[:, :, feature_idx]  # [batch_size, total_coeffs_per_feature]
             
-            # MSE over all elements (batch, coeffs, features), weighted by level
-            level_loss = F.mse_loss(level_target, level_pred)
-            total_loss = total_loss + weight * level_loss
-        
-    # Match source repo: average across features
-        return total_loss
+            for i, (start_idx, dim, weight) in enumerate(zip(
+                self.level_start_indices, self.level_dims, self.level_weights
+            )):
+                end_idx = start_idx + dim
+                level_target = target_feature[:, start_idx:end_idx]
+                level_pred = pred_feature[:, start_idx:end_idx]
+                
+                level_loss = F.mse_loss(level_target, level_pred)
+                feature_total_loss += weight * level_loss
+
+            total_loss += feature_total_loss
+
+        # Average across features
+        return total_loss / num_features
     
     
     def get_level_losses(self, target: torch.Tensor, prediction: torch.Tensor) -> List[torch.Tensor]:
@@ -224,8 +224,6 @@ class WaveletBalancedLoss:
         level_losses = []
 
         for i, (start_idx, dim) in enumerate(zip(self.level_start_indices, self.level_dims)):
-            start_idx = int(start_idx)
-            dim = int(dim)
             end_idx = start_idx + dim
             level_loss_total = 0.0
             

@@ -232,7 +232,7 @@ def dtw_js_divergence_distance(
     
     # Set number of jobs for multiprocessing
     if n_jobs is None:
-        n_jobs = 1 # Default to serial to avoid pickling errors in Notebooks with custom paths
+        n_jobs = mp.cpu_count()
     
     def compute_distance_distribution(samples, reference_set):
         """Compute DTW distances from samples to reference set using multiprocessing."""
@@ -242,13 +242,17 @@ def dtw_js_divergence_distance(
             
             # Use multiprocessing
             with mp.Pool(processes=n_jobs) as pool:
-                distances = list(pool.imap(_compute_sample_distances, args_list))
+                distances = list(tqdm(
+                    pool.imap(_compute_sample_distances, args_list),
+                    total=len(samples),
+                    desc="Computing DTW distances (Parallel)"
+                ))
             
             return np.array(distances)
         else:
             # Fallback to sequential processing
             distances = []
-            for sample in samples:
+            for sample in tqdm(samples, desc="Computing DTW distances"):
                 sample = np.asarray(sample)
                 sample_distances = []
                 

@@ -5,7 +5,6 @@
 training:
   epochs: 5000
   batch_size: 512
-  grad_clip_norm: 1.0
   save_model: true
   
 # Model architecture (large size)

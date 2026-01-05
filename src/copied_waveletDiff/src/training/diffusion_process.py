@@ -8,7 +8,6 @@ and reconstruction, separated from the main model for cleaner architecture.
 import torch
 from abc import ABC, abstractmethod
 from typing import Optional, Dict, List, Union
-from tqdm.auto import tqdm
 
 
 class DiffusionSampler(ABC):
@@ -94,12 +93,14 @@ class DDPMSampler(DiffusionSampler):
             stored_samples[self.T] = x_t.clone()
         
         if show_progress:
-            pbar = tqdm(timesteps, desc="DDPM Sampling", leave=False)
-        else:
-            pbar = timesteps
-            
+            print(f"Starting DDPM sampling with {total_steps} steps...")
+        
+        # Track progress milestones
+        progress_milestones = [0.2, 0.4, 0.6, 0.8, 1.0]  # 20%, 40%, 60%, 80%, 100%
+        milestone_idx = 0
+        
         # Perform reverse diffusion
-        for i, t in enumerate(pbar):
+        for i, t in enumerate(timesteps):
             # Determine next timestep
             t_prev = timesteps[i + 1] if i < len(timesteps) - 1 else 0
             
@@ -114,6 +115,14 @@ class DDPMSampler(DiffusionSampler):
             # Perform denoising step
             x_t = self._ddpm_step(x_t, prediction, t, t_prev)
             
+            # Check progress and print milestones
+            if show_progress and milestone_idx < len(progress_milestones):
+                current_progress = (i + 1) / total_steps
+                if current_progress >= progress_milestones[milestone_idx]:
+                    percentage = int(progress_milestones[milestone_idx] * 100)
+                    print(f"DDPM Sampling: {percentage}% complete ({i + 1}/{total_steps} steps)")
+                    milestone_idx += 1
+            
             # Store if needed
             should_store = False
             if store_specific_timesteps is not None and t in store_specific_timesteps:
@@ -123,9 +132,6 @@ class DDPMSampler(DiffusionSampler):
             
             if should_store:
                 stored_samples[t] = x_t.clone()
-
-        if show_progress:
-            pbar.close()
         
         # Store final result
         if store_intermediates or store_specific_timesteps is not None:
@@ -210,12 +216,14 @@ class DDIMSampler(DiffusionSampler):
         
         if show_progress:
             ddim_type = "accelerated" if self.ddim_steps and self.ddim_steps < self.T else "full"
-            pbar = tqdm(timesteps, desc=f"DDIM Sampling ({ddim_type})", leave=False)
-        else:
-            pbar = timesteps
-            
+            print(f"Starting DDIM sampling ({ddim_type}) with {total_steps} steps...")
+        
+        # Track progress milestones
+        progress_milestones = [0.2, 0.4, 0.6, 0.8, 1.0]  # 20%, 40%, 60%, 80%, 100%
+        milestone_idx = 0
+        
         # Perform reverse diffusion
-        for i, t in enumerate(pbar):
+        for i, t in enumerate(timesteps):
             # Determine next timestep
             t_prev = timesteps[i + 1] if i < len(timesteps) - 1 else 0
             
@@ -230,6 +238,14 @@ class DDIMSampler(DiffusionSampler):
             # Perform denoising step
             x_t = self._ddim_step(x_t, prediction, t, t_prev)
             
+            # Check progress and print milestones
+            if show_progress and milestone_idx < len(progress_milestones):
+                current_progress = (i + 1) / total_steps
+                if current_progress >= progress_milestones[milestone_idx]:
+                    percentage = int(progress_milestones[milestone_idx] * 100)
+                    print(f"DDIM Sampling: {percentage}% complete ({i + 1}/{total_steps} steps)")
+                    milestone_idx += 1
+            
             # Store if needed
             should_store = False
             if store_specific_timesteps is not None and t in store_specific_timesteps:
@@ -239,9 +255,6 @@ class DDIMSampler(DiffusionSampler):
             
             if should_store:
                 stored_samples[t] = x_t.clone()
-
-        if show_progress:
-            pbar.close()
         
         # Store final result
         if store_intermediates or store_specific_timesteps is not None:

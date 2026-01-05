@@ -230,7 +230,7 @@ class WaveletTimeSeriesDataModule(pl.LightningDataModule):
             self.dataset, 
             batch_size=self.batch_size, 
             shuffle=True,
-            num_workers=0, # Avoid multiprocessing conflicts with JAX
-            pin_memory=False # Not needed as we convert to JAX arrays
+            num_workers=4,
+            pin_memory=True
         )
 
