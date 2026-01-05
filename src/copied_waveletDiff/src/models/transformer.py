@@ -308,44 +308,33 @@ class WaveletDiffusionTransformer(pl.LightningModule):
         return self.wavelet_loss_fn(target, prediction)
 
     def training_step(self, batch, batch_idx):
-        """Training step with enhanced stability and monitoring."""
+        """Training step optimized for torch.compile (no graph breaks)."""
         x_0 = batch[0]
         
-        # Check input for NaN
-        if torch.isnan(x_0).any():
-            print(f"WARNING: NaN detected in batch input at step {batch_idx}")
-            x_0 = torch.nan_to_num(x_0, nan=0.0, posinf=1.0, neginf=-1.0)
+        # Prevent graph breaks: Always apply nan_to_num instead of checking .any()
+        # This is a no-op if there are no NaNs, but avoids a CPU sync point
+        x_0 = torch.nan_to_num(x_0, nan=0.0, posinf=1.0, neginf=-1.0)
         
-        # CRITICAL: Signal new iteration to CUDAGraphs compiler when using torch.compile(mode='reduce-overhead')
-        # This prevents the "tensor output overwritten by subsequent run" error
-        # CRITICAL: Signal new iteration to CUDAGraphs compiler when using torch.compile(mode='reduce-overhead')
+        # CRITICAL: Signal new iteration to CUDAGraphs compiler
         if hasattr(torch, 'compiler') and hasattr(torch.compiler, 'cudagraph_mark_step_begin'):
             torch.compiler.cudagraph_mark_step_begin()
         
-        # CUDAGraphs Fix: Use persistent buffer for random timesteps
-        # This ensures 't' has a stable memory address across iterations, avoiding graph capture invalidation
         batch_size = x_0.size(0)
         if not hasattr(self, '_t_buffer') or self._t_buffer.device != self.device or self._t_buffer.size(0) < batch_size:
-            # Allocate buffer (with headroom to avoid frequent reallocs)
             self._t_buffer = torch.empty(max(batch_size, 2048), dtype=torch.long, device=self.device)
             
-        # Select view and fill in-place
         t = self._t_buffer[:batch_size]
         t.random_(0, self.T)
         
         loss = self.compute_loss(x_0, t)
         
-        # Enhanced loss monitoring and stability
-        if torch.isnan(loss) or torch.isinf(loss):
-            print(f"CRITICAL: NaN/Inf loss detected at step {batch_idx}")
-            print(f"Input stats: mean={x_0.mean().item():.6f}, std={x_0.std().item():.6f}")
-            print(f"Time step range: {t.min().item()}-{t.max().item()}")
-            
-            # Create a small loss with same shape and properties as original loss
-            # This maintains compatibility with AMP gradient scaler
-            loss = torch.full_like(loss, 0.01, requires_grad=True)
+        # Vectorized stability: Patch NaN loss without syncing to CPU
+        # Maintains identical math for valid data, provides safe fallback for NaNs
+        is_bad = ~(torch.isfinite(loss))
+        loss = torch.where(is_bad, torch.full_like(loss, 0.01), loss)
         
-        self.training_losses.append(loss.item())
+        # Async logging (no .item() sync)
+        self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True)
         return loss
 
     def on_train_epoch_end(self):
