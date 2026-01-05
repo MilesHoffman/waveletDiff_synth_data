@@ -294,9 +294,6 @@ class WaveletDiffusionTransformer(pl.LightningModule):
 
     def compute_loss(self, x_0, t):
         """Compute training loss."""
-        # CLONE required for torch.compile(mode='reduce-overhead') to prevent CUDAGraphs memory aliasing errors
-        t = t.clone()
-        
         x_t, noise = self.compute_forward_process(x_0, t)
         t_norm = t.float() / self.T
         prediction = self(x_t, t_norm)
@@ -321,10 +318,21 @@ class WaveletDiffusionTransformer(pl.LightningModule):
         
         # CRITICAL: Signal new iteration to CUDAGraphs compiler when using torch.compile(mode='reduce-overhead')
         # This prevents the "tensor output overwritten by subsequent run" error
+        # CRITICAL: Signal new iteration to CUDAGraphs compiler when using torch.compile(mode='reduce-overhead')
         if hasattr(torch, 'compiler') and hasattr(torch.compiler, 'cudagraph_mark_step_begin'):
             torch.compiler.cudagraph_mark_step_begin()
         
-        t = torch.randint(0, self.T, (x_0.size(0),), device=self.device)
+        # CUDAGraphs Fix: Use persistent buffer for random timesteps
+        # This ensures 't' has a stable memory address across iterations, avoiding graph capture invalidation
+        batch_size = x_0.size(0)
+        if not hasattr(self, '_t_buffer') or self._t_buffer.device != self.device or self._t_buffer.size(0) < batch_size:
+            # Allocate buffer (with headroom to avoid frequent reallocs)
+            self._t_buffer = torch.empty(max(batch_size, 2048), dtype=torch.long, device=self.device)
+            
+        # Select view and fill in-place
+        t = self._t_buffer[:batch_size]
+        t.random_(0, self.T)
+        
         loss = self.compute_loss(x_0, t)
         
         # Enhanced loss monitoring and stability
