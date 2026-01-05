@@ -19,8 +19,8 @@ import logging
 torch._inductor.config.disable_progress = True
 torch._logging.set_logs(inductor=logging.ERROR, dynamo=logging.ERROR)
 
-import pytorch_lightning as pl
-from pytorch_lightning.callbacks import Timer, ModelCheckpoint, Callback
+import lightning.pytorch as pl
+from lightning.pytorch.callbacks import Timer, ModelCheckpoint, Callback
 from torch.utils.data import TensorDataset, DataLoader
 
 # Fix import paths for "strict copy" modules
