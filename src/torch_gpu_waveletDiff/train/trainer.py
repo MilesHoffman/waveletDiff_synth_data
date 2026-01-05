@@ -178,12 +178,15 @@ def init_model(datamodule, config,
     print(f"Trainable Parameters: {trainable_params:,}")
     print("="*60 + "\n")
 
-    # Optional: Compile model
+    # Optional: Compile model's forward pass ONLY (not the entire module)
+    # This is critical for CUDAGraphs compatibility with PL's training_step
+    # - training_step has dynamic control flow (buffer allocation, hasattr checks) that breaks CUDAGraphs
+    # - forward() is pure tensor math that CUDAGraphs can optimize
     if compile_mode and torch.cuda.is_available():
-        print(f"Applying torch.compile(mode='{compile_mode}', fullgraph={compile_fullgraph})...")
+        print(f"Applying torch.compile to model.forward (mode='{compile_mode}', fullgraph={compile_fullgraph})...")
         try:
-            model = torch.compile(model, mode=compile_mode, fullgraph=compile_fullgraph)
-            print("Model compiled successfully.")
+            model.forward = torch.compile(model.forward, mode=compile_mode, fullgraph=compile_fullgraph)
+            print("model.forward compiled successfully.")
         except Exception as e:
             print(f"Compilation failed: {e}. Using eager mode.")
     
