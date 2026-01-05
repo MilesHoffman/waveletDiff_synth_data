@@ -83,7 +83,9 @@ def get_dataloaders(fabric, repo_dir, dataset_name, seq_len, batch_size, wavelet
         print(f"Loading data from {stocks_path}...")
 
     df = pd.read_csv(stocks_path)
-    CORE_COLS = ['Open', 'High', 'Low', 'Close', 'Volume']
+    # Source repo uses ALL columns (Open, High, Low, Close, Adj_Close, Volume)
+    # We must match this exactly for shape [..., 6]
+    CORE_COLS = ['Open', 'High', 'Low', 'Close', 'Adj_Close', 'Volume']
     df_filtered = df[CORE_COLS]
 
     # Create windows (CPU)
@@ -232,17 +234,14 @@ def init_model(fabric, datamodule, config,
         print("[Rank 0] Skipping torch.compile (compile_mode is None/False)...")
 
     # Optimizer
-    # Optimizer - Match Source Repo Exact Settings
-    # Source uses default eps=1e-8, betas=(0.9, 0.999), and NO fused implementation
-    if fabric.is_global_zero: print("[Rank 0] Using Standard AdamW (fused=False) for reproducibility...")
+    use_fused = fabric.device.type == "cuda"
+    if fabric.is_global_zero and use_fused: print("[Rank 0] Using Fused AdamW...")
     
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=learning_rate,
         weight_decay=weight_decay,
-        eps=1e-8,              # Explicitly match source
-        betas=(0.9, 0.999),    # Explicitly match source
-        fused=False            # Disable fusion to match source numerical behavior
+        fused=use_fused
     )
 
     # Fabric Setup
