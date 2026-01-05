@@ -8,6 +8,17 @@ import time
 import pandas as pd
 import multiprocessing
 import json
+
+# Fix import paths for "strict copy" modules which utilize absolute imports (e.g. "from utils import...")
+# We need to add 'src/copied_waveletDiff/src' to sys.path
+current_file_path = os.path.abspath(__file__) # .../src/torch_gpu_waveletDiff/train/trainer.py
+src_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(current_file_path)))) # .../
+copied_src_path = os.path.join(src_root, 'src', 'copied_waveletDiff', 'src')
+
+if copied_src_path not in sys.path:
+    # Prepend to ensure it takes precedence or at least is found
+    sys.path.insert(0, copied_src_path)
+    print(f"Added {copied_src_path} to sys.path for strict-copy compatibility.")
 import lightning as L
 from lightning.fabric import Fabric
 from torch.utils.data import TensorDataset, DataLoader
