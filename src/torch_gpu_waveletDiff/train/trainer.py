@@ -232,14 +232,17 @@ def init_model(fabric, datamodule, config,
         print("[Rank 0] Skipping torch.compile (compile_mode is None/False)...")
 
     # Optimizer
-    use_fused = fabric.device.type == "cuda"
-    if fabric.is_global_zero and use_fused: print("[Rank 0] Using Fused AdamW...")
+    # Optimizer - Match Source Repo Exact Settings
+    # Source uses default eps=1e-8, betas=(0.9, 0.999), and NO fused implementation
+    if fabric.is_global_zero: print("[Rank 0] Using Standard AdamW (fused=False) for reproducibility...")
     
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=learning_rate,
         weight_decay=weight_decay,
-        fused=use_fused
+        eps=1e-8,              # Explicitly match source
+        betas=(0.9, 0.999),    # Explicitly match source
+        fused=False            # Disable fusion to match source numerical behavior
     )
 
     # Fabric Setup
