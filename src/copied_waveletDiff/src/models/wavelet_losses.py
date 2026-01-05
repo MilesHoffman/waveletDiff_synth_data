@@ -211,7 +211,7 @@ class WaveletBalancedLoss:
             total_loss = total_loss + weight * level_loss
         
     # Match source repo: average across features
-        return total_loss / num_features
+        return total_loss
     
     
     def get_level_losses(self, target: torch.Tensor, prediction: torch.Tensor) -> List[torch.Tensor]:
