@@ -319,6 +319,11 @@ class WaveletDiffusionTransformer(pl.LightningModule):
             print(f"WARNING: NaN detected in batch input at step {batch_idx}")
             x_0 = torch.nan_to_num(x_0, nan=0.0, posinf=1.0, neginf=-1.0)
         
+        # CRITICAL: Signal new iteration to CUDAGraphs compiler when using torch.compile(mode='reduce-overhead')
+        # This prevents the "tensor output overwritten by subsequent run" error
+        if hasattr(torch, 'compiler') and hasattr(torch.compiler, 'cudagraph_mark_step_begin'):
+            torch.compiler.cudagraph_mark_step_begin()
+        
         t = torch.randint(0, self.T, (x_0.size(0),), device=self.device)
         loss = self.compute_loss(x_0, t)
         
