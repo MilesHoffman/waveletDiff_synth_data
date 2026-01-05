@@ -56,13 +56,16 @@ def run_evaluation(checkpoint_path, data_path, output_dir, num_samples=None, dev
     model, fabric, datamodule = load_model(checkpoint_path, config, device)
     
     # Graph Optimization (A100/L4)
-    if kwargs.get('compile_model', False):
-        print("Compiling model for graph optimization (torch.compile)...")
+    # Graph Optimization (A100/L4)
+    compile_model = kwargs.get('compile_model', False)
+    compile_mode = kwargs.get('compile_mode', 'reduce-overhead')
+
+    if compile_model:
+        print(f"Compiling model with mode='{compile_mode}'...")
         try:
-             # 'reduce-overhead' minimizes python overhead in the generation loop
-             model = torch.compile(model, mode='reduce-overhead')
+             model = torch.compile(model, mode=compile_mode)
         except Exception as e:
-             print(f"Compilation (reduce-overhead) failed, retrying with default mode: {e}")
+             print(f"Compilation with mode='{compile_mode}' failed, falling back to default: {e}")
              model = torch.compile(model)
     
     # If real_data is None/CSV, get it from datamodule

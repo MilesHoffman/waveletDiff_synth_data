@@ -210,7 +210,7 @@ class WaveletBalancedLoss:
             level_loss = F.mse_loss(level_target, level_pred)
             total_loss = total_loss + weight * level_loss
         
-        # Match source repo: average across features
+    # Match source repo: average across features
         return total_loss / num_features
     
     
