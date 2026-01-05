@@ -248,12 +248,22 @@ def init_model(fabric, datamodule, config,
     use_fused = fabric.device.type == "cuda"
     if fabric.is_global_zero and use_fused: print("[Rank 0] Using Fused AdamW...")
     
+    # Match source repo AdamW exactly (eps=1e-8, betas=(0.9, 0.999))
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=learning_rate,
         weight_decay=weight_decay,
+        eps=1e-8,
+        betas=(0.9, 0.999),
         fused=use_fused
     )
+    
+    # CRITICAL: Call model.setup() to initialize total_training_steps
+    # (PL Trainer calls this automatically; Fabric does not)
+    if hasattr(model, 'setup'):
+        model.setup(stage="fit")
+        if fabric.is_global_zero:
+            print(f"[Rank 0] Called model.setup() - total_training_steps: {getattr(model, 'total_training_steps', 'N/A')}")
 
     # Fabric Setup
     model, optimizer = fabric.setup(model, optimizer)
@@ -300,7 +310,8 @@ def train_loop(fabric, model, optimizer, train_loader, config,
         optimizer,
         max_lr=max_lr,
         total_steps=total_steps,
-        pct_start=pct_start
+        pct_start=pct_start,
+        anneal_strategy='cos'  # Match source repo exactly
     )
 
     if fabric.is_global_zero:
@@ -345,6 +356,12 @@ def train_loop(fabric, model, optimizer, train_loader, config,
                 with record_function("forward_pass"):
                     t = torch.randint(0, model.T, (x_0.size(0),), device=fabric.device)
                     loss = model.compute_loss(x_0, t)
+                
+                # NaN/Inf handling (matches source's training_step behavior)
+                if torch.isnan(loss) or torch.isinf(loss):
+                    if fabric.is_global_zero:
+                        print(f"WARNING: NaN/Inf loss at epoch {epoch}, batch {batch_idx}. Replacing with 0.01.")
+                    loss = torch.tensor(0.01, device=fabric.device, requires_grad=True)
 
                 # Backward
                 with record_function("backward_pass"):
