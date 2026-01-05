@@ -294,6 +294,9 @@ class WaveletDiffusionTransformer(pl.LightningModule):
 
     def compute_loss(self, x_0, t):
         """Compute training loss."""
+        # CLONE required for torch.compile(mode='reduce-overhead') to prevent CUDAGraphs memory aliasing errors
+        t = t.clone()
+        
         x_t, noise = self.compute_forward_process(x_0, t)
         t_norm = t.float() / self.T
         prediction = self(x_t, t_norm)
