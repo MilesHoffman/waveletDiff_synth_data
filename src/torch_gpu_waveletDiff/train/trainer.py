@@ -151,11 +151,18 @@ def get_datamodule(repo_dir, dataset_name="stocks", seq_len=24, batch_size=512,
     print(f"Loading data from {stocks_path}...")
     
     df = pd.read_csv(stocks_path)
-    # Source repo uses ALL columns via df.values (no filtering)
+    
+    # Filter features: Remove Adj_Close and Date (index-like) columns
+    # We keep: Open, High, Low, Close, Volume
+    columns_to_exclude = ['Date', 'Adj_Close', 'Adj Close']
+    feature_columns = [col for col in df.columns if col not in columns_to_exclude]
+    
+    print(f"Features in use ({len(feature_columns)}): {feature_columns}")
+    filtered_df = df[feature_columns]
     
     # Create windows
     custom_data_windows, _ = create_sliding_windows(
-        df.values,
+        filtered_df.values,
         seq_len=seq_len,
         normalize=True
     )
