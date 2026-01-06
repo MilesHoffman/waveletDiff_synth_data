@@ -43,10 +43,11 @@ from tqdm.auto import tqdm
 class TrainingProgressCallback(Callback):
     """Custom callback for clean, notebook-friendly logging with a global progress bar."""
     
-    def __init__(self, total_epochs, log_interval=1):
+    def __init__(self, total_epochs, log_interval=1, log_every_n_steps=50):
         super().__init__()
         self.total_epochs = total_epochs
         self.log_interval = log_interval
+        self.log_every_n_steps = log_every_n_steps
         self.pbar = None
     
     def on_train_start(self, trainer, pl_module):
@@ -54,33 +55,41 @@ class TrainingProgressCallback(Callback):
         if trainer.is_global_zero:
             self.pbar = tqdm(total=self.total_epochs, desc="Training", unit="epoch")
     
+    def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
+        # Handle step-level logging (every N steps)
+        # Check global_step > 0 to avoid printing the initial state before any updates
+        if trainer.global_step > 0 and trainer.global_step % self.log_every_n_steps == 0:
+            loss = trainer.callback_metrics.get('train_loss')
+            if loss is None:
+                loss = trainer.callback_metrics.get('train_loss_step')
+            
+            try:
+                lr = trainer.optimizers[0].param_groups[0]['lr']
+            except:
+                lr = 0.0
+
+            if loss is not None and trainer.is_global_zero:
+                # 1. Update progress bar postfix (Live status)
+                if self.pbar:
+                    self.pbar.set_postfix({
+                        "Step": f"{trainer.global_step}",
+                        "Loss": f"{loss:.4f}",
+                        "LR": f"{lr:.1e}"
+                    })
+                
+                # 2. PERSISTENT LOG (User requested)
+                # tqdm.write ensures this doesn't break the progress bar display
+                tqdm.write(f"Step {trainer.global_step:06d} | Loss: {loss:.6f} | LR: {lr:.1e}")
+
     def on_train_epoch_end(self, trainer, pl_module):
-        # Unified logging
-        current_epoch = trainer.current_epoch
-        
-        # Get metrics
-        avg_loss = trainer.callback_metrics.get('train_loss_epoch')
-        if avg_loss is None:
-            avg_loss = trainer.callback_metrics.get('train_loss')
-            
-        try:
-            lr = trainer.optimizers[0].param_groups[0]['lr']
-        except:
-            lr = 0.0
-            
-        # Update progress bar and postfix (Loss/LR)
+        # Update progress bar
         if self.pbar:
             self.pbar.update(1)
-            if avg_loss is not None:
-                self.pbar.set_postfix({
-                    "Loss": f"{avg_loss:.4f}",
-                    "LR": f"{lr:.1e}"
-                })
-        
-        # Periodic multi-line logging (Level breakdown)
+            
+        current_epoch = trainer.current_epoch
+        # Periodic multi-line logging (Level breakdown) - Reduced to every 100 epochs
         if current_epoch > 0 and current_epoch % 100 == 0:
             if hasattr(pl_module, '_log_level_losses_epoch_end'):
-                # Use tqdm.write to avoid breaking the progress bar
                 tqdm.write(f"\n--- Epoch {current_epoch} Level Breakdown ---")
                 pl_module._log_level_losses_epoch_end()
                     
@@ -285,7 +294,14 @@ def train(model, datamodule, config,
     
     # Callbacks
     # Set log_interval to 1 by default for epoch reporting
-    callbacks = [Timer(), TrainingProgressCallback(total_epochs=num_epochs, log_interval=1)]
+    callbacks = [
+        Timer(), 
+        TrainingProgressCallback(
+            total_epochs=num_epochs, 
+            log_interval=1,
+            log_every_n_steps=log_every_n_steps
+        )
+    ]
     
     if checkpoint_dir and save_every_n_epochs:
         os.makedirs(checkpoint_dir, exist_ok=True)
