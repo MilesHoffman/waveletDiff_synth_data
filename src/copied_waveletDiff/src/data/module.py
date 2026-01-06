@@ -230,7 +230,9 @@ class WaveletTimeSeriesDataModule(pl.LightningDataModule):
             self.dataset, 
             batch_size=self.batch_size, 
             shuffle=True,
-            num_workers=4,
-            pin_memory=True
+            num_workers=8,
+            pin_memory=True,
+            persistent_workers=True,
+            prefetch_factor=2
         )
 
