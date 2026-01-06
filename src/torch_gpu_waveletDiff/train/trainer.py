@@ -120,11 +120,19 @@ def get_datamodule(repo_dir, dataset_name="stocks", seq_len=24, batch_size=512,
 def init_model(datamodule, config,
                embed_dim=256, num_heads=8, num_layers=8, time_embed_dim=128,
                dropout=0.1, prediction_target="noise", use_cross_level_attention=True,
-               learning_rate=2e-4, compile_mode=None, compile_fullgraph=False):
+               learning_rate=2e-4, compile_mode=None, compile_fullgraph=False,
+               compile_cache_dir=None):
     """
     Initializes the WaveletDiffusionTransformer model.
     Returns the model and updated config.
     """
+    import os
+    if compile_cache_dir:
+        print(f"Setting compilation cache directory to: {compile_cache_dir}")
+        os.makedirs(compile_cache_dir, exist_ok=True)
+        os.environ['TORCHINDUCTOR_CACHE_DIR'] = compile_cache_dir
+        os.environ['TRITON_CACHE_DIR'] = compile_cache_dir
+
     import importlib
     import src.copied_waveletDiff.src.models.transformer as models_transformer
     import src.copied_waveletDiff.src.models.wavelet_losses as models_wavelet_losses
