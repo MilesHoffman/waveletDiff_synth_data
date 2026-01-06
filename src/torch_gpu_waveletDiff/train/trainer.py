@@ -127,11 +127,28 @@ def init_model(datamodule, config,
     Returns the model and updated config.
     """
     import os
+    import tarfile
+    
+    # Use a fast local directory for compilation to avoid Google Drive FUSE overhead
+    local_cache_dir = "/tmp/torch_compile_cache"
+    bundle_name = "torch_compile_cache.tar.gz"
+    
     if compile_cache_dir:
-        print(f"Setting compilation cache directory to: {compile_cache_dir}")
-        os.makedirs(compile_cache_dir, exist_ok=True)
-        os.environ['TORCHINDUCTOR_CACHE_DIR'] = compile_cache_dir
-        os.environ['TRITON_CACHE_DIR'] = compile_cache_dir
+        bundle_path = os.path.join(compile_cache_dir, bundle_name)
+        if os.path.exists(bundle_path):
+            print(f"Extracting compilation cache from Drive: {bundle_path}...")
+            try:
+                os.makedirs("/tmp", exist_ok=True)
+                with tarfile.open(bundle_path, "r:gz") as tar:
+                    tar.extractall(path="/tmp")
+                print(f"✅ Cache extracted to {local_cache_dir}")
+            except Exception as e:
+                print(f"Failed to extract cache bundle: {e}. Will recompile locally.")
+        
+        # Point torch.compile to the local directory
+        os.makedirs(local_cache_dir, exist_ok=True)
+        os.environ['TORCHINDUCTOR_CACHE_DIR'] = local_cache_dir
+        os.environ['TRITON_CACHE_DIR'] = local_cache_dir
 
     import importlib
     import src.copied_waveletDiff.src.models.transformer as models_transformer
@@ -269,3 +286,34 @@ def train(model, datamodule, config,
     print(f"\nTraining completed in {training_time:.2f}s ({training_time/60:.1f} min)")
     
     return trainer, model
+
+
+def persist_compilation_cache(compile_cache_dir):
+    """
+    Bundles the local compilation cache and saves it to Google Drive as a single archive.
+    This avoids the slow process of writing 500+ small files to GDrive FUSE.
+    """
+    import os
+    import tarfile
+    
+    if not compile_cache_dir:
+        print("No compile_cache_dir provided. Skipping persistence.")
+        return
+        
+    local_cache_dir = "/tmp/torch_compile_cache"
+    bundle_name = "torch_compile_cache.tar.gz"
+    bundle_path = os.path.join(compile_cache_dir, bundle_name)
+    
+    if not os.path.exists(local_cache_dir) or not os.listdir(local_cache_dir):
+        print(f"Local cache directory {local_cache_dir} is empty or not found. Nothing to persist.")
+        return
+        
+    print(f"Bundling compilation cache to: {bundle_path}...")
+    try:
+        os.makedirs(compile_cache_dir, exist_ok=True)
+        # Archive the local directory
+        with tarfile.open(bundle_path, "w:gz") as tar:
+            tar.add(local_cache_dir, arcname="torch_compile_cache")
+        print(f"✅ Compilation cache successfully persisted to Drive ({os.path.getsize(bundle_path)/1024/1024:.2f} MB).")
+    except Exception as e:
+        print(f"Failed to persist compilation cache: {e}")
