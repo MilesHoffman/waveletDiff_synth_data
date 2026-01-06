@@ -244,7 +244,7 @@ class CrossLevelAttention(nn.Module):
             expander = self.level_expanders[i]
             
             # Expand level representation
-            expanded_level = expander(cross_attended_level).unsqueeze(1) # [batch_size, 1, level_embed_dim]
+            expanded_level = expander(cross_attended_level).unsqueeze(1).expand(-1, original_emb.shape[1], -1)
             # Use broadcasting instead of explicit .expand() to be more graph-friendly
             
             # Apply adaptive layer norm
