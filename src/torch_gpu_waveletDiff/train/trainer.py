@@ -289,6 +289,7 @@ def train(model, datamodule, config,
           precision="32",
           gradient_clip_val=1.0,
           log_every_n_steps=50,
+          log_every_n_epochs=1,
           checkpoint_dir=None,
           save_every_n_epochs=None,
           enable_progress_bar=True):
@@ -311,12 +312,12 @@ def train(model, datamodule, config,
     config['training']['epochs'] = num_epochs
     
     # Callbacks
-    # Set log_interval to 1 by default for epoch reporting
+    # Set log_interval to use the provided log_every_n_epochs
     callbacks = [
         Timer(), 
         TrainingProgressCallback(
             total_epochs=num_epochs, 
-            log_interval=1,
+            log_interval=log_every_n_epochs,
             log_every_n_steps=log_every_n_steps
         )
     ]
