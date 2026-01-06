@@ -38,10 +38,10 @@ from src.copied_waveletDiff.src.data.loaders import create_sliding_windows
 from src.copied_waveletDiff.src.data.module import WaveletTimeSeriesDataModule
 
 
-from tqdm import tqdm
+from tqdm.auto import tqdm
 
 class TrainingProgressCallback(Callback):
-    """Custom callback for clean, unified epoch-level logging and a global progress bar."""
+    """Custom callback for clean, notebook-friendly logging with a global progress bar."""
     
     def __init__(self, total_epochs, log_interval=1):
         super().__init__()
@@ -52,35 +52,37 @@ class TrainingProgressCallback(Callback):
     def on_train_start(self, trainer, pl_module):
         # Initialize a single global progress bar for the entire training run
         if trainer.is_global_zero:
-            self.pbar = tqdm(total=self.total_epochs, desc="Training progress", unit="epoch")
+            self.pbar = tqdm(total=self.total_epochs, desc="Training", unit="epoch")
     
     def on_train_epoch_end(self, trainer, pl_module):
-        # Update progress bar
+        # Unified logging
+        current_epoch = trainer.current_epoch
+        
+        # Get metrics
+        avg_loss = trainer.callback_metrics.get('train_loss_epoch')
+        if avg_loss is None:
+            avg_loss = trainer.callback_metrics.get('train_loss')
+            
+        try:
+            lr = trainer.optimizers[0].param_groups[0]['lr']
+        except:
+            lr = 0.0
+            
+        # Update progress bar and postfix (Loss/LR)
         if self.pbar:
             self.pbar.update(1)
+            if avg_loss is not None:
+                self.pbar.set_postfix({
+                    "Loss": f"{avg_loss:.4f}",
+                    "LR": f"{lr:.1e}"
+                })
         
-        # Unified logging based on interval
-        current_epoch = trainer.current_epoch
-        if current_epoch % self.log_interval == 0:
-            avg_loss = trainer.callback_metrics.get('train_loss_epoch')
-            if avg_loss is None:
-                avg_loss = trainer.callback_metrics.get('train_loss')
-                
-            # Get current learning rate from optimizer
-            try:
-                lr = trainer.optimizers[0].param_groups[0]['lr']
-            except:
-                lr = 0.0
-                
-            if avg_loss is not None and trainer.is_global_zero:
-                # Close the pbar momentarily to avoid print interference if needed,
-                # but tqdm handles concurrent prints well in Colab.
-                print(f"Epoch {current_epoch:03d} | Loss: {avg_loss:.6f} | LR: {lr:.2e}")
-            
-            # Delegate level-specific logging to the model every 100 epochs
-            if current_epoch > 0 and current_epoch % 100 == 0:
-                if hasattr(pl_module, '_log_level_losses_epoch_end'):
-                    pl_module._log_level_losses_epoch_end()
+        # Periodic multi-line logging (Level breakdown)
+        if current_epoch > 0 and current_epoch % 100 == 0:
+            if hasattr(pl_module, '_log_level_losses_epoch_end'):
+                # Use tqdm.write to avoid breaking the progress bar
+                tqdm.write(f"\n--- Epoch {current_epoch} Level Breakdown ---")
+                pl_module._log_level_losses_epoch_end()
                     
     def on_train_end(self, trainer, pl_module):
         if self.pbar:
