@@ -194,36 +194,29 @@ class CrossLevelAttention(nn.Module):
         
         # Step 1: Aggregate each level's coefficient embeddings into a single level representation
         level_representations = []
-        for i, (level_emb, aggregator, projector) in enumerate(zip(level_embeddings, self.level_aggregators, self.level_projections)):
-            # level_emb shape: [batch_size, level_seq_len, level_embed_dim]
+        for i in range(self.num_levels):
+            level_emb = level_embeddings[i]
+            aggregator = self.level_aggregators[i]
+            projector = self.level_projections[i]
             
             # Self-attention pooling
-            # Compute attention weights for aggregation
             attention_weights = aggregator(level_emb)  # [batch_size, level_seq_len, 1]
-            
-            # Apply attention weights to aggregate coefficients into level representation
             level_repr = torch.sum(level_emb * attention_weights, dim=1)  # [batch_size, level_embed_dim]
             
-            # Project to common dimension
+            # Project to common dimension and add position encoding
             level_repr = projector(level_repr)  # [batch_size, common_dim]
-            
-            # Add level-specific position encoding
             level_repr = level_repr + self.level_position_embeddings[i].unsqueeze(0)
-            
             level_representations.append(level_repr)
         
         # Step 2: Stack level representations for attention computation
-        # Shape: [batch_size, num_levels, common_dim]
-        level_stack = torch.stack(level_representations, dim=1)
+        level_stack = torch.stack(level_representations, dim=1)  # [batch_size, num_levels, common_dim]
         
         # Step 3: Apply level-to-level attention
         if self.attention_mode == "all_to_all":
-            # ALL-TO-ALL: Each level attends to all levels (including itself)
             cross_attended_levels, _ = self.cross_attention(
                 level_stack, level_stack, level_stack, need_weights=False
             )
         else:  # cross_only
-            # CROSS-ONLY: Each level only attends to other levels (not itself)
             cross_list = []
             for i in range(self.num_levels):
                 indices = getattr(self, f'other_indices_{i}')
@@ -233,34 +226,32 @@ class CrossLevelAttention(nn.Module):
                     
                 other_levels = level_stack[:, indices, :]
                 query_level = level_stack[:, i:i+1, :]
-                
-                # Apply cross-attention
+                 
                 cross_attended_level, _ = self.cross_attention_layers[i](
                     query_level, other_levels, other_levels, need_weights=False
                 )
                 cross_list.append(cross_attended_level.squeeze(1))
-            
             cross_attended_levels = torch.stack(cross_list, dim=1)
         
         # Step 4: Expand level representations back to coefficient embeddings
         output_embeddings = []
-        for i, (cross_attended_level, expander, original_emb) in enumerate(
-            zip(cross_attended_levels.unbind(1), self.level_expanders, original_embeddings)
-        ):
-            # cross_attended_level shape: [batch_size, common_dim]
-            # original_emb shape: [batch_size, level_seq_len, level_embed_dim]
+        # unbind(1) ensures we have a list of level representations
+        cross_attended_list = cross_attended_levels.unbind(1)
+        
+        for i in range(self.num_levels):
+            cross_attended_level = cross_attended_list[i]
+            original_emb = original_embeddings[i]
+            expander = self.level_expanders[i]
             
-            # Expand level representation to all coefficients in this level
-            expanded_level = expander(cross_attended_level)  # [batch_size, level_embed_dim]
-            expanded_level = expanded_level.unsqueeze(1).expand(-1, original_emb.shape[1], -1)
-            # expanded_level shape: [batch_size, level_seq_len, level_embed_dim]
+            # Expand level representation
+            expanded_level = expander(cross_attended_level).unsqueeze(1) # [batch_size, 1, level_embed_dim]
+            # Use broadcasting instead of explicit .expand() to be more graph-friendly
             
             # Apply adaptive layer norm
             cross_output_norm = self.cross_norm[i](expanded_level, time_embed)
             
-            # Compute gate to control cross-level information
-            time_embed_expanded = time_embed.unsqueeze(1).expand(-1, original_emb.shape[1], -1)
-            gate_input = torch.cat([original_emb, time_embed_expanded], dim=-1)
+            # Compute gate
+            gate_input = torch.cat([original_emb, time_embed.unsqueeze(1).expand(-1, original_emb.shape[1], -1)], dim=-1)
             gate = self.cross_level_gates[i](gate_input)
             
             # Apply gated residual connection
