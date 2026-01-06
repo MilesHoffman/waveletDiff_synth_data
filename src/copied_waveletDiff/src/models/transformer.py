@@ -92,10 +92,10 @@ class WaveletDiffusionTransformer(pl.LightningModule):
             self.dataset_name = data_module.dataset_name
             self.input_dim = data_module.get_input_dim()
             self.coeffs_shapes = wavelet_info['coeffs_shapes']
-            self.levels = wavelet_info['levels']
-            self.level_dims = wavelet_info['level_dims']
-            self.level_start_indices = wavelet_info['level_start_indices']
-            self.num_features = wavelet_info['n_features']
+            self.levels = int(wavelet_info['levels'])
+            self.level_dims = [int(d) for d in wavelet_info['level_dims']]
+            self.level_start_indices = [int(idx) for idx in wavelet_info['level_start_indices']]
+            self.num_features = int(wavelet_info['n_features'])
         else:
             raise ValueError("Data module must be provided to initialize wavelet structure")
         
@@ -342,7 +342,8 @@ class WaveletDiffusionTransformer(pl.LightningModule):
         epoch_avg = epoch_avg.item() if epoch_avg is not None else float('nan')
         self.epoch_losses.append(epoch_avg)
             
-        # Level-specific logging (if any) is now handled by the callback in trainer.py
+        # UI/Console reporting is now handled by TrainingProgressCallback in trainer.py
+        # This keeps the model code focused on logic and the trainer focused on UX.
         pass
 
     def _log_level_losses_epoch_end(self):
