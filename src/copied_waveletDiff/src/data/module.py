@@ -226,13 +226,16 @@ class WaveletTimeSeriesDataModule(pl.LightningDataModule):
         return self.wavelet_info
 
     def train_dataloader(self):
+        # For small datasets, move to GPU once and skip worker overhead
+        if torch.cuda.is_available() and not self.data_tensor.is_cuda:
+            self.data_tensor = self.data_tensor.cuda()
+            self.dataset = TensorDataset(self.data_tensor)
+            
         return DataLoader(
             self.dataset, 
             batch_size=self.batch_size, 
             shuffle=True,
-            num_workers=8,
-            pin_memory=True,
-            persistent_workers=True,
-            prefetch_factor=2
+            num_workers=0,  # No workers needed when data is on GPU
+            pin_memory=False  # Already on GPU
         )
 
