@@ -15,9 +15,9 @@ import pandas as pd
 import multiprocessing
 import logging
 
-# Suppress verbose compilation logs
-torch._inductor.config.disable_progress = True
-torch._logging.set_logs(inductor=logging.ERROR, dynamo=logging.ERROR)
+# import logging
+# torch._inductor.config.disable_progress = True
+# torch._logging.set_logs(inductor=logging.ERROR, dynamo=logging.ERROR)
 
 import lightning.pytorch as pl
 from lightning.pytorch.callbacks import Timer, ModelCheckpoint, Callback

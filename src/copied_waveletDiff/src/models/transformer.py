@@ -328,10 +328,8 @@ class WaveletDiffusionTransformer(pl.LightningModule):
         
         loss = self.compute_loss(x_0, t)
         
-        # Vectorized stability: Patch NaN loss without syncing to CPU
-        # Maintains identical math for valid data, provides safe fallback for NaNs
-        is_bad = ~(torch.isfinite(loss))
-        loss = torch.where(is_bad, torch.full_like(loss, 0.01), loss)
+        # Vectorized stability: Patch NaN/Inf loss without sync
+        loss = torch.nan_to_num(loss, nan=0.01, posinf=0.01, neginf=0.01)
         
         # Async logging (no .item() sync)
         self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True)
@@ -339,8 +337,9 @@ class WaveletDiffusionTransformer(pl.LightningModule):
 
     def on_train_epoch_end(self):
         """Called at the end of each training epoch."""
-        # Calculate average epoch loss
-        epoch_avg = np.mean(self.training_losses[-len(self.trainer.train_dataloader):])
+        # Access average loss via PL (no sync in training loop)
+        epoch_avg = self.trainer.callback_metrics.get('train_loss_epoch')
+        epoch_avg = epoch_avg.item() if epoch_avg is not None else float('nan')
         self.epoch_losses.append(epoch_avg)
 
         if self.trainer.is_global_zero:
