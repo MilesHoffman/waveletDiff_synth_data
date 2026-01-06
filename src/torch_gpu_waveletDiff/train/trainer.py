@@ -15,9 +15,11 @@ import pandas as pd
 import multiprocessing
 import logging
 
-# import logging
-# torch._inductor.config.disable_progress = True
-# torch._logging.set_logs(inductor=logging.ERROR, dynamo=logging.ERROR)
+# Suppress verbose compilation logs
+import logging
+import torch._logging
+torch._inductor.config.disable_progress = True
+torch._logging.set_logs(inductor=logging.ERROR, dynamo=logging.ERROR)
 
 import lightning.pytorch as pl
 from lightning.pytorch.callbacks import Timer, ModelCheckpoint, Callback
@@ -36,18 +38,53 @@ from src.copied_waveletDiff.src.data.loaders import create_sliding_windows
 from src.copied_waveletDiff.src.data.module import WaveletTimeSeriesDataModule
 
 
-class EpochProgressCallback(Callback):
-    """Custom callback for epoch-level logging."""
+from tqdm import tqdm
+
+class TrainingProgressCallback(Callback):
+    """Custom callback for clean, unified epoch-level logging and a global progress bar."""
     
-    def __init__(self, log_interval=1):
+    def __init__(self, total_epochs, log_interval=1):
         super().__init__()
+        self.total_epochs = total_epochs
         self.log_interval = log_interval
+        self.pbar = None
+    
+    def on_train_start(self, trainer, pl_module):
+        # Initialize a single global progress bar for the entire training run
+        if trainer.is_global_zero:
+            self.pbar = tqdm(total=self.total_epochs, desc="Training progress", unit="epoch")
     
     def on_train_epoch_end(self, trainer, pl_module):
-        if trainer.current_epoch % self.log_interval == 0:
-            avg_loss = trainer.callback_metrics.get('train_loss', None)
-            if avg_loss is not None:
-                print(f"Epoch {trainer.current_epoch} | Loss: {avg_loss:.6f}")
+        # Update progress bar
+        if self.pbar:
+            self.pbar.update(1)
+        
+        # Unified logging based on interval
+        current_epoch = trainer.current_epoch
+        if current_epoch % self.log_interval == 0:
+            avg_loss = trainer.callback_metrics.get('train_loss_epoch')
+            if avg_loss is None:
+                avg_loss = trainer.callback_metrics.get('train_loss')
+                
+            # Get current learning rate from optimizer
+            try:
+                lr = trainer.optimizers[0].param_groups[0]['lr']
+            except:
+                lr = 0.0
+                
+            if avg_loss is not None and trainer.is_global_zero:
+                # Close the pbar momentarily to avoid print interference if needed,
+                # but tqdm handles concurrent prints well in Colab.
+                print(f"Epoch {current_epoch:03d} | Loss: {avg_loss:.6f} | LR: {lr:.2e}")
+            
+            # Delegate level-specific logging to the model every 100 epochs
+            if current_epoch > 0 and current_epoch % 100 == 0:
+                if hasattr(pl_module, '_log_level_losses_epoch_end'):
+                    pl_module._log_level_losses_epoch_end()
+                    
+    def on_train_end(self, trainer, pl_module):
+        if self.pbar:
+            self.pbar.close()
 
 
 def setup_environment(matmul_precision="medium", seed=None):
@@ -245,7 +282,8 @@ def train(model, datamodule, config,
     config['training']['epochs'] = num_epochs
     
     # Callbacks
-    callbacks = [Timer(), EpochProgressCallback(log_interval=1)]
+    # Set log_interval to 1 by default for epoch reporting
+    callbacks = [Timer(), TrainingProgressCallback(total_epochs=num_epochs, log_interval=1)]
     
     if checkpoint_dir and save_every_n_epochs:
         os.makedirs(checkpoint_dir, exist_ok=True)
@@ -266,7 +304,7 @@ def train(model, datamodule, config,
         precision=precision,
         callbacks=callbacks,
         enable_checkpointing=checkpoint_dir is not None,
-        enable_progress_bar=enable_progress_bar,
+        enable_progress_bar=False, # We use our global bar instead
         log_every_n_steps=log_every_n_steps,
         gradient_clip_val=gradient_clip_val,
         gradient_clip_algorithm="norm",

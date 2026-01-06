@@ -341,12 +341,9 @@ class WaveletDiffusionTransformer(pl.LightningModule):
         epoch_avg = self.trainer.callback_metrics.get('train_loss_epoch')
         epoch_avg = epoch_avg.item() if epoch_avg is not None else float('nan')
         self.epoch_losses.append(epoch_avg)
-
-        if self.trainer.is_global_zero:
-            print(f"Epoch {self.current_epoch} - Avg Loss: {epoch_avg:.6f}")
             
-            if self.current_epoch % 100 == 0:
-                self._log_level_losses_epoch_end()
+        # Level-specific logging (if any) is now handled by the callback in trainer.py
+        pass
 
     def _log_level_losses_epoch_end(self):
         """Log level losses using a sample from the training data."""
