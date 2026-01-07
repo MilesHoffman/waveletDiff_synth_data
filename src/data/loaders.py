@@ -112,10 +112,10 @@ def load_exchange_rate_data(data_dir: str, seq_len: int = 24, normalize_data: bo
 
 def load_stocks_data(data_dir: str, seq_len: int = 24, normalize_data: bool = True, data_path: str = None) -> Tuple[torch.Tensor, dict]:
     """Load Stocks dataset."""
-    if data_path is None:
-        stocks_path = os.path.join(data_dir, "stocks", "stock_data.csv")
-    else:
-        stocks_path = data_path
+    if not data_path:
+        raise ValueError("path to stocks dataset MUST be provided via data_path")
+    
+    stocks_path = data_path
 
     if not os.path.exists(stocks_path):
         raise FileNotFoundError(f"Stocks data not found at: {stocks_path}")
