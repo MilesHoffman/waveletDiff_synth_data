@@ -74,10 +74,10 @@ class WaveletDiffusionTransformer(pl.LightningModule):
         self.plateau_patience = plateau_patience
         self.plateau_factor = plateau_factor
         
-        # optimizer parameters
-        self.weight_decay = 1e-5
-        self.onecycle_max_lr = 1e-3
-        self.onecycle_pct_start = 0.3
+        # optimizer parameters (from config with defaults for backward compatibility)
+        self.weight_decay = config['optimizer'].get('weight_decay', 1e-5)
+        self.onecycle_max_lr = config['optimizer'].get('onecycle_max_lr', 1e-3)
+        self.onecycle_pct_start = config['optimizer'].get('onecycle_pct_start', 0.3)
         
         # Step-based scheduling helpers
         self.steps_per_epoch = None
