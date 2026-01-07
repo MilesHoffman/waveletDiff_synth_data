@@ -78,6 +78,7 @@ class WaveletDiffusionTransformer(pl.LightningModule):
         self.weight_decay = config['optimizer'].get('weight_decay', 1e-5)
         self.onecycle_max_lr = config['optimizer'].get('onecycle_max_lr', 1e-3)
         self.onecycle_pct_start = config['optimizer'].get('onecycle_pct_start', 0.3)
+        self.log_every_n_epochs = config['training'].get('log_every_n_epochs', 100)
         
         # Step-based scheduling helpers
         self.steps_per_epoch = None
@@ -339,10 +340,15 @@ class WaveletDiffusionTransformer(pl.LightningModule):
         self.epoch_losses.append(epoch_avg)
 
         if self.trainer.is_global_zero:
-            print(f"Epoch {self.current_epoch} - Avg Loss: {epoch_avg:.6f}")
+            # Get current learning rate
+            current_lr = self.trainer.optimizers[0].param_groups[0]['lr']
             
-            if self.current_epoch % 100 == 0:
+            if self.current_epoch % self.log_every_n_epochs == 0:
+                print(f"Epoch {self.current_epoch} - Avg Loss: {epoch_avg:.6f} - LR: {current_lr:.2e}")
                 self._log_level_losses_epoch_end()
+            elif self.log_every_n_epochs == 1 or (self.current_epoch + 1) == self.max_epochs:
+                # Always log last epoch or if logging is set to 1
+                print(f"Epoch {self.current_epoch} - Avg Loss: {epoch_avg:.6f} - LR: {current_lr:.2e}")
 
     def _log_level_losses_epoch_end(self):
         """Log level losses using a sample from the training data."""
