@@ -74,12 +74,10 @@ class WaveletDiffusionTransformer(pl.LightningModule):
         self.plateau_patience = plateau_patience
         self.plateau_factor = plateau_factor
         
-        # optimizer parameters (from config with defaults for backward compatibility)
+        # optimizer parameters (matches source defaults)
         self.weight_decay = config['optimizer'].get('weight_decay', 1e-5)
         self.onecycle_max_lr = config['optimizer'].get('onecycle_max_lr', 1e-3)
         self.onecycle_pct_start = config['optimizer'].get('onecycle_pct_start', 0.3)
-        self.log_every_n_epochs = config['training'].get('log_every_n_epochs', 100)
-        self.log_level_losses_every_n_epochs = config['training'].get('log_level_losses_every_n_epochs', 100)
         
         # Step-based scheduling helpers
         self.steps_per_epoch = None
@@ -341,15 +339,10 @@ class WaveletDiffusionTransformer(pl.LightningModule):
         self.epoch_losses.append(epoch_avg)
 
         if self.trainer.is_global_zero:
-            # Get current learning rate
-            current_lr = self.trainer.optimizers[0].param_groups[0]['lr']
+            print(f"Epoch {self.current_epoch} - Avg Loss: {epoch_avg:.6f}")
             
-            # Log regular loss/LR at one frequency
-            if self.current_epoch % self.log_every_n_epochs == 0 or (self.current_epoch + 1) == self.max_epochs:
-                print(f"Epoch {self.current_epoch} - Avg Loss: {epoch_avg:.6f} - LR: {current_lr:.2e}")
-            
-            # Log level-specific losses at a separate frequency
-            if self.current_epoch % self.log_level_losses_every_n_epochs == 0:
+            # Log level-specific losses every 100 epochs (matches source)
+            if self.current_epoch % 100 == 0:
                 self._log_level_losses_epoch_end()
 
     def _log_level_losses_epoch_end(self):
