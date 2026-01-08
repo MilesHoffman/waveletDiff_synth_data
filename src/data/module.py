@@ -60,21 +60,9 @@ class WaveletTimeSeriesDataModule(pl.LightningDataModule):
         print(f"Wavelet: {self.wavelet_type}, Levels: {self.wavelet_info['levels']}")
 
     def _load_dataset(self, dataset_name: str, seq_len: int, normalize_data: bool = True) -> torch.Tensor:
-        """Load dataset based on the dataset name."""
-        dataset_name = dataset_name.lower()
         
-        if dataset_name.startswith("ett"):
-            raw_data, norm_stats = load_ett_data(dataset_name, self.data_dir, seq_len=seq_len, normalize_data=normalize_data)
-        elif dataset_name == "fmri":
-            raw_data, norm_stats = load_fmri_data(self.data_dir, seq_len=seq_len, normalize_data=normalize_data)
-        elif dataset_name == "exchange_rate":
-            raw_data, norm_stats = load_exchange_rate_data(self.data_dir, seq_len=seq_len, normalize_data=normalize_data)
-        elif dataset_name == "stocks":
-            raw_data, norm_stats = load_stocks_data(self.data_dir, seq_len=seq_len, normalize_data=normalize_data)
-        elif dataset_name == "eeg":
-            raw_data, norm_stats = load_eeg_data(self.data_dir, seq_len=seq_len, normalize_data=normalize_data)
-        else:
-            raise ValueError(f"Unsupported dataset: {dataset_name}")
+        raw_data, norm_stats = load_stocks_data(self.data_dir, seq_len=seq_len, normalize_data=normalize_data)
+        
         return raw_data, norm_stats
 
     def _convert_to_wavelet_coefficients(self) -> tuple[torch.Tensor, dict]:
