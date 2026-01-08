@@ -40,7 +40,6 @@ class WaveletTimeSeriesDataModule(pl.LightningDataModule):
         self.wavelet_type = config['wavelet']['type']
         self.num_levels = config['wavelet']['levels']
         self.normalize_data = config['data']['normalize_data']
-        self.data_path = config['data'].get('data_path', None)
         self.mode = kwargs.get('mode', 'symmetric')
 
         # Load raw time series data
@@ -71,7 +70,7 @@ class WaveletTimeSeriesDataModule(pl.LightningDataModule):
         elif dataset_name == "exchange_rate":
             raw_data, norm_stats = load_exchange_rate_data(self.data_dir, seq_len=seq_len, normalize_data=normalize_data)
         elif dataset_name == "stocks":
-            raw_data, norm_stats = load_stocks_data(self.data_dir, seq_len=seq_len, normalize_data=normalize_data, data_path=self.data_path)
+            raw_data, norm_stats = load_stocks_data(self.data_dir, seq_len=seq_len, normalize_data=normalize_data)
         elif dataset_name == "eeg":
             raw_data, norm_stats = load_eeg_data(self.data_dir, seq_len=seq_len, normalize_data=normalize_data)
         else:

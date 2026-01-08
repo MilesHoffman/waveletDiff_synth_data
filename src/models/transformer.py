@@ -15,7 +15,7 @@ import os
 from .layers import TimeEmbedding, WaveletLevelTransformer
 from .attention import CrossLevelAttention
 from torch.optim.lr_scheduler import CosineAnnealingLR, ReduceLROnPlateau, LambdaLR, OneCycleLR
-from ..utils.noise_schedules import get_noise_schedule
+from utils.noise_schedules import get_noise_schedule
 
 
 # Hyperparameters
@@ -74,10 +74,10 @@ class WaveletDiffusionTransformer(pl.LightningModule):
         self.plateau_patience = plateau_patience
         self.plateau_factor = plateau_factor
         
-        # optimizer parameters (matches source defaults)
-        self.weight_decay = config['optimizer'].get('weight_decay', 1e-5)
-        self.onecycle_max_lr = config['optimizer'].get('onecycle_max_lr', 1e-3)
-        self.onecycle_pct_start = config['optimizer'].get('onecycle_pct_start', 0.3)
+        # optimizer parameters
+        self.weight_decay = 1e-5
+        self.onecycle_max_lr = 1e-3
+        self.onecycle_pct_start = 0.3
         
         # Step-based scheduling helpers
         self.steps_per_epoch = None
@@ -341,7 +341,6 @@ class WaveletDiffusionTransformer(pl.LightningModule):
         if self.trainer.is_global_zero:
             print(f"Epoch {self.current_epoch} - Avg Loss: {epoch_avg:.6f}")
             
-            # Log level-specific losses every 100 epochs (matches source)
             if self.current_epoch % 100 == 0:
                 self._log_level_losses_epoch_end()
 
