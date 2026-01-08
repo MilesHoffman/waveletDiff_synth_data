@@ -43,8 +43,10 @@ def main():
     
     args = parser.parse_args()
     
-    # Load configuration
-    config_manager = ConfigManager()
+    # Load configuration with path relative to this script's location
+    script_dir = Path(__file__).resolve().parent
+    config_dir = script_dir.parent / "configs"
+    config_manager = ConfigManager(config_dir=str(config_dir))
     
     # Determine dataset name for dataset-specific config
     dataset_name = args.dataset
