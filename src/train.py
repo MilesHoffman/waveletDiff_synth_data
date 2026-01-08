@@ -37,6 +37,9 @@ def main():
                        help='Number of epochs (overrides config)')
     parser.add_argument('--batch_size', type=int, default=None,
                        help='Batch size (overrides config)')
+    parser.add_argument('--compile_mode', type=str, default=None,
+                       choices=['default', 'reduce-overhead', 'max-autotune'],
+                       help='torch.compile mode (default: None/disabled)')
     
     args = parser.parse_args()
     
@@ -98,6 +101,12 @@ def main():
     print("="*60)
     
     model = WaveletDiffusionTransformer(data_module=data_module, config=config)
+    
+    # Apply torch.compile if requested
+    if args.compile_mode:
+        print(f"Compiling model with mode: {args.compile_mode}")
+        model = torch.compile(model, mode=args.compile_mode)
+        print("Model compiled successfully")
 
     # Create experiment directories
     dataset_name = config['dataset']['name']
