@@ -40,6 +40,8 @@ def main():
     parser.add_argument('--compile_mode', type=str, default=None,
                        choices=['default', 'reduce-overhead', 'max-autotune'],
                        help='torch.compile mode (default: None/disabled)')
+    parser.add_argument('--log_every_n_epochs', type=int, default=1,
+                       help='Print epoch loss every N epochs (default: 1)')
     
     args = parser.parse_args()
     
@@ -67,6 +69,9 @@ def main():
         config['training']['epochs'] = args.epochs
     if args.batch_size:
         config['training']['batch_size'] = args.batch_size
+    
+    # Set logging frequency (always apply, has default)
+    config['training']['log_every_n_epochs'] = args.log_every_n_epochs
     
     print(f"Starting WaveletDiff Training")
     print(f"Dataset: {config['dataset']['name']}")

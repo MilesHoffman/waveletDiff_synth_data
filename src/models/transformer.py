@@ -45,6 +45,7 @@ class WaveletDiffusionTransformer(pl.LightningModule):
         ddim_steps = config['sampling']['ddim_steps']
         energy_weight = config['energy']['weight']
         max_epochs = config['training']['epochs']
+        log_every_n_epochs = config['training'].get('log_every_n_epochs', 1)
         noise_schedule = config['noise']['schedule']
         scheduler_type = config['optimizer']['scheduler_type']
         warmup_epochs = config['optimizer']['warmup_epochs']
@@ -59,6 +60,7 @@ class WaveletDiffusionTransformer(pl.LightningModule):
         self.prediction_target = prediction_target  # "noise" or "coefficient"
         self.use_cross_level_attention = use_cross_level_attention
         self.max_epochs = max_epochs
+        self.log_every_n_epochs = log_every_n_epochs
         
         # Store the number of diffusion timesteps as an instance attribute
         self.T = T
@@ -339,7 +341,7 @@ class WaveletDiffusionTransformer(pl.LightningModule):
         epoch_avg = np.mean([l.item() if torch.is_tensor(l) else l for l in recent_losses])
         self.epoch_losses.append(epoch_avg)
 
-        if self.trainer.is_global_zero:
+        if self.trainer.is_global_zero and (self.current_epoch % self.log_every_n_epochs == 0):
             print(f"Epoch {self.current_epoch} - Avg Loss: {epoch_avg:.6f}")
             
             if self.current_epoch % 100 == 0:
