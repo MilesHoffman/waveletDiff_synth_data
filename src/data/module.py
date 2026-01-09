@@ -11,10 +11,7 @@ import numpy as np
 import torch
 import pywt
 
-from .loaders import (
-    load_ett_data, load_fmri_data, load_exchange_rate_data,
-    load_stocks_data, load_eeg_data
-)
+from .loaders import load_stocks_data
 
 
 class WaveletTimeSeriesDataModule(pl.LightningDataModule):
@@ -60,9 +57,8 @@ class WaveletTimeSeriesDataModule(pl.LightningDataModule):
         print(f"Wavelet: {self.wavelet_type}, Levels: {self.wavelet_info['levels']}")
 
     def _load_dataset(self, dataset_name: str, seq_len: int, normalize_data: bool = True) -> torch.Tensor:
-        
-        raw_data, norm_stats = load_stocks_data(self.data_dir, seq_len=seq_len, normalize_data=normalize_data)
-        
+        """Load dataset from the path specified in dataset_name."""
+        raw_data, norm_stats = load_stocks_data(self.data_dir, dataset_name, seq_len=seq_len, normalize_data=normalize_data)
         return raw_data, norm_stats
 
     def _convert_to_wavelet_coefficients(self) -> tuple[torch.Tensor, dict]:

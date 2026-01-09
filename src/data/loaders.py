@@ -110,9 +110,9 @@ def load_exchange_rate_data(data_dir: str, seq_len: int = 24, normalize_data: bo
     return torch.FloatTensor(data), norm_stats
 
 
-def load_stocks_data(data_dir: str, seq_len: int = 24, normalize_data: bool = True) -> Tuple[torch.Tensor, dict]:
-    """Load Stocks dataset."""
-    stocks_path = os.path.join(data_dir, "stocks", "stock_data.csv")
+def load_stocks_data(data_dir: str, path: str, seq_len: int = 24, normalize_data: bool = True) -> Tuple[torch.Tensor, dict]:
+    """Load Stocks dataset from a specified path."""
+    stocks_path = os.path.join(data_dir, path)
     if not os.path.exists(stocks_path):
         raise FileNotFoundError(f"Stocks data not found at: {stocks_path}")
 
