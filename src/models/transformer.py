@@ -297,7 +297,8 @@ class WaveletDiffusionTransformer(pl.LightningModule):
     def compute_loss(self, x_0, t):
         """Compute training loss."""
         x_t, noise = self.compute_forward_process(x_0, t)
-        t_norm = t.float() / self.T
+        # Clone t to avoid "accessing tensor output of CUDAGraphs that has been overwritten" error
+        t_norm = t.clone().float() / self.T
         prediction = self(x_t, t_norm)
         
         if self.prediction_target == "noise":
@@ -357,7 +358,7 @@ class WaveletDiffusionTransformer(pl.LightningModule):
             
             with torch.no_grad():
                 x_t, noise = self.compute_forward_process(x_0, t)
-                t_norm = t.float() / self.T
+                t_norm = t.clone().float() / self.T
                 prediction = self(x_t, t_norm)
                 
                 target = noise if self.prediction_target == "noise" else x_0
