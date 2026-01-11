@@ -22,6 +22,39 @@ try:
 except Exception as e:
     print(f"Could not set matmul precision: {e}")
     print("Continuing with default precision...")
+    
+    
+class EpochProgressBar(TQDMProgressBar):
+    """
+    Custom progress bar that only shows the main epoch progress,
+    hiding the batch-level inner loops.
+    """
+    def init_train_tqdm(self):
+        """Override to disable the training batch bar."""
+        bar = super().init_train_tqdm()
+        bar.disable = True
+        return bar
+
+    def init_validation_tqdm(self):
+        """Override to disable the validation batch bar."""
+        bar = super().init_validation_tqdm()
+        bar.disable = True
+        return bar
+
+    def on_train_epoch_end(self, trainer, pl_module):
+        """Update the main progress bar with metrics at the end of each epoch."""
+        super().on_train_epoch_end(trainer, pl_module)
+        
+        # Access metrics stored in the model
+        metrics = {}
+        if hasattr(pl_module, "latest_loss"):
+            metrics["loss"] = f"{pl_module.latest_loss:.4f}"
+        if hasattr(pl_module, "latest_lr"):
+            metrics["lr"] = f"{pl_module.latest_lr:.2e}"
+            
+        if metrics:
+            self.main_progress_bar.set_postfix(metrics)
+
 
 
 def main():
@@ -153,7 +186,7 @@ def main():
         enable_progress_bar=True,
         callbacks=[
             Timer(),
-            TQDMProgressBar(refresh_rate=args.progress_bar_refresh_rate)
+            EpochProgressBar(refresh_rate=args.progress_bar_refresh_rate)
         ],
         log_every_n_steps=50,
         gradient_clip_val=1.0,

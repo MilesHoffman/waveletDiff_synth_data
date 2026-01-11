@@ -341,8 +341,14 @@ class WaveletDiffusionTransformer(pl.LightningModule):
             opt = self.optimizers()
             current_lr = opt.param_groups[0]['lr']
             
-            self.log("loss", current_loss, prog_bar=True, logger=False)
-            self.log("lr", current_lr, prog_bar=True, logger=False)
+            # Store for EpochProgressBar to read
+            self.latest_loss = current_loss
+            self.latest_lr = current_lr
+            
+            # Keep logging to internal logger (TensorBoard/CSV) if needed, but disable prog_bar here
+            # to let EpochProgressBar handle the display efficiently
+            self.log("loss", current_loss, prog_bar=False, logger=True)
+            self.log("lr", current_lr, prog_bar=False, logger=True)
 
     def on_train_epoch_end(self):
         """Called at the end of each training epoch."""
