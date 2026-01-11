@@ -312,6 +312,9 @@ class WaveletDiffusionTransformer(pl.LightningModule):
 
     def training_step(self, batch, batch_idx):
         """Training step with enhanced stability and monitoring."""
+        # Mark the start of a CUDA graph step to prevent memory overwrite errors
+        torch.compiler.cudagraph_mark_step_begin()
+        
         x_0 = batch[0]
         
         # Check input for NaN
@@ -320,8 +323,7 @@ class WaveletDiffusionTransformer(pl.LightningModule):
             x_0 = torch.nan_to_num(x_0, nan=0.0, posinf=1.0, neginf=-1.0)
         
         t = torch.randint(0, self.T, (x_0.size(0),), device=self.device)
-        # Clone t outside of compiled region (or before passing to it) to fix CUDA Graph overwrite error
-        loss = self.compute_loss(x_0, t.clone())
+        loss = self.compute_loss(x_0, t)
         
         # Enhanced loss monitoring and stability
         if torch.isnan(loss) or torch.isinf(loss):
