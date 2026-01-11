@@ -331,6 +331,19 @@ class WaveletDiffusionTransformer(pl.LightningModule):
         self.training_losses.append(loss.detach())
         return loss
 
+    def on_train_batch_end(self, outputs, batch, batch_idx):
+        """Log metrics to progress bar without breaking the graph."""
+        if self.trainer.is_global_zero and batch_idx % self.trainer.progress_bar_callback.refresh_rate == 0:
+            # Get latest loss (already detached in training_step)
+            current_loss = self.training_losses[-1].item() if self.training_losses else 0.0
+            
+            # Get current LR
+            opt = self.optimizers()
+            current_lr = opt.param_groups[0]['lr']
+            
+            self.log("loss", current_loss, prog_bar=True, logger=False)
+            self.log("lr", current_lr, prog_bar=True, logger=False)
+
     def on_train_epoch_end(self):
         """Called at the end of each training epoch."""
         # Calculate average epoch loss (convert detached tensors to scalars here, outside compiled region)

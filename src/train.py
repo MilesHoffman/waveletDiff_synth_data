@@ -7,7 +7,7 @@ from pathlib import Path
 
 import torch
 import pytorch_lightning as pl
-from pytorch_lightning.callbacks import Timer
+from pytorch_lightning.callbacks import Timer, TQDMProgressBar
 import numpy as np
 
 from models import WaveletDiffusionTransformer
@@ -44,6 +44,8 @@ def main():
                        help='Print epoch loss every N epochs (default: 1)')
     parser.add_argument('--data_dir', type=str, default=None,
                        help='Data directory (overrides config default of ../data)')
+    parser.add_argument('--progress_bar_refresh_rate', type=int, default=50,
+                       help='Progress bar refresh rate in steps (default: 50)')
     
     args = parser.parse_args()
     
@@ -147,9 +149,12 @@ def main():
         devices='auto',
         strategy="ddp_find_unused_parameters_true",
         precision="32",
-        callbacks=[Timer()],
         enable_checkpointing=False,
-        enable_progress_bar=False,
+        enable_progress_bar=True,
+        callbacks=[
+            Timer(),
+            TQDMProgressBar(refresh_rate=args.progress_bar_refresh_rate)
+        ],
         log_every_n_steps=50,
         gradient_clip_val=1.0,
         detect_anomaly=False,
