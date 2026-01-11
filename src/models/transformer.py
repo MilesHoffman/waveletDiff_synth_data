@@ -298,7 +298,7 @@ class WaveletDiffusionTransformer(pl.LightningModule):
         """Compute training loss."""
         x_t, noise = self.compute_forward_process(x_0, t)
         # Clone t to avoid "accessing tensor output of CUDAGraphs that has been overwritten" error
-        t_norm = t.clone().float() / self.T
+        t_norm = t.float() / self.T
         prediction = self(x_t, t_norm)
         
         if self.prediction_target == "noise":
@@ -320,7 +320,8 @@ class WaveletDiffusionTransformer(pl.LightningModule):
             x_0 = torch.nan_to_num(x_0, nan=0.0, posinf=1.0, neginf=-1.0)
         
         t = torch.randint(0, self.T, (x_0.size(0),), device=self.device)
-        loss = self.compute_loss(x_0, t)
+        # Clone t outside of compiled region (or before passing to it) to fix CUDA Graph overwrite error
+        loss = self.compute_loss(x_0, t.clone())
         
         # Enhanced loss monitoring and stability
         if torch.isnan(loss) or torch.isinf(loss):
