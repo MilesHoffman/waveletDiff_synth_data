@@ -215,6 +215,7 @@ class WaveletTimeSeriesDataModule(pl.LightningDataModule):
             batch_size=self.batch_size, 
             shuffle=True,
             num_workers=4,
-            pin_memory=True
+            pin_memory=True,
+            drop_last=True
         )
 
