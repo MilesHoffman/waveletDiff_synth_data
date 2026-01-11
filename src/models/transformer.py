@@ -347,8 +347,11 @@ class WaveletDiffusionTransformer(pl.LightningModule):
             
             # Keep logging to internal logger (TensorBoard/CSV) if needed, but disable prog_bar here
             # to let EpochProgressBar handle the display efficiently
-            self.log("loss", current_loss, prog_bar=False, logger=True)
-            self.log("lr", current_lr, prog_bar=False, logger=True)
+            # Note: User has logger=False in Trainer, so these calls might warn if logger=True is passed.
+            # We set logger=False here to silence the warning "You called self.log... but have no logger".
+            # If the user enables a logger later, they should change this back to True.
+            self.log("loss", current_loss, prog_bar=False, logger=False)
+            self.log("lr", current_lr, prog_bar=False, logger=False)
 
     def on_train_epoch_end(self):
         """Called at the end of each training epoch."""
