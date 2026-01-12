@@ -332,8 +332,8 @@ class WaveletDiffusionTransformer(pl.LightningModule):
         return loss
 
     def on_train_batch_end(self, outputs, batch, batch_idx):
-        """Log metrics to progress bar without breaking the graph."""
-        if self.trainer.is_global_zero and batch_idx % self.trainer.progress_bar_callback.refresh_rate == 0:
+        """Store metrics for the custom progress bar."""
+        if self.trainer.is_global_zero:
             # Get latest loss (already detached in training_step)
             current_loss = self.training_losses[-1].item() if self.training_losses else 0.0
             
@@ -341,15 +341,11 @@ class WaveletDiffusionTransformer(pl.LightningModule):
             opt = self.optimizers()
             current_lr = opt.param_groups[0]['lr']
             
-            # Store for EpochProgressBar to read
+            # Store for custom callback to read
             self.latest_loss = current_loss
             self.latest_lr = current_lr
             
-            # Keep logging to internal logger (TensorBoard/CSV) if needed, but disable prog_bar here
-            # to let EpochProgressBar handle the display efficiently
-            # Note: User has logger=False in Trainer, so these calls might warn if logger=True is passed.
-            # We set logger=False here to silence the warning "You called self.log... but have no logger".
-            # If the user enables a logger later, they should change this back to True.
+            # Explicitly log to CSV/TensorBoard if needed (currently logger=False in Trainer)
             self.log("loss", current_loss, prog_bar=False, logger=False)
             self.log("lr", current_lr, prog_bar=False, logger=False)
 
