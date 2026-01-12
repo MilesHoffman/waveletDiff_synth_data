@@ -7,7 +7,8 @@ from pathlib import Path
 
 import torch
 import pytorch_lightning as pl
-from pytorch_lightning.callbacks import Timer, TQDMProgressBar
+from pytorch_lightning.callbacks import Timer, Callback
+from tqdm.auto import tqdm
 import numpy as np
 
 from models import WaveletDiffusionTransformer
@@ -24,36 +25,40 @@ except Exception as e:
     print("Continuing with default precision...")
     
     
-class EpochProgressBar(TQDMProgressBar):
+    
+    
+class SimpleTqdmCallback(Callback):
     """
-    Custom progress bar that only shows the main epoch progress,
-    hiding the batch-level inner loops.
+    A simple callback that uses standard tqdm to track epochs.
+    Bypasses PyTorch Lightning's TQDMProgressBar complexity.
     """
-    def init_train_tqdm(self):
-        """Override to disable the training batch bar."""
-        bar = super().init_train_tqdm()
-        bar.disable = True
-        return bar
+    def __init__(self, refresh_rate: int = 50):
+        self.refresh_rate = refresh_rate
+        self.pbar = None
 
-    def init_validation_tqdm(self):
-        """Override to disable the validation batch bar."""
-        bar = super().init_validation_tqdm()
-        bar.disable = True
-        return bar
+    def on_train_start(self, trainer, pl_module):
+        # Create a standard tqdm bar
+        print("Initializing Training Progress Bar...")
+        self.pbar = tqdm(total=trainer.max_epochs, desc="Epochs", position=0, leave=True)
 
     def on_train_epoch_end(self, trainer, pl_module):
-        """Update the main progress bar with metrics at the end of each epoch."""
-        super().on_train_epoch_end(trainer, pl_module)
-        
-        # Access metrics stored in the model
-        metrics = {}
-        if hasattr(pl_module, "latest_loss"):
-            metrics["loss"] = f"{pl_module.latest_loss:.4f}"
-        if hasattr(pl_module, "latest_lr"):
-            metrics["lr"] = f"{pl_module.latest_lr:.2e}"
+        if self.pbar:
+            # Update by 1 epoch
+            self.pbar.update(1)
             
-        if metrics:
-            self.main_progress_bar.set_postfix(metrics)
+            # Update metrics
+            metrics = {}
+            if hasattr(pl_module, "latest_loss"):
+                metrics["loss"] = f"{pl_module.latest_loss:.4f}"
+            if hasattr(pl_module, "latest_lr"):
+                metrics["lr"] = f"{pl_module.latest_lr:.2e}"
+            
+            if metrics:
+                self.pbar.set_postfix(metrics)
+
+    def on_train_end(self, trainer, pl_module):
+        if self.pbar:
+            self.pbar.close()
 
 
 
@@ -183,10 +188,10 @@ def main():
         strategy="auto",
         precision="32",
         enable_checkpointing=False,
-        enable_progress_bar=True,
+        enable_progress_bar=False,  # Disable PL's default bar
         callbacks=[
             Timer(),
-            EpochProgressBar(refresh_rate=args.progress_bar_refresh_rate)
+            SimpleTqdmCallback(refresh_rate=args.progress_bar_refresh_rate)
         ],
         log_every_n_steps=50,
         gradient_clip_val=1.0,
