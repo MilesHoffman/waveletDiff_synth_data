@@ -180,7 +180,7 @@ def main():
         max_epochs=config['training']['epochs'],
         accelerator='gpu',
         devices='auto',
-        strategy="ddp",
+        strategy="auto",
         precision="32",
         enable_checkpointing=False,
         enable_progress_bar=True,
