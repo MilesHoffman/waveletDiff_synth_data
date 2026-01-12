@@ -332,22 +332,10 @@ class WaveletDiffusionTransformer(pl.LightningModule):
         return loss
 
     def on_train_batch_end(self, outputs, batch, batch_idx):
-        """Store metrics for the custom progress bar."""
-        if self.trainer.is_global_zero:
-            # Get latest loss (already detached in training_step)
-            current_loss = self.training_losses[-1].item() if self.training_losses else 0.0
-            
-            # Get current LR
-            opt = self.optimizers()
-            current_lr = opt.param_groups[0]['lr']
-            
-            # Store for custom callback to read
-            self.latest_loss = current_loss
-            self.latest_lr = current_lr
-            
-            # Explicitly log to CSV/TensorBoard if needed (currently logger=False in Trainer)
-            self.log("loss", current_loss, prog_bar=False, logger=False)
-            self.log("lr", current_lr, prog_bar=False, logger=False)
+        """Store metrics for the custom progress bar (CUDA graph compatible)."""
+        # NOTE: Avoid .item() here! It causes CPU-GPU sync and breaks reduce-overhead mode.
+        # Metrics are updated in on_train_epoch_end instead.
+        pass
 
     def on_train_epoch_end(self):
         """Called at the end of each training epoch."""
@@ -355,6 +343,11 @@ class WaveletDiffusionTransformer(pl.LightningModule):
         recent_losses = self.training_losses[-len(self.trainer.train_dataloader):]
         epoch_avg = np.mean([l.item() if torch.is_tensor(l) else l for l in recent_losses])
         self.epoch_losses.append(epoch_avg)
+        
+        # Store metrics for progress bar callback (safe to do here, outside compiled graph)
+        opt = self.optimizers()
+        self.latest_loss = epoch_avg
+        self.latest_lr = opt.param_groups[0]['lr']
 
         if self.trainer.is_global_zero and (self.current_epoch % self.log_every_n_epochs == 0):
             print(f"Epoch {self.current_epoch} - Avg Loss: {epoch_avg:.6f}")
