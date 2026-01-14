@@ -209,14 +209,14 @@ def main():
             
             postfix = {
                 "loss": f"{train_loss:.6f}",
-                "lr": f"{lr:.8f}"
+                "lr": f"{lr:.2e}"
             }
             self.main_progress_bar.set_postfix(postfix)
             self.main_progress_bar.update(1)
             
             # Safe logging that doesn't break the progress bar
             if (trainer.current_epoch + 1) % self.log_every_n_epochs == 0:
-                self.main_progress_bar.write(f"Epoch {trainer.current_epoch} - Avg Loss: {train_loss:.6f} - LR: {lr:.8f}")
+                self.main_progress_bar.write(f"Epoch {trainer.current_epoch} - Avg Loss: {train_loss:.6f} - LR: {lr:.2e}")
 
         def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
             # Override parent to do nothing ensures we don't crash
