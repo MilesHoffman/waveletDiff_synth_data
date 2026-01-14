@@ -42,6 +42,23 @@ def main():
     parser.add_argument('--wavelet_levels', type=str, default=None,
                        help='Wavelet levels (overrides config, can be "auto" or integer)')
     
+    # Model Architecture Overrides
+    parser.add_argument('--embed_dim', type=int, default=None)
+    parser.add_argument('--num_heads', type=int, default=None)
+    parser.add_argument('--num_layers', type=int, default=None)
+    parser.add_argument('--time_embed_dim', type=int, default=None)
+    parser.add_argument('--dropout', type=float, default=None)
+    parser.add_argument('--prediction_target', type=str, default=None)
+    
+    # Training & Optimizer Overrides
+    parser.add_argument('--lr', type=float, default=None)
+    parser.add_argument('--scheduler_type', type=str, default=None)
+    parser.add_argument('--warmup_epochs', type=int, default=None)
+    parser.add_argument('--data_dir', type=str, default=None)
+    parser.add_argument('--use_cross_level_attention', type=str, default=None, help='true or false')
+    parser.add_argument('--energy_weight', type=float, default=None)
+    parser.add_argument('--noise_schedule', type=str, default=None)
+    
     args = parser.parse_args()
     
     # Load configuration
@@ -74,6 +91,25 @@ def main():
             config['wavelet']['levels'] = int(args.wavelet_levels)
         except ValueError:
             config['wavelet']['levels'] = args.wavelet_levels
+            
+    # Apply generalized overrides
+    if args.embed_dim: config['model']['embed_dim'] = args.embed_dim
+    if args.num_heads: config['model']['num_heads'] = args.num_heads
+    if args.num_layers: config['model']['num_layers'] = args.num_layers
+    if args.time_embed_dim: config['model']['time_embed_dim'] = args.time_embed_dim
+    if args.dropout is not None: config['model']['dropout'] = args.dropout
+    if args.prediction_target: config['model']['prediction_target'] = args.prediction_target
+    
+    if args.lr: config['optimizer']['lr'] = args.lr
+    if args.scheduler_type: config['optimizer']['scheduler_type'] = args.scheduler_type
+    if args.warmup_epochs: config['optimizer']['warmup_epochs'] = args.warmup_epochs
+    if args.data_dir: config['data']['data_dir'] = args.data_dir
+    
+    if args.use_cross_level_attention:
+        config['attention']['use_cross_level_attention'] = args.use_cross_level_attention.lower() == 'true'
+    
+    if args.energy_weight is not None: config['energy']['weight'] = args.energy_weight
+    if args.noise_schedule: config['noise']['schedule'] = args.noise_schedule
     
     print(f"Starting WaveletDiff Training")
     print(f"Dataset: {config['dataset']['name']}")
