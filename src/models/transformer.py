@@ -316,6 +316,15 @@ class WaveletDiffusionTransformer(pl.LightningModule):
         # Mark step start for reduce-overhead mode to prevent CUDAGraphs memory errors
         if self.compile_config.get('enabled', False) and self.compile_config.get('mode') == 'reduce-overhead':
             torch.compiler.cudagraph_mark_step_begin()
+            
+    def on_train_batch_end(self, outputs, batch, batch_idx):
+        """Hook called after training step - safe for logging (runs in eager mode)."""
+        # Defer logging to here to avoid graph breaks in training_step logic
+        if isinstance(outputs, dict):
+            if 'nan_rate' in outputs:
+                self.log('nan_rate', outputs['nan_rate'], prog_bar=True, on_step=False, on_epoch=True)
+            if 'train_loss' in outputs:
+                self.log('train_loss', outputs['train_loss'], prog_bar=True, on_step=False, on_epoch=True)
 
     def training_step(self, batch, batch_idx):
         """Training step optimized for torch.compile compatibility."""
@@ -336,11 +345,13 @@ class WaveletDiffusionTransformer(pl.LightningModule):
         
         # Track NaN occurrences explicitly
         nan_detected = (torch.isnan(loss) | torch.isinf(loss)).float()
-        self.log('nan_rate', nan_detected, prog_bar=True, on_step=False, on_epoch=True)
         
-        # Use self.log for tracking (compile-safe, no .item())
-        self.log('train_loss', loss, prog_bar=True, on_step=False, on_epoch=True)
-        return loss
+        # Return dict for logging in on_train_batch_end (avoids side effects in compiled graph)
+        return {
+            'loss': loss,         # Required by Lightning for backprop
+            'train_loss': loss,   # For logging
+            'nan_rate': nan_detected
+        }
 
     def on_train_epoch_end(self):
         """Called at the end of each training epoch."""
