@@ -225,7 +225,6 @@ def main():
         callbacks=callbacks,
         enable_checkpointing=False,
         enable_progress_bar=False,  # We use our custom one
-        log_every_n_epochs=config['training']['log_every_n_epochs'],
         gradient_clip_val=1.0,
         detect_anomaly=False,
         gradient_clip_algorithm="norm",
