@@ -224,7 +224,7 @@ def main():
         precision="32",
         callbacks=callbacks,
         enable_checkpointing=False,
-        enable_progress_bar=False,  # We use our custom one
+        enable_progress_bar=enable_progress_bar,
         gradient_clip_val=1.0,
         detect_anomaly=False,
         gradient_clip_algorithm="norm",
