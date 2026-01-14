@@ -15,14 +15,6 @@ from training import DiffusionTrainer
 from data import WaveletTimeSeriesDataModule
 from utils import ConfigManager
 
-# Set PyTorch precision optimization for modern GPUs
-try:
-    torch.set_float32_matmul_precision('medium')
-    print("Enabled optimized matmul precision")
-except Exception as e:
-    print(f"Could not set matmul precision: {e}")
-    print("Continuing with default precision...")
-
 
 def main():
     """Main training function."""
@@ -67,6 +59,12 @@ def main():
                        help='Compile mode: default, reduce-overhead, max-autotune')
     parser.add_argument('--compile_fullgraph', type=str, default='false', help='true or false')
     
+    # Performance Options
+    parser.add_argument('--precision', type=str, default='32',
+                       help='Training precision: 32, bf16-mixed, 16-mixed')
+    parser.add_argument('--matmul_precision', type=str, default='medium',
+                       help='Matmul precision: highest, high, medium')
+
     args = parser.parse_args()
     
     # Load configuration
@@ -142,6 +140,19 @@ def main():
     if args.compile_fullgraph:
          config['compile']['fullgraph'] = args.compile_fullgraph.lower() == 'true'
     
+    # Apply performance overrides
+    if args.precision:
+        config['performance']['precision'] = args.precision
+    if args.matmul_precision:
+        config['performance']['matmul_precision'] = args.matmul_precision
+    
+    # Set matmul precision for optimized GPU performance
+    try:
+        torch.set_float32_matmul_precision(config['performance']['matmul_precision'])
+        print(f"Set matmul precision to: {config['performance']['matmul_precision']}")
+    except Exception as e:
+        print(f"Could not set matmul precision: {e}")
+
     # Set up data module
     print("\n" + "="*60)
     print("SETTING UP DATA MODULE")
@@ -266,7 +277,7 @@ def main():
         accelerator='gpu',
         devices='auto',
         strategy="auto",
-        precision="32",
+        precision=config['performance']['precision'],
         callbacks=callbacks,
         enable_checkpointing=False,
         enable_progress_bar=enable_progress_bar,

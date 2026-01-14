@@ -63,6 +63,10 @@ INTERNAL_DEFAULTS = {
         "dynamic": False,
         "fullgraph": False,
         "backend": "inductor"
+    },
+    "performance": {
+        "precision": "32",
+        "matmul_precision": "medium"
     }
 }
 
