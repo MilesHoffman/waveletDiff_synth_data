@@ -61,6 +61,11 @@ def main():
     parser.add_argument('--log_every_n_epochs', type=int, default=None)
     parser.add_argument('--enable_progress_bar', type=str, default='true', help='true or false')
     
+    # Compile Options
+    parser.add_argument('--compile_enabled', type=str, default='false', help='true or false')
+    parser.add_argument('--compile_mode', type=str, default='default', 
+                       help='Compile mode: default, reduce-overhead, max-autotune')
+    
     args = parser.parse_args()
     
     # Load configuration
@@ -128,6 +133,12 @@ def main():
     print(f"Noise Schedule: {config['noise']['schedule']}")
     print(f"Logging Frequency: every {config['training']['log_every_n_epochs']} epoch(s)")
     
+    # Apply compile overrides
+    if args.compile_enabled:
+        config['compile']['enabled'] = args.compile_enabled.lower() == 'true'
+    if args.compile_mode:
+        config['compile']['mode'] = args.compile_mode
+    
     # Set up data module
     print("\n" + "="*60)
     print("SETTING UP DATA MODULE")
@@ -166,6 +177,21 @@ def main():
     
     print(f"Experiment: {experiment_name}")
     print(f"Model checkpoint will be saved to: {model_path}")
+    
+    # Apply torch.compile if enabled
+    if config['compile']['enabled']:
+        compile_mode = config['compile']['mode']
+        print(f"\n" + "="*60)
+        print(f"COMPILING MODEL (mode: {compile_mode})")
+        print("="*60)
+        model = torch.compile(
+            model,
+            mode=compile_mode,
+            dynamic=config['compile']['dynamic'],
+            fullgraph=config['compile']['fullgraph'],
+            backend=config['compile']['backend']
+        )
+        print("Model compiled successfully")
 
     # Training
     print("\n" + "="*60)
@@ -236,7 +262,7 @@ def main():
         max_epochs=config['training']['epochs'],
         accelerator='gpu',
         devices='auto',
-        strategy="ddp",
+        strategy="auto",
         precision="32",
         callbacks=callbacks,
         enable_checkpointing=False,

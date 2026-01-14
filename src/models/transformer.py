@@ -310,49 +310,38 @@ class WaveletDiffusionTransformer(pl.LightningModule):
         return self.wavelet_loss_fn(target, prediction)
 
     def training_step(self, batch, batch_idx):
-        """Training step with enhanced stability and monitoring."""
+        """Training step optimized for torch.compile compatibility."""
         x_0 = batch[0]
         
-        # Check input for NaN
-        if torch.isnan(x_0).any():
-            print(f"WARNING: NaN detected in batch input at step {batch_idx}")
-            x_0 = torch.nan_to_num(x_0, nan=0.0, posinf=1.0, neginf=-1.0)
+        # Unconditional NaN handling (compile-safe, no control flow)
+        x_0 = torch.nan_to_num(x_0, nan=0.0, posinf=1.0, neginf=-1.0)
         
         t = torch.randint(0, self.T, (x_0.size(0),), device=self.device)
         loss = self.compute_loss(x_0, t)
         
-        # Enhanced loss monitoring and stability
-        if torch.isnan(loss) or torch.isinf(loss):
-            print(f"CRITICAL: NaN/Inf loss detected at step {batch_idx}")
-            print(f"Input stats: mean={x_0.mean().item():.6f}, std={x_0.std().item():.6f}")
-            print(f"Time step range: {t.min().item()}-{t.max().item()}")
-            
-            # Create a small loss with same shape and properties as original loss
-            # This maintains compatibility with AMP gradient scaler
-            loss = torch.full_like(loss, 0.01, requires_grad=True)
+        # Compile-safe loss stability using torch.where instead of Python if
+        loss = torch.where(
+            torch.isnan(loss) | torch.isinf(loss),
+            torch.tensor(0.01, device=loss.device, dtype=loss.dtype),
+            loss
+        )
         
-        self.training_losses.append(loss.item())
+        # Use self.log for tracking (compile-safe, no .item())
+        self.log('train_loss', loss, prog_bar=True, on_step=False, on_epoch=True)
         return loss
 
     def on_train_epoch_end(self):
         """Called at the end of each training epoch."""
-        # Calculate average epoch loss
-        train_dataloader = self.trainer.train_dataloader
-        if hasattr(train_dataloader, 'dataloader'):  # Handle wrapped dls
-            dl_len = len(train_dataloader.dataloader)
-        else:
-            dl_len = len(train_dataloader)
-            
-        epoch_avg = np.mean(self.training_losses[-dl_len:])
+        # Get epoch loss from callback metrics (set by self.log in training_step)
+        epoch_avg = self.trainer.callback_metrics.get('train_loss', torch.tensor(0.0)).item()
         self.epoch_losses.append(epoch_avg)
         
-        # Log metrics for progress bar
+        # Log LR for progress bar
         current_lr = self.trainer.optimizers[0].param_groups[0]['lr']
-        self.log('train_loss', epoch_avg, prog_bar=True, on_epoch=True)
         self.log('lr', current_lr, prog_bar=True, on_epoch=True)
 
         if self.trainer.is_global_zero:
-             if self.current_epoch > 0 and self.current_epoch % 100 == 0:
+            if self.current_epoch > 0 and self.current_epoch % 100 == 0:
                 self._log_level_losses_epoch_end()
 
     def _log_level_losses_epoch_end(self):

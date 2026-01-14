@@ -56,6 +56,13 @@ INTERNAL_DEFAULTS = {
     },
     "paths": {
         "output_dir": "../outputs"
+    },
+    "compile": {
+        "enabled": False,
+        "mode": "default",
+        "dynamic": False,
+        "fullgraph": False,
+        "backend": "inductor"
     }
 }
 
