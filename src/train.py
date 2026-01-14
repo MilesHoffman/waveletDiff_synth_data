@@ -65,6 +65,7 @@ def main():
     parser.add_argument('--compile_enabled', type=str, default='false', help='true or false')
     parser.add_argument('--compile_mode', type=str, default='default', 
                        help='Compile mode: default, reduce-overhead, max-autotune')
+    parser.add_argument('--compile_fullgraph', type=str, default='false', help='true or false')
     
     args = parser.parse_args()
     
@@ -138,6 +139,8 @@ def main():
         config['compile']['enabled'] = args.compile_enabled.lower() == 'true'
     if args.compile_mode:
         config['compile']['mode'] = args.compile_mode
+    if args.compile_fullgraph:
+         config['compile']['fullgraph'] = args.compile_fullgraph.lower() == 'true'
     
     # Set up data module
     print("\n" + "="*60)
