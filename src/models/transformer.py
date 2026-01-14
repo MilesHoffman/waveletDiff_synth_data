@@ -96,8 +96,9 @@ class WaveletDiffusionTransformer(pl.LightningModule):
             self.input_dim = data_module.get_input_dim()
             self.coeffs_shapes = wavelet_info['coeffs_shapes']
             self.levels = wavelet_info['levels']
-            self.level_dims = wavelet_info['level_dims']
-            self.level_start_indices = wavelet_info['level_start_indices']
+            # Ensure strictly int types for compile compatibility (no numpy scalars)
+            self.level_dims = [int(x) for x in wavelet_info['level_dims']]
+            self.level_start_indices = [int(x) for x in wavelet_info['level_start_indices']]
             self.num_features = wavelet_info['n_features']
         else:
             raise ValueError("Data module must be provided to initialize wavelet structure")
