@@ -207,6 +207,11 @@ def main():
             self.main_progress_bar.set_postfix(postfix)
             self.main_progress_bar.update(1)
 
+        def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
+            # Override parent to do nothing ensures we don't crash
+            # trying to access the uninitialized _train_progress_bar
+            pass
+
         def on_train_end(self, trainer, pl_module):
             if self.main_progress_bar:
                 self.main_progress_bar.close()
@@ -220,7 +225,7 @@ def main():
         max_epochs=config['training']['epochs'],
         accelerator='gpu',
         devices='auto',
-        strategy="ddp_find_unused_parameters_true",
+        strategy="ddp",
         precision="32",
         callbacks=callbacks,
         enable_checkpointing=False,
