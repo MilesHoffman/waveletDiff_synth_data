@@ -37,6 +37,10 @@ def main():
                        help='Number of epochs (overrides config)')
     parser.add_argument('--batch_size', type=int, default=None,
                        help='Batch size (overrides config)')
+    parser.add_argument('--wavelet_type', type=str, default=None,
+                       help='Wavelet type (overrides config)')
+    parser.add_argument('--wavelet_levels', type=str, default=None,
+                       help='Wavelet levels (overrides config, can be "auto" or integer)')
     
     args = parser.parse_args()
     
@@ -47,8 +51,9 @@ def main():
     dataset_name = args.dataset
     if dataset_name is None:
         # Try to load from base config first
+        # This will now fallback to INTERNAL_DEFAULTS in ConfigManager
         base_config = config_manager.load(dataset_name=None)
-        dataset_name = base_config.get('dataset', {}).get('name', 'etth1')
+        dataset_name = base_config.get('dataset', {}).get('name', 'stocks')
     
     # Load configuration with dataset-specific overrides
     config = config_manager.load(dataset_name=dataset_name)
@@ -62,6 +67,13 @@ def main():
         config['training']['epochs'] = args.epochs
     if args.batch_size:
         config['training']['batch_size'] = args.batch_size
+    if args.wavelet_type:
+        config['wavelet']['type'] = args.wavelet_type
+    if args.wavelet_levels:
+        try:
+            config['wavelet']['levels'] = int(args.wavelet_levels)
+        except ValueError:
+            config['wavelet']['levels'] = args.wavelet_levels
     
     print(f"Starting WaveletDiff Training")
     print(f"Dataset: {config['dataset']['name']}")
