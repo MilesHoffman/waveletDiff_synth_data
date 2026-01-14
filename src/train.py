@@ -175,10 +175,14 @@ def main():
     # Custom epoch-level progress bar callback
     from pytorch_lightning.callbacks import TQDMProgressBar
 
+    # Custom epoch-level progress bar callback
+    from pytorch_lightning.callbacks import TQDMProgressBar
+
     class EpochProgressBar(TQDMProgressBar):
-        def __init__(self):
+        def __init__(self, log_every_n_epochs=1):
             super().__init__()
             self.main_progress_bar = None
+            self.log_every_n_epochs = log_every_n_epochs
 
         def init_train_tqdm(self):
             # This is called for the batch-level bar, we want to skip it
@@ -200,12 +204,19 @@ def main():
         def on_train_epoch_end(self, trainer, pl_module):
             # Update the main progress bar
             metrics = trainer.callback_metrics
+            train_loss = metrics.get('train_loss', 0.0)
+            lr = metrics.get('lr', 0.0)
+            
             postfix = {
-                "loss": f"{metrics.get('train_loss', 0.0):.6f}",
-                "lr": f"{metrics.get('lr', 0.0):.8f}"
+                "loss": f"{train_loss:.6f}",
+                "lr": f"{lr:.8f}"
             }
             self.main_progress_bar.set_postfix(postfix)
             self.main_progress_bar.update(1)
+            
+            # Safe logging that doesn't break the progress bar
+            if (trainer.current_epoch + 1) % self.log_every_n_epochs == 0:
+                self.main_progress_bar.write(f"Epoch {trainer.current_epoch} - Avg Loss: {train_loss:.6f} - LR: {lr:.8f}")
 
         def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
             # Override parent to do nothing ensures we don't crash
@@ -218,7 +229,7 @@ def main():
 
     callbacks = [Timer()]
     if enable_progress_bar:
-        callbacks.append(EpochProgressBar())
+        callbacks.append(EpochProgressBar(log_every_n_epochs=config['training']['log_every_n_epochs']))
 
     # Setup trainer
     trainer = pl.Trainer(

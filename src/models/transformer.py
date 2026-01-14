@@ -352,10 +352,7 @@ class WaveletDiffusionTransformer(pl.LightningModule):
         self.log('lr', current_lr, prog_bar=True, on_epoch=True)
 
         if self.trainer.is_global_zero:
-            if self.current_epoch % self.log_every_n_epochs == 0:
-                print(f"Epoch {self.current_epoch} - Avg Loss: {epoch_avg:.6f} - LR: {current_lr:.8f}")
-            
-            if self.current_epoch > 0 and self.current_epoch % 100 == 0:
+             if self.current_epoch > 0 and self.current_epoch % 100 == 0:
                 self._log_level_losses_epoch_end()
 
     def _log_level_losses_epoch_end(self):
