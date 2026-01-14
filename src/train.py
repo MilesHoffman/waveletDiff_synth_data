@@ -37,6 +37,29 @@ def main():
                        help='Number of epochs (overrides config)')
     parser.add_argument('--batch_size', type=int, default=None,
                        help='Batch size (overrides config)')
+    parser.add_argument('--wavelet_type', type=str, default=None,
+                       help='Wavelet type (overrides config)')
+    parser.add_argument('--wavelet_levels', type=str, default=None,
+                       help='Wavelet levels (overrides config, can be "auto" or integer)')
+    
+    # Model Architecture Overrides
+    parser.add_argument('--embed_dim', type=int, default=None)
+    parser.add_argument('--num_heads', type=int, default=None)
+    parser.add_argument('--num_layers', type=int, default=None)
+    parser.add_argument('--time_embed_dim', type=int, default=None)
+    parser.add_argument('--dropout', type=float, default=None)
+    parser.add_argument('--prediction_target', type=str, default=None)
+    
+    # Training & Optimizer Overrides
+    parser.add_argument('--lr', type=float, default=None)
+    parser.add_argument('--scheduler_type', type=str, default=None)
+    parser.add_argument('--warmup_epochs', type=int, default=None)
+    parser.add_argument('--data_dir', type=str, default=None)
+    parser.add_argument('--use_cross_level_attention', type=str, default=None, help='true or false')
+    parser.add_argument('--energy_weight', type=float, default=None)
+    parser.add_argument('--noise_schedule', type=str, default=None)
+    parser.add_argument('--log_every_n_epochs', type=int, default=None)
+    parser.add_argument('--enable_progress_bar', type=str, default='true', help='true or false')
     
     args = parser.parse_args()
     
@@ -47,8 +70,9 @@ def main():
     dataset_name = args.dataset
     if dataset_name is None:
         # Try to load from base config first
+        # This will now fallback to INTERNAL_DEFAULTS in ConfigManager
         base_config = config_manager.load(dataset_name=None)
-        dataset_name = base_config.get('dataset', {}).get('name', 'etth1')
+        dataset_name = base_config.get('dataset', {}).get('name', 'stocks')
     
     # Load configuration with dataset-specific overrides
     config = config_manager.load(dataset_name=dataset_name)
@@ -62,6 +86,35 @@ def main():
         config['training']['epochs'] = args.epochs
     if args.batch_size:
         config['training']['batch_size'] = args.batch_size
+    if args.wavelet_type:
+        config['wavelet']['type'] = args.wavelet_type
+    if args.wavelet_levels:
+        try:
+            config['wavelet']['levels'] = int(args.wavelet_levels)
+        except ValueError:
+            config['wavelet']['levels'] = args.wavelet_levels
+            
+    # Apply generalized overrides
+    if args.embed_dim: config['model']['embed_dim'] = args.embed_dim
+    if args.num_heads: config['model']['num_heads'] = args.num_heads
+    if args.num_layers: config['model']['num_layers'] = args.num_layers
+    if args.time_embed_dim: config['model']['time_embed_dim'] = args.time_embed_dim
+    if args.dropout is not None: config['model']['dropout'] = args.dropout
+    if args.prediction_target: config['model']['prediction_target'] = args.prediction_target
+    
+    if args.lr: config['optimizer']['lr'] = args.lr
+    if args.scheduler_type: config['optimizer']['scheduler_type'] = args.scheduler_type
+    if args.warmup_epochs: config['optimizer']['warmup_epochs'] = args.warmup_epochs
+    if args.data_dir: config['data']['data_dir'] = args.data_dir
+    
+    if args.use_cross_level_attention:
+        config['attention']['use_cross_level_attention'] = args.use_cross_level_attention.lower() == 'true'
+    
+    if args.energy_weight is not None: config['energy']['weight'] = args.energy_weight
+    if args.noise_schedule: config['noise']['schedule'] = args.noise_schedule
+    if args.log_every_n_epochs: config['training']['log_every_n_epochs'] = args.log_every_n_epochs
+    
+    enable_progress_bar = args.enable_progress_bar.lower() == 'true'
     
     print(f"Starting WaveletDiff Training")
     print(f"Dataset: {config['dataset']['name']}")
@@ -73,6 +126,7 @@ def main():
     print(f"Loss Strategy: coefficient_weighted (approximation_weight=2)")
     print(f"Energy Term: {'Enabled' if config['energy']['weight'] > 0 else 'Disabled'} (level_feature, absolute)")
     print(f"Noise Schedule: {config['noise']['schedule']}")
+    print(f"Logging Frequency: every {config['training']['log_every_n_epochs']} epoch(s)")
     
     # Set up data module
     print("\n" + "="*60)
@@ -118,17 +172,75 @@ def main():
     print("TRAINING MODEL")
     print("="*60)
     
+    # Custom epoch-level progress bar callback
+    from pytorch_lightning.callbacks import TQDMProgressBar
+
+    # Custom epoch-level progress bar callback
+    from pytorch_lightning.callbacks import TQDMProgressBar
+
+    class EpochProgressBar(TQDMProgressBar):
+        def __init__(self, log_every_n_epochs=1):
+            super().__init__()
+            self.main_progress_bar = None
+            self.log_every_n_epochs = log_every_n_epochs
+
+        def init_train_tqdm(self):
+            # This is called for the batch-level bar, we want to skip it
+            return super().init_train_tqdm()
+
+        def on_train_epoch_start(self, trainer, pl_module):
+            # No-op per-batch bar
+            pass
+
+        def on_train_start(self, trainer, pl_module):
+            from tqdm import tqdm
+            self.main_progress_bar = tqdm(
+                total=trainer.max_epochs,
+                desc="Training Progress",
+                dynamic_ncols=True,
+                unit="epoch"
+            )
+
+        def on_train_epoch_end(self, trainer, pl_module):
+            # Update the main progress bar
+            metrics = trainer.callback_metrics
+            train_loss = metrics.get('train_loss', 0.0)
+            lr = metrics.get('lr', 0.0)
+            
+            postfix = {
+                "loss": f"{train_loss:.6f}",
+                "lr": f"{lr:.2e}"
+            }
+            self.main_progress_bar.set_postfix(postfix)
+            self.main_progress_bar.update(1)
+            
+            # Safe logging that doesn't break the progress bar
+            if (trainer.current_epoch + 1) % self.log_every_n_epochs == 0:
+                self.main_progress_bar.write(f"Epoch {trainer.current_epoch} - Avg Loss: {train_loss:.6f} - LR: {lr:.2e}")
+
+        def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
+            # Override parent to do nothing ensures we don't crash
+            # trying to access the uninitialized _train_progress_bar
+            pass
+
+        def on_train_end(self, trainer, pl_module):
+            if self.main_progress_bar:
+                self.main_progress_bar.close()
+
+    callbacks = [Timer()]
+    if enable_progress_bar:
+        callbacks.append(EpochProgressBar(log_every_n_epochs=config['training']['log_every_n_epochs']))
+
     # Setup trainer
     trainer = pl.Trainer(
         max_epochs=config['training']['epochs'],
         accelerator='gpu',
         devices='auto',
-        strategy="ddp_find_unused_parameters_true",
+        strategy="ddp",
         precision="32",
-        callbacks=[Timer()],
+        callbacks=callbacks,
         enable_checkpointing=False,
-        enable_progress_bar=False,
-        log_every_n_steps=50,
+        enable_progress_bar=enable_progress_bar,
         gradient_clip_val=1.0,
         detect_anomaly=False,
         gradient_clip_algorithm="norm",

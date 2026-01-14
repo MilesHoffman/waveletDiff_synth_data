@@ -52,6 +52,7 @@ class WaveletDiffusionTransformer(pl.LightningModule):
         cosine_eta_min = kwargs.get('cosine_eta_min', 1e-6)
         plateau_patience = kwargs.get('plateau_patience', 50)
         plateau_factor = kwargs.get('plateau_factor', 0.7)
+        plateau_factor = kwargs.get('plateau_factor', 0.7)
         super().__init__()
         self.data_module = data_module
         self.embed_dim = embed_dim
@@ -59,6 +60,7 @@ class WaveletDiffusionTransformer(pl.LightningModule):
         self.prediction_target = prediction_target  # "noise" or "coefficient"
         self.use_cross_level_attention = use_cross_level_attention
         self.max_epochs = max_epochs
+        self.log_every_n_epochs = config['training'].get('log_every_n_epochs', 1)
         
         # Store the number of diffusion timesteps as an instance attribute
         self.T = T
@@ -335,13 +337,22 @@ class WaveletDiffusionTransformer(pl.LightningModule):
     def on_train_epoch_end(self):
         """Called at the end of each training epoch."""
         # Calculate average epoch loss
-        epoch_avg = np.mean(self.training_losses[-len(self.trainer.train_dataloader):])
+        train_dataloader = self.trainer.train_dataloader
+        if hasattr(train_dataloader, 'dataloader'):  # Handle wrapped dls
+            dl_len = len(train_dataloader.dataloader)
+        else:
+            dl_len = len(train_dataloader)
+            
+        epoch_avg = np.mean(self.training_losses[-dl_len:])
         self.epoch_losses.append(epoch_avg)
+        
+        # Log metrics for progress bar
+        current_lr = self.trainer.optimizers[0].param_groups[0]['lr']
+        self.log('train_loss', epoch_avg, prog_bar=True, on_epoch=True)
+        self.log('lr', current_lr, prog_bar=True, on_epoch=True)
 
         if self.trainer.is_global_zero:
-            print(f"Epoch {self.current_epoch} - Avg Loss: {epoch_avg:.6f}")
-            
-            if self.current_epoch % 100 == 0:
+             if self.current_epoch > 0 and self.current_epoch % 100 == 0:
                 self._log_level_losses_epoch_end()
 
     def _log_level_losses_epoch_end(self):

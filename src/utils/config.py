@@ -5,6 +5,60 @@ import os
 from typing import Dict, Any, Optional
 from pathlib import Path
 
+INTERNAL_DEFAULTS = {
+    "training": {
+        "epochs": 5000,
+        "batch_size": 512,
+        "save_model": True,
+        "log_every_n_epochs": 1
+    },
+    "model": {
+        "embed_dim": 256,
+        "num_heads": 8,
+        "num_layers": 8,
+        "time_embed_dim": 128,
+        "dropout": 0.1,
+        "prediction_target": "noise"
+    },
+    "attention": {
+        "use_cross_level_attention": True
+    },
+    "energy": {
+        "weight": 0.0
+    },
+    "noise": {
+        "schedule": "exponential"
+    },
+    "wavelet": {
+        "type": "db2",
+        "levels": "auto"
+    },
+    "sampling": {
+        "method": "ddpm",
+        "ddim_eta": 0.0,
+        "ddim_steps": None
+    },
+    "data": {
+        "normalize_data": True,
+        "data_dir": "../data"
+    },
+    "optimizer": {
+        "scheduler_type": "onecycle",
+        "warmup_epochs": 50,
+        "lr": 0.0002
+    },
+    "dataset": {
+        "name": "stocks",
+        "seq_len": 24
+    },
+    "evaluation": {
+        "num_samples": 20000
+    },
+    "paths": {
+        "output_dir": "../outputs"
+    }
+}
+
 
 def load_config(config_path: str) -> Dict[str, Any]:
     """Load a YAML configuration file.
@@ -51,15 +105,26 @@ def load_dataset_config(dataset_name: str, config_dir: str = "configs") -> Dict[
     Returns:
         Complete configuration dictionary with dataset-specific overrides
     """
-    # Load default config
+    # Start with internal defaults
+    config = INTERNAL_DEFAULTS.copy()
+    
+    # Load default config file if it exists
     default_config_path = os.path.join(config_dir, "default.yaml")
-    config = load_config(default_config_path)
+    if os.path.exists(default_config_path):
+        try:
+            yaml_config = load_config(default_config_path)
+            config = merge_configs(config, yaml_config)
+        except Exception as e:
+            print(f"Warning: Could not load default config from {default_config_path}: {e}")
     
     # Load dataset-specific config if it exists
     dataset_config_path = os.path.join(config_dir, "datasets", f"{dataset_name}.yaml")
     if os.path.exists(dataset_config_path):
-        dataset_config = load_config(dataset_config_path)
-        config = merge_configs(config, dataset_config)
+        try:
+            dataset_config = load_config(dataset_config_path)
+            config = merge_configs(config, dataset_config)
+        except Exception as e:
+            print(f"Warning: Could not load dataset config from {dataset_config_path}: {e}")
     
     return config
 
@@ -96,8 +161,15 @@ class ConfigManager:
         if dataset_name:
             self.config = load_dataset_config(dataset_name, self.config_dir)
         else:
+            # Start with internal defaults
+            self.config = INTERNAL_DEFAULTS.copy()
             default_config_path = os.path.join(self.config_dir, "default.yaml")
-            self.config = load_config(default_config_path)
+            if os.path.exists(default_config_path):
+                try:
+                    yaml_config = load_config(default_config_path)
+                    self.config = merge_configs(self.config, yaml_config)
+                except Exception as e:
+                    print(f"Warning: Could not load default config from {default_config_path}: {e}")
         
         # Apply manual overrides if provided
         if config_overrides:
