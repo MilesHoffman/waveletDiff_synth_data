@@ -310,12 +310,14 @@ class WaveletDiffusionTransformer(pl.LightningModule):
         
         return self.wavelet_loss_fn(target, prediction)
 
-    def training_step(self, batch, batch_idx):
-        """Training step optimized for torch.compile compatibility."""
+    def on_train_batch_start(self, batch, batch_idx):
+        """Hook called before training step - safe for graph markers."""
         # Mark step start for reduce-overhead mode to prevent CUDAGraphs memory errors
         if self.compile_config.get('enabled', False) and self.compile_config.get('mode') == 'reduce-overhead':
             torch.compiler.cudagraph_mark_step_begin()
 
+    def training_step(self, batch, batch_idx):
+        """Training step optimized for torch.compile compatibility."""
         x_0 = batch[0]
         
         # Unconditional NaN handling (compile-safe, no control flow)
