@@ -58,6 +58,8 @@ def main():
     parser.add_argument('--use_cross_level_attention', type=str, default=None, help='true or false')
     parser.add_argument('--energy_weight', type=float, default=None)
     parser.add_argument('--noise_schedule', type=str, default=None)
+    parser.add_argument('--log_every_n_epochs', type=int, default=None)
+    parser.add_argument('--enable_progress_bar', type=str, default='true', help='true or false')
     
     args = parser.parse_args()
     
@@ -110,6 +112,9 @@ def main():
     
     if args.energy_weight is not None: config['energy']['weight'] = args.energy_weight
     if args.noise_schedule: config['noise']['schedule'] = args.noise_schedule
+    if args.log_every_n_epochs: config['training']['log_every_n_epochs'] = args.log_every_n_epochs
+    
+    enable_progress_bar = args.enable_progress_bar.lower() == 'true'
     
     print(f"Starting WaveletDiff Training")
     print(f"Dataset: {config['dataset']['name']}")
@@ -121,6 +126,7 @@ def main():
     print(f"Loss Strategy: coefficient_weighted (approximation_weight=2)")
     print(f"Energy Term: {'Enabled' if config['energy']['weight'] > 0 else 'Disabled'} (level_feature, absolute)")
     print(f"Noise Schedule: {config['noise']['schedule']}")
+    print(f"Logging Frequency: every {config['training']['log_every_n_epochs']} epoch(s)")
     
     # Set up data module
     print("\n" + "="*60)
@@ -166,6 +172,49 @@ def main():
     print("TRAINING MODEL")
     print("="*60)
     
+    # Custom epoch-level progress bar callback
+    from pytorch_lightning.callbacks import TQDMProgressBar
+
+    class EpochProgressBar(TQDMProgressBar):
+        def __init__(self):
+            super().__init__()
+            self.main_progress_bar = None
+
+        def init_train_tqdm(self):
+            # This is called for the batch-level bar, we want to skip it
+            return super().init_train_tqdm()
+
+        def on_train_epoch_start(self, trainer, pl_module):
+            # No-op per-batch bar
+            pass
+
+        def on_train_start(self, trainer, pl_module):
+            from tqdm import tqdm
+            self.main_progress_bar = tqdm(
+                total=trainer.max_epochs,
+                desc="Training Progress",
+                dynamic_ncols=True,
+                unit="epoch"
+            )
+
+        def on_train_epoch_end(self, trainer, pl_module):
+            # Update the main progress bar
+            metrics = trainer.callback_metrics
+            postfix = {
+                "loss": f"{metrics.get('train_loss', 0.0):.6f}",
+                "lr": f"{metrics.get('lr', 0.0):.8f}"
+            }
+            self.main_progress_bar.set_postfix(postfix)
+            self.main_progress_bar.update(1)
+
+        def on_train_end(self, trainer, pl_module):
+            if self.main_progress_bar:
+                self.main_progress_bar.close()
+
+    callbacks = [Timer()]
+    if enable_progress_bar:
+        callbacks.append(EpochProgressBar())
+
     # Setup trainer
     trainer = pl.Trainer(
         max_epochs=config['training']['epochs'],
@@ -173,10 +222,10 @@ def main():
         devices='auto',
         strategy="ddp_find_unused_parameters_true",
         precision="32",
-        callbacks=[Timer()],
+        callbacks=callbacks,
         enable_checkpointing=False,
-        enable_progress_bar=False,
-        log_every_n_steps=50,
+        enable_progress_bar=False,  # We use our custom one
+        log_every_n_epochs=config['training']['log_every_n_epochs'],
         gradient_clip_val=1.0,
         detect_anomaly=False,
         gradient_clip_algorithm="norm",

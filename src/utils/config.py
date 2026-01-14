@@ -9,7 +9,8 @@ INTERNAL_DEFAULTS = {
     "training": {
         "epochs": 5000,
         "batch_size": 512,
-        "save_model": True
+        "save_model": True,
+        "log_every_n_epochs": 1
     },
     "model": {
         "embed_dim": 256,
