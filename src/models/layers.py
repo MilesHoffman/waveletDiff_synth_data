@@ -13,6 +13,142 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 import math
+from typing import Optional, Tuple
+
+
+class RMSNorm(nn.Module):
+    """Root Mean Square Layer Normalization.
+    
+    A simplified normalization that only scales by RMS (no mean subtraction).
+    Used for QK-Norm in attention to bound logit magnitudes.
+    Compile-safe: no control flow, all operations are differentiable.
+    """
+    
+    def __init__(self, dim: int, eps: float = 1e-8):
+        super().__init__()
+        self.eps = eps
+        self.scale = nn.Parameter(torch.ones(dim))
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        rms = torch.sqrt(torch.mean(x ** 2, dim=-1, keepdim=True) + self.eps)
+        return (x / rms) * self.scale
+
+
+class QKNormAttention(nn.Module):
+    """Multi-Head Attention with Query-Key Normalization for training stability.
+    
+    Applies RMSNorm to Q and K after projection to bound attention logits,
+    preventing numerical instability in bf16 and compiled modes.
+    
+    Uses F.scaled_dot_product_attention for hardware acceleration (Flash Attention).
+    """
+    
+    def __init__(self, embed_dim: int, num_heads: int, dropout: float = 0.0,
+                 batch_first: bool = True):
+        super().__init__()
+        assert embed_dim % num_heads == 0, "embed_dim must be divisible by num_heads"
+        
+        self.embed_dim = embed_dim
+        self.num_heads = num_heads
+        self.head_dim = embed_dim // num_heads
+        self.batch_first = batch_first
+        self.dropout_p = dropout
+        
+        # Q, K, V projections
+        self.q_proj = nn.Linear(embed_dim, embed_dim)
+        self.k_proj = nn.Linear(embed_dim, embed_dim)
+        self.v_proj = nn.Linear(embed_dim, embed_dim)
+        
+        # QK-Norm: RMSNorm applied per-head to Q and K
+        self.q_norm = RMSNorm(self.head_dim)
+        self.k_norm = RMSNorm(self.head_dim)
+        
+        # Output projection
+        self.out_proj = nn.Linear(embed_dim, embed_dim)
+        
+        # Scale factor for attention (computed once, stored as float for compile compatibility)
+        self.scale = float(self.head_dim ** -0.5)
+    
+    def forward(
+        self,
+        query: torch.Tensor,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        attn_mask: Optional[torch.Tensor] = None,
+        need_weights: bool = False,
+        average_attn_weights: bool = True
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        """
+        Args:
+            query, key, value: [batch, seq_len, embed_dim] if batch_first
+            attn_mask: Optional attention mask
+            need_weights: If True, return attention weights (for visualization)
+            average_attn_weights: If True, average weights across heads
+        
+        Returns:
+            output: Same shape as query
+            attn_weights: Optional attention weights
+        """
+        # Handle batch_first
+        if not self.batch_first:
+            query = query.transpose(0, 1)
+            key = key.transpose(0, 1)
+            value = value.transpose(0, 1)
+        
+        batch_size, seq_len_q, _ = query.shape
+        seq_len_kv = key.shape[1]
+        
+        # Project Q, K, V
+        q = self.q_proj(query)
+        k = self.k_proj(key)
+        v = self.v_proj(value)
+        
+        # Reshape for multi-head: [batch, seq_len, num_heads, head_dim]
+        q = q.view(batch_size, seq_len_q, self.num_heads, self.head_dim)
+        k = k.view(batch_size, seq_len_kv, self.num_heads, self.head_dim)
+        v = v.view(batch_size, seq_len_kv, self.num_heads, self.head_dim)
+        
+        # Apply QK-Norm (normalize along head_dim)
+        q = self.q_norm(q)
+        k = self.k_norm(k)
+        
+        # Transpose for attention: [batch, num_heads, seq_len, head_dim]
+        q = q.transpose(1, 2)
+        k = k.transpose(1, 2)
+        v = v.transpose(1, 2)
+        
+        # Use PyTorch's SDPA (Flash Attention when available)
+        dropout_p = self.dropout_p if self.training else 0.0
+        attn_output = F.scaled_dot_product_attention(
+            q, k, v,
+            attn_mask=attn_mask,
+            dropout_p=dropout_p,
+            scale=self.scale
+        )
+        
+        # Reshape back: [batch, seq_len, embed_dim]
+        attn_output = attn_output.transpose(1, 2).contiguous()
+        attn_output = attn_output.view(batch_size, seq_len_q, self.embed_dim)
+        
+        # Output projection
+        output = self.out_proj(attn_output)
+        
+        # Handle batch_first for output
+        if not self.batch_first:
+            output = output.transpose(0, 1)
+        
+        # Attention weights (for visualization, e.g., CrossLevelAttention)
+        attn_weights = None
+        if need_weights:
+            with torch.no_grad():
+                attn_logits = torch.matmul(q, k.transpose(-2, -1)) * self.scale
+                if attn_mask is not None:
+                    attn_logits = attn_logits + attn_mask
+                attn_weights = F.softmax(attn_logits, dim=-1)
+                if average_attn_weights:
+                    attn_weights = attn_weights.mean(dim=1)
+        
+        return output, attn_weights
 
 
 class TimeEmbedding(nn.Module):
@@ -137,7 +273,7 @@ class WaveletTransformerBlock(nn.Module):
         
         # Self-attention
         self.norm1 = AdaLayerNorm(dim, time_embed_dim)
-        self.attn = nn.MultiheadAttention(dim, num_heads, dropout=dropout, batch_first=True)
+        self.attn = QKNormAttention(dim, num_heads, dropout=dropout, batch_first=True)
         
         # Feed-forward network
         self.norm2 = AdaLayerNorm(dim, time_embed_dim)

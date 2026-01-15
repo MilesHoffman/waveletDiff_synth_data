@@ -10,7 +10,7 @@ don't have disproportionate influence.
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from .layers import AdaLayerNorm
+from .layers import AdaLayerNorm, QKNormAttention
 
 
 class CrossLevelAttention(nn.Module):
@@ -55,7 +55,7 @@ class CrossLevelAttention(nn.Module):
         # Cross-level attention layers (now operating on level representations)
         if self.attention_mode == "all_to_all":
             # Standard multi-head attention (each level attends to all levels including itself)
-            self.cross_attention = nn.MultiheadAttention(
+            self.cross_attention = QKNormAttention(
                 self.common_dim, num_heads, dropout=dropout, batch_first=True
             )
         else:  # cross_only
@@ -63,7 +63,7 @@ class CrossLevelAttention(nn.Module):
             self.cross_attention_layers = nn.ModuleList()
             for i in range(self.num_levels):
                 # Each level gets its own attention layer for attending to other levels
-                attention_layer = nn.MultiheadAttention(
+                attention_layer = QKNormAttention(
                     self.common_dim, num_heads, dropout=dropout, batch_first=True
                 )
                 self.cross_attention_layers.append(attention_layer)
