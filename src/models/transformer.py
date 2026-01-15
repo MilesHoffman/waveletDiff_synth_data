@@ -364,7 +364,8 @@ class WaveletDiffusionTransformer(pl.LightningModule):
         self.log('lr', current_lr, prog_bar=True, on_epoch=True)
 
         if self.trainer.is_global_zero:
-            if self.current_epoch > 0 and self.current_epoch % 100 == 0:
+            # Log every 100 epochs (at the end of the epoch)
+            if (self.current_epoch + 1) % 100 == 0:
                 self._log_level_losses_epoch_end()
 
     def _log_level_losses_epoch_end(self):
@@ -387,7 +388,7 @@ class WaveletDiffusionTransformer(pl.LightningModule):
                 weights = self.wavelet_loss_fn.get_weights()
                 
                 # Print level loss summary
-                print(f"Epoch {self.current_epoch} Level Losses:")
+                print(f"Epoch {self.current_epoch + 1} Level Losses:")
                 for i, (loss, weight) in enumerate(zip(level_losses, weights)):
                     print(f"  Level {i}: {loss.item():.6f} (weight: {weight:.4f})")
                 
