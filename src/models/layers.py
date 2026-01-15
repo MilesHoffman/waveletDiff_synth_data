@@ -66,8 +66,8 @@ class QKNormAttention(nn.Module):
         # Output projection
         self.out_proj = nn.Linear(embed_dim, embed_dim)
         
-        # Scale factor for attention
-        self.register_buffer('scale', torch.tensor(self.head_dim ** -0.5))
+        # Scale factor for attention (computed once, stored as float for compile compatibility)
+        self.scale = float(self.head_dim ** -0.5)
     
     def forward(
         self,
@@ -123,7 +123,7 @@ class QKNormAttention(nn.Module):
             q, k, v,
             attn_mask=attn_mask,
             dropout_p=dropout_p,
-            scale=self.scale.item()
+            scale=self.scale
         )
         
         # Reshape back: [batch, seq_len, embed_dim]
