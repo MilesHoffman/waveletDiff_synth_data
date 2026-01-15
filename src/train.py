@@ -153,6 +153,11 @@ def main():
     except Exception as e:
         print(f"Could not set matmul precision: {e}")
 
+    # Enable cuDNN benchmark mode for faster training
+    if torch.cuda.is_available():
+        torch.backends.cudnn.benchmark = True
+        print("Enabled cuDNN benchmark mode")
+
     # Set up data module
     print("\n" + "="*60)
     print("SETTING UP DATA MODULE")

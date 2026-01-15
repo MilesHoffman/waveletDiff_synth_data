@@ -54,6 +54,13 @@ class WaveletTimeSeriesDataModule(pl.LightningDataModule):
 
         # Convert to wavelet coefficients
         self.data_tensor, self.wavelet_info = self._convert_to_wavelet_coefficients()
+        
+        # Move dataset to GPU RAM if available (eliminates PCIe transfer overhead)
+        self.data_on_gpu = torch.cuda.is_available()
+        if self.data_on_gpu:
+            self.data_tensor = self.data_tensor.cuda()
+            print("Dataset moved to GPU RAM for faster training")
+        
         self.dataset = TensorDataset(self.data_tensor)
         
         print(f"Converted {self.raw_data_tensor.shape} time series to {self.data_tensor.shape} wavelet coefficients")
@@ -226,12 +233,26 @@ class WaveletTimeSeriesDataModule(pl.LightningDataModule):
         return self.wavelet_info
 
     def train_dataloader(self):
-        return DataLoader(
-            self.dataset, 
-            batch_size=self.batch_size, 
-            shuffle=True,
-            num_workers=4,
-            pin_memory=True,
-            drop_last=True
-        )
+        # When data is on GPU, use num_workers=0 (no CPU workers needed)
+        # When data is on CPU, use persistent workers for speed
+        if getattr(self, 'data_on_gpu', False):
+            return DataLoader(
+                self.dataset, 
+                batch_size=self.batch_size, 
+                shuffle=True,
+                num_workers=0,
+                pin_memory=False,
+                drop_last=True
+            )
+        else:
+            return DataLoader(
+                self.dataset, 
+                batch_size=self.batch_size, 
+                shuffle=True,
+                num_workers=4,
+                pin_memory=True,
+                persistent_workers=True,
+                prefetch_factor=4,
+                drop_last=True
+            )
 

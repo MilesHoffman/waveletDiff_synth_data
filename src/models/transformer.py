@@ -438,12 +438,15 @@ class WaveletDiffusionTransformer(pl.LightningModule):
 
     def configure_optimizers(self):
         """Configure optimizer and scheduler with multiple options."""
+        # Use fused optimizer when CUDA is available (faster on A100)
+        use_fused = torch.cuda.is_available() and 'fused' in torch.optim.AdamW.__init__.__code__.co_varnames
         optimizer = torch.optim.AdamW(
             self.parameters(), 
             lr=self.lr, 
             weight_decay=self.weight_decay,
             eps=1e-8,
-            betas=(0.9, 0.999)
+            betas=(0.9, 0.999),
+            fused=use_fused
         )
         
         # Ensure step-based quantities are available
