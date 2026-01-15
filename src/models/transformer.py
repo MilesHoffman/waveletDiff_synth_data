@@ -436,6 +436,25 @@ class WaveletDiffusionTransformer(pl.LightningModule):
         """Optimization: set_to_none=True is faster than zeroing."""
         optimizer.zero_grad(set_to_none=True)
 
+    def configure_gradient_clipping(self, optimizer, gradient_clip_val, gradient_clip_algorithm):
+        """
+        Override default clipping to handle 'Atomic'/'Fused' optimizer issues.
+        PyTorch Lightning's default clipper sometimes errors with FusedAdamW.
+        """
+        if self.trainer.precision == "16-mixed":
+            # Manually unscale if needed (though fused optimizer usually handles it)
+            # This is a safe-guard against the RuntimeError
+            try:
+                self.trainer.precision_plugin.scaler.unscale_(optimizer)
+            except Exception:
+                pass
+        
+        # Apply the clipping manually
+        if gradient_clip_algorithm == "norm":
+            torch.nn.utils.clip_grad_norm_(self.parameters(), gradient_clip_val)
+        elif gradient_clip_algorithm == "value":
+            torch.nn.utils.clip_grad_value_(self.parameters(), gradient_clip_val)
+
     def configure_optimizers(self):
         """Configure optimizer and scheduler with multiple options."""
         # Use fused optimizer when CUDA is available (faster on A100)
