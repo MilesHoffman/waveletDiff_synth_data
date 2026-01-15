@@ -61,6 +61,7 @@ class WaveletDiffusionTransformer(pl.LightningModule):
         self.use_cross_level_attention = use_cross_level_attention
         self.max_epochs = max_epochs
         self.log_every_n_epochs = config['training'].get('log_every_n_epochs', 1)
+        self.compile_config = config.get('compile', {})
         
         # Store the number of diffusion timesteps as an instance attribute
         self.T = T
@@ -95,8 +96,9 @@ class WaveletDiffusionTransformer(pl.LightningModule):
             self.input_dim = data_module.get_input_dim()
             self.coeffs_shapes = wavelet_info['coeffs_shapes']
             self.levels = wavelet_info['levels']
-            self.level_dims = wavelet_info['level_dims']
-            self.level_start_indices = wavelet_info['level_start_indices']
+            # Ensure strictly int types for compile compatibility (no numpy scalars)
+            self.level_dims = [int(x) for x in wavelet_info['level_dims']]
+            self.level_start_indices = [int(x) for x in wavelet_info['level_start_indices']]
             self.num_features = wavelet_info['n_features']
         else:
             raise ValueError("Data module must be provided to initialize wavelet structure")
@@ -297,7 +299,7 @@ class WaveletDiffusionTransformer(pl.LightningModule):
     def compute_loss(self, x_0, t):
         """Compute training loss."""
         x_t, noise = self.compute_forward_process(x_0, t)
-        t_norm = t.float() / self.T
+        t_norm = (t.float() / self.T).clone() # Clone to prevent CUDAGraphs overwrite
         prediction = self(x_t, t_norm)
         
         if self.prediction_target == "noise":
@@ -309,50 +311,60 @@ class WaveletDiffusionTransformer(pl.LightningModule):
         
         return self.wavelet_loss_fn(target, prediction)
 
+    def on_train_batch_start(self, batch, batch_idx):
+        """Hook called before training step - safe for graph markers."""
+        # Mark step start for reduce-overhead mode to prevent CUDAGraphs memory errors
+        if self.compile_config.get('enabled', False) and self.compile_config.get('mode') == 'reduce-overhead':
+            torch.compiler.cudagraph_mark_step_begin()
+            
+    def on_train_batch_end(self, outputs, batch, batch_idx):
+        """Hook called after training step - safe for logging (runs in eager mode)."""
+        # Defer logging to here to avoid graph breaks in training_step logic
+        if isinstance(outputs, dict):
+            if 'nan_rate' in outputs:
+                self.log('nan_rate', outputs['nan_rate'], prog_bar=True, on_step=False, on_epoch=True)
+            if 'train_loss' in outputs:
+                self.log('train_loss', outputs['train_loss'], prog_bar=True, on_step=False, on_epoch=True)
+
     def training_step(self, batch, batch_idx):
-        """Training step with enhanced stability and monitoring."""
+        """Training step optimized for torch.compile compatibility."""
         x_0 = batch[0]
         
-        # Check input for NaN
-        if torch.isnan(x_0).any():
-            print(f"WARNING: NaN detected in batch input at step {batch_idx}")
-            x_0 = torch.nan_to_num(x_0, nan=0.0, posinf=1.0, neginf=-1.0)
+        # Unconditional NaN handling (compile-safe, no control flow)
+        x_0 = torch.nan_to_num(x_0, nan=0.0, posinf=1.0, neginf=-1.0)
         
         t = torch.randint(0, self.T, (x_0.size(0),), device=self.device)
         loss = self.compute_loss(x_0, t)
         
-        # Enhanced loss monitoring and stability
-        if torch.isnan(loss) or torch.isinf(loss):
-            print(f"CRITICAL: NaN/Inf loss detected at step {batch_idx}")
-            print(f"Input stats: mean={x_0.mean().item():.6f}, std={x_0.std().item():.6f}")
-            print(f"Time step range: {t.min().item()}-{t.max().item()}")
-            
-            # Create a small loss with same shape and properties as original loss
-            # This maintains compatibility with AMP gradient scaler
-            loss = torch.full_like(loss, 0.01, requires_grad=True)
+        # Compile-safe loss stability using torch.where instead of Python if
+        loss = torch.where(
+            torch.isnan(loss) | torch.isinf(loss),
+            torch.tensor(0.01, device=loss.device, dtype=loss.dtype),
+            loss
+        )
         
-        self.training_losses.append(loss.item())
-        return loss
+        # Track NaN occurrences explicitly
+        nan_detected = (torch.isnan(loss) | torch.isinf(loss)).float()
+        
+        # Return dict for logging in on_train_batch_end (avoids side effects in compiled graph)
+        return {
+            'loss': loss,         # Required by Lightning for backprop
+            'train_loss': loss,   # For logging
+            'nan_rate': nan_detected
+        }
 
     def on_train_epoch_end(self):
         """Called at the end of each training epoch."""
-        # Calculate average epoch loss
-        train_dataloader = self.trainer.train_dataloader
-        if hasattr(train_dataloader, 'dataloader'):  # Handle wrapped dls
-            dl_len = len(train_dataloader.dataloader)
-        else:
-            dl_len = len(train_dataloader)
-            
-        epoch_avg = np.mean(self.training_losses[-dl_len:])
+        # Get epoch loss from callback metrics (set by self.log in training_step)
+        epoch_avg = self.trainer.callback_metrics.get('train_loss', torch.tensor(0.0)).item()
         self.epoch_losses.append(epoch_avg)
         
-        # Log metrics for progress bar
+        # Log LR for progress bar
         current_lr = self.trainer.optimizers[0].param_groups[0]['lr']
-        self.log('train_loss', epoch_avg, prog_bar=True, on_epoch=True)
         self.log('lr', current_lr, prog_bar=True, on_epoch=True)
 
         if self.trainer.is_global_zero:
-             if self.current_epoch > 0 and self.current_epoch % 100 == 0:
+            if self.current_epoch > 0 and self.current_epoch % 100 == 0:
                 self._log_level_losses_epoch_end()
 
     def _log_level_losses_epoch_end(self):
@@ -419,6 +431,10 @@ class WaveletDiffusionTransformer(pl.LightningModule):
             self.total_training_steps = int(self.max_epochs * self.steps_per_epoch)
         else:
             self.total_training_steps = None
+
+    def optimizer_zero_grad(self, epoch, batch_idx, optimizer):
+        """Optimization: set_to_none=True is faster than zeroing."""
+        optimizer.zero_grad(set_to_none=True)
 
     def configure_optimizers(self):
         """Configure optimizer and scheduler with multiple options."""

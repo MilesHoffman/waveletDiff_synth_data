@@ -15,14 +15,6 @@ from training import DiffusionTrainer
 from data import WaveletTimeSeriesDataModule
 from utils import ConfigManager
 
-# Set PyTorch precision optimization for modern GPUs
-try:
-    torch.set_float32_matmul_precision('medium')
-    print("Enabled optimized matmul precision")
-except Exception as e:
-    print(f"Could not set matmul precision: {e}")
-    print("Continuing with default precision...")
-
 
 def main():
     """Main training function."""
@@ -61,6 +53,18 @@ def main():
     parser.add_argument('--log_every_n_epochs', type=int, default=None)
     parser.add_argument('--enable_progress_bar', type=str, default='true', help='true or false')
     
+    # Compile Options
+    parser.add_argument('--compile_enabled', type=str, default='false', help='true or false')
+    parser.add_argument('--compile_mode', type=str, default='default', 
+                       help='Compile mode: default, reduce-overhead, max-autotune')
+    parser.add_argument('--compile_fullgraph', type=str, default='false', help='true or false')
+    
+    # Performance Options
+    parser.add_argument('--precision', type=str, default='32',
+                       help='Training precision: 32, bf16-mixed, 16-mixed')
+    parser.add_argument('--matmul_precision', type=str, default='medium',
+                       help='Matmul precision: highest, high, medium')
+
     args = parser.parse_args()
     
     # Load configuration
@@ -128,6 +132,27 @@ def main():
     print(f"Noise Schedule: {config['noise']['schedule']}")
     print(f"Logging Frequency: every {config['training']['log_every_n_epochs']} epoch(s)")
     
+    # Apply compile overrides
+    if args.compile_enabled:
+        config['compile']['enabled'] = args.compile_enabled.lower() == 'true'
+    if args.compile_mode:
+        config['compile']['mode'] = args.compile_mode
+    if args.compile_fullgraph:
+         config['compile']['fullgraph'] = args.compile_fullgraph.lower() == 'true'
+    
+    # Apply performance overrides
+    if args.precision:
+        config['performance']['precision'] = args.precision
+    if args.matmul_precision:
+        config['performance']['matmul_precision'] = args.matmul_precision
+    
+    # Set matmul precision for optimized GPU performance
+    try:
+        torch.set_float32_matmul_precision(config['performance']['matmul_precision'])
+        print(f"Set matmul precision to: {config['performance']['matmul_precision']}")
+    except Exception as e:
+        print(f"Could not set matmul precision: {e}")
+
     # Set up data module
     print("\n" + "="*60)
     print("SETTING UP DATA MODULE")
@@ -166,6 +191,21 @@ def main():
     
     print(f"Experiment: {experiment_name}")
     print(f"Model checkpoint will be saved to: {model_path}")
+    
+    # Apply torch.compile if enabled
+    if config['compile']['enabled']:
+        compile_mode = config['compile']['mode']
+        print(f"\n" + "="*60)
+        print(f"COMPILING MODEL (mode: {compile_mode})")
+        print("="*60)
+        model = torch.compile(
+            model,
+            mode=compile_mode,
+            dynamic=config['compile']['dynamic'],
+            fullgraph=config['compile']['fullgraph'],
+            backend=config['compile']['backend']
+        )
+        print("Model compiled successfully")
 
     # Training
     print("\n" + "="*60)
@@ -236,8 +276,8 @@ def main():
         max_epochs=config['training']['epochs'],
         accelerator='gpu',
         devices='auto',
-        strategy="ddp",
-        precision="32",
+        strategy="auto",
+        precision=config['performance']['precision'],
         callbacks=callbacks,
         enable_checkpointing=False,
         enable_progress_bar=enable_progress_bar,
