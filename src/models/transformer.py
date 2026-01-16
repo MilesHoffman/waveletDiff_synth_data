@@ -392,6 +392,21 @@ class WaveletDiffusionTransformer(pl.LightningModule):
                     outputs['per_sample_losses']
                 )
 
+    def on_train_batch_start(self, batch, batch_idx):
+        """Hook called before training step - safe for graph markers."""
+        # Mark step start for reduce-overhead mode to prevent CUDAGraphs memory errors
+        if self.compile_config.get('enabled', False) and self.compile_config.get('mode') == 'reduce-overhead':
+            torch.compiler.cudagraph_mark_step_begin()
+            
+    def on_train_batch_end(self, outputs, batch, batch_idx):
+        """Hook called after training step - safe for logging (runs in eager mode)."""
+        # Defer logging to here to avoid graph breaks in training_step logic
+        if isinstance(outputs, dict):
+            if 'nan_rate' in outputs:
+                self.log('nan_rate', outputs['nan_rate'], prog_bar=True, on_step=False, on_epoch=True)
+            if 'train_loss' in outputs:
+                self.log('train_loss', outputs['train_loss'], prog_bar=True, on_step=False, on_epoch=True)
+
     def training_step(self, batch, batch_idx):
         """Training step with importance-weighted timestep sampling."""
         x_0 = batch[0]
