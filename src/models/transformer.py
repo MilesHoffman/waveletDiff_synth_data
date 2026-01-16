@@ -384,6 +384,13 @@ class WaveletDiffusionTransformer(pl.LightningModule):
                 self.log('nan_rate', outputs['nan_rate'], prog_bar=True, on_step=False, on_epoch=True)
             if 'train_loss' in outputs:
                 self.log('train_loss', outputs['train_loss'], prog_bar=True, on_step=False, on_epoch=True)
+            
+            # Update timestep sampler history in eager mode (safe from CUDAGraphs)
+            if 'sampling_t' in outputs and 'per_sample_losses' in outputs:
+                self.timestep_sampler.update_loss_history(
+                    outputs['sampling_t'], 
+                    outputs['per_sample_losses']
+                )
 
     def training_step(self, batch, batch_idx):
         """Training step with importance-weighted timestep sampling."""
@@ -398,8 +405,9 @@ class WaveletDiffusionTransformer(pl.LightningModule):
         # Compute loss with per-sample breakdown for sampler updates
         loss, per_sample_losses = self.compute_loss_with_per_sample(x_0, t)
         
-        # Update timestep sampler's loss history (handles frequency internally)
-        self.timestep_sampler.update_loss_history(t, per_sample_losses)
+        # NOTE: We do NOT call update_loss_history here because it has side effects
+        # and Python loops that break CUDAGraphs. Instead, we pass the data
+        # to on_train_batch_end which runs in eager mode.
         
         # Compile-safe loss stability using torch.where instead of Python if
         loss = torch.where(
@@ -415,7 +423,9 @@ class WaveletDiffusionTransformer(pl.LightningModule):
         return {
             'loss': loss,         # Required by Lightning for backprop
             'train_loss': loss,   # For logging
-            'nan_rate': nan_detected
+            'nan_rate': nan_detected,
+            'sampling_t': t,      # For sampler update
+            'per_sample_losses': per_sample_losses # For sampler update
         }
 
     def on_train_epoch_end(self):
