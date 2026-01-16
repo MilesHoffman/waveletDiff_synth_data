@@ -25,6 +25,8 @@ def main():
                        help='Number of samples to generate')
     parser.add_argument('--sampling_method', type=str, choices=['ddpm', 'ddim'], default=None,
                        help='Sampling method (overrides config)')
+    parser.add_argument('--compile_mode', type=str, choices=['none', 'default', 'reduce-overhead', 'max-autotune'], default='none',
+                       help='torch.compile mode')
     
     args = parser.parse_args()
     
@@ -70,6 +72,11 @@ def main():
     if torch.cuda.is_available():
         model = model.cuda()
         print("Model moved to GPU")
+
+    # Apply torch.compile if requested
+    if args.compile_mode != 'none':
+        print(f"Compiling model with mode='{args.compile_mode}'...")
+        model = torch.compile(model, mode=args.compile_mode)
     
     # Create trainer for evaluation
     trainer_util = DiffusionTrainer(model)

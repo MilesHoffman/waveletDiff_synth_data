@@ -16,6 +16,7 @@ from .layers import TimeEmbedding, WaveletLevelTransformer
 from .attention import CrossLevelAttention
 from torch.optim.lr_scheduler import CosineAnnealingLR, ReduceLROnPlateau, LambdaLR, OneCycleLR
 from utils.noise_schedules import get_noise_schedule
+from utils.timestep_sampler import HybridTimestepSampler
 
 
 # Hyperparameters
@@ -187,6 +188,19 @@ class WaveletDiffusionTransformer(pl.LightningModule):
         self.register_buffer('alpha_all', self.schedule_params["alpha_all"].clone())
         self.register_buffer('alpha_bar_all', self.schedule_params["alpha_bar_all"].clone())
         
+        # Initialize hybrid timestep sampler for importance-weighted sampling
+        # Combines Min-SNR-γ stability with adaptive loss-history optimization
+        self.timestep_sampler = HybridTimestepSampler(
+            alpha_bar_all=self.alpha_bar_all,
+            T=self.T,
+            warmup_steps=5000,       # Use Min-SNR for first 5000 steps
+            gamma=5.0,               # Min-SNR clamping (paper default)
+            exploration_ratio=0.3,   # 70% Min-SNR, 30% adaptive
+            floor_prob=0.001,        # Minimum sampling probability
+            ema_decay=0.995,         # Smooth loss history updates
+            update_frequency=10      # Update history every 10 batches
+        )
+        
         # Loss tracking
         self.training_losses = []
         self.epoch_losses = []
@@ -258,7 +272,7 @@ class WaveletDiffusionTransformer(pl.LightningModule):
             for i, (start_idx, dim) in enumerate(zip(self.level_start_indices, self.level_dims)):
                 # Extract coefficients for this level from all features
                 end_idx = start_idx + dim
-                level_coeffs = x[:, start_idx:end_idx, :]  # (batch_size, dim, num_features)
+                level_coeffs = x[:, start_idx:end_idx, :].contiguous()  # (batch_size, dim, num_features)
                 level_coeffs_list.append(level_coeffs)
 
                 # Get intermediate embeddings
@@ -280,7 +294,7 @@ class WaveletDiffusionTransformer(pl.LightningModule):
             for i, (start_idx, dim) in enumerate(zip(self.level_start_indices, self.level_dims)):
                 # Extract coefficients for this level
                 end_idx = start_idx + dim
-                level_coeffs = x[:, start_idx:end_idx, :]
+                level_coeffs = x[:, start_idx:end_idx, :].contiguous()
                 
                 # Process through level-specific transformer
                 level_output = self.level_transformers[i](level_coeffs, time_embed)
@@ -310,6 +324,73 @@ class WaveletDiffusionTransformer(pl.LightningModule):
             raise ValueError(f"Unknown prediction target: {self.prediction_target}")
         
         return self.wavelet_loss_fn(target, prediction)
+    
+    def compute_loss_with_per_sample(self, x_0, t):
+        """
+        Compute training loss and per-sample losses for timestep sampler updates.
+        
+        Returns:
+            total_loss: Scalar loss for backpropagation
+            per_sample_losses: [batch_size] tensor of per-sample losses
+        """
+        x_t, noise = self.compute_forward_process(x_0, t)
+        t_norm = (t.float() / self.T).clone()
+        prediction = self(x_t, t_norm)
+        
+        if self.prediction_target == "noise":
+            target = noise
+        elif self.prediction_target == "coefficient":
+            target = x_0
+        else:
+            raise ValueError(f"Unknown prediction target: {self.prediction_target}")
+        
+        # Total loss for backpropagation
+        total_loss = self.wavelet_loss_fn(target, prediction)
+        
+        # Per-sample MSE for timestep sampler (simple approximation)
+        # Compute mean over coefficient and feature dimensions
+        per_sample_losses = F.mse_loss(target, prediction, reduction='none').mean(dim=(1, 2))
+        
+        return total_loss, per_sample_losses
+
+    def on_train_start(self):
+        """Called at the very beginning of training - initialize device-dependent components."""
+        # Ensure timestep sampler tensors are on the correct device BEFORE training
+        # This is critical for CUDAGraph compatibility - no .to() calls during training
+        self.timestep_sampler.ensure_device(self.device)
+        
+        # Pre-initialize wavelet loss weights tensor on the correct device
+        # This avoids lazy tensor creation during the first training step
+        if hasattr(self.wavelet_loss_fn, 'loss_computer'):
+            loss_computer = self.wavelet_loss_fn.loss_computer
+            if loss_computer._level_weights_tensor is None:
+                loss_computer._level_weights_tensor = torch.tensor(
+                    loss_computer.level_weights, 
+                    device=self.device, 
+                    dtype=torch.float32
+                )
+
+    def on_train_batch_start(self, batch, batch_idx):
+        """Hook called before training step - safe for graph markers."""
+        # Mark step start for reduce-overhead mode to prevent CUDAGraphs memory errors
+        if self.compile_config.get('enabled', False) and self.compile_config.get('mode') == 'reduce-overhead':
+            torch.compiler.cudagraph_mark_step_begin()
+            
+    def on_train_batch_end(self, outputs, batch, batch_idx):
+        """Hook called after training step - safe for logging (runs in eager mode)."""
+        # Defer logging to here to avoid graph breaks in training_step logic
+        if isinstance(outputs, dict):
+            if 'nan_rate' in outputs:
+                self.log('nan_rate', outputs['nan_rate'], prog_bar=True, on_step=False, on_epoch=True)
+            if 'train_loss' in outputs:
+                self.log('train_loss', outputs['train_loss'], prog_bar=True, on_step=False, on_epoch=True)
+            
+            # Update timestep sampler history in eager mode (safe from CUDAGraphs)
+            if 'sampling_t' in outputs and 'per_sample_losses' in outputs:
+                self.timestep_sampler.update_loss_history(
+                    outputs['sampling_t'], 
+                    outputs['per_sample_losses']
+                )
 
     def on_train_batch_start(self, batch, batch_idx):
         """Hook called before training step - safe for graph markers."""
@@ -327,14 +408,21 @@ class WaveletDiffusionTransformer(pl.LightningModule):
                 self.log('train_loss', outputs['train_loss'], prog_bar=True, on_step=False, on_epoch=True)
 
     def training_step(self, batch, batch_idx):
-        """Training step optimized for torch.compile compatibility."""
+        """Training step with importance-weighted timestep sampling."""
         x_0 = batch[0]
         
         # Unconditional NaN handling (compile-safe, no control flow)
         x_0 = torch.nan_to_num(x_0, nan=0.0, posinf=1.0, neginf=-1.0)
         
-        t = torch.randint(0, self.T, (x_0.size(0),), device=self.device)
-        loss = self.compute_loss(x_0, t)
+        # Use importance-weighted timestep sampling instead of uniform
+        t = self.timestep_sampler.sample(x_0.size(0), self.device)
+        
+        # Compute loss with per-sample breakdown for sampler updates
+        loss, per_sample_losses = self.compute_loss_with_per_sample(x_0, t)
+        
+        # NOTE: We do NOT call update_loss_history here because it has side effects
+        # and Python loops that break CUDAGraphs. Instead, we pass the data
+        # to on_train_batch_end which runs in eager mode.
         
         # Compile-safe loss stability using torch.where instead of Python if
         loss = torch.where(
@@ -350,7 +438,9 @@ class WaveletDiffusionTransformer(pl.LightningModule):
         return {
             'loss': loss,         # Required by Lightning for backprop
             'train_loss': loss,   # For logging
-            'nan_rate': nan_detected
+            'nan_rate': nan_detected,
+            'sampling_t': t,      # For sampler update
+            'per_sample_losses': per_sample_losses # For sampler update
         }
 
     def on_train_epoch_end(self):
@@ -364,7 +454,8 @@ class WaveletDiffusionTransformer(pl.LightningModule):
         self.log('lr', current_lr, prog_bar=True, on_epoch=True)
 
         if self.trainer.is_global_zero:
-            if self.current_epoch > 0 and self.current_epoch % 100 == 0:
+            # Log every 100 epochs (at the end of the epoch)
+            if (self.current_epoch + 1) % 100 == 0:
                 self._log_level_losses_epoch_end()
 
     def _log_level_losses_epoch_end(self):
@@ -387,7 +478,7 @@ class WaveletDiffusionTransformer(pl.LightningModule):
                 weights = self.wavelet_loss_fn.get_weights()
                 
                 # Print level loss summary
-                print(f"Epoch {self.current_epoch} Level Losses:")
+                print(f"Epoch {self.current_epoch + 1} Level Losses:")
                 for i, (loss, weight) in enumerate(zip(level_losses, weights)):
                     print(f"  Level {i}: {loss.item():.6f} (weight: {weight:.4f})")
                 
@@ -436,14 +527,36 @@ class WaveletDiffusionTransformer(pl.LightningModule):
         """Optimization: set_to_none=True is faster than zeroing."""
         optimizer.zero_grad(set_to_none=True)
 
+    def configure_gradient_clipping(self, optimizer, gradient_clip_val, gradient_clip_algorithm):
+        """
+        Override default clipping to handle 'Atomic'/'Fused' optimizer issues.
+        PyTorch Lightning's default clipper sometimes errors with FusedAdamW.
+        """
+        if self.trainer.precision == "16-mixed":
+            # Manually unscale if needed (though fused optimizer usually handles it)
+            # This is a safe-guard against the RuntimeError
+            try:
+                self.trainer.precision_plugin.scaler.unscale_(optimizer)
+            except Exception:
+                pass
+        
+        # Apply the clipping manually
+        if gradient_clip_algorithm == "norm":
+            torch.nn.utils.clip_grad_norm_(self.parameters(), gradient_clip_val)
+        elif gradient_clip_algorithm == "value":
+            torch.nn.utils.clip_grad_value_(self.parameters(), gradient_clip_val)
+
     def configure_optimizers(self):
         """Configure optimizer and scheduler with multiple options."""
+        # Use fused optimizer when CUDA is available (faster on A100)
+        use_fused = torch.cuda.is_available() and 'fused' in torch.optim.AdamW.__init__.__code__.co_varnames
         optimizer = torch.optim.AdamW(
             self.parameters(), 
             lr=self.lr, 
             weight_decay=self.weight_decay,
             eps=1e-8,
-            betas=(0.9, 0.999)
+            betas=(0.9, 0.999),
+            fused=use_fused
         )
         
         # Ensure step-based quantities are available

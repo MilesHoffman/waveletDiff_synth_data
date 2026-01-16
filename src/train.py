@@ -59,11 +59,21 @@ def main():
                        help='Compile mode: default, reduce-overhead, max-autotune')
     parser.add_argument('--compile_fullgraph', type=str, default='false', help='true or false')
     
+    # Checkpoint Options
+    parser.add_argument('--save_weights_only', type=str, default='true', help='true or false - if true, optimizer states are excluded (smaller file)')
+    
     # Performance Options
     parser.add_argument('--precision', type=str, default='32',
                        help='Training precision: 32, bf16-mixed, 16-mixed')
     parser.add_argument('--matmul_precision', type=str, default='medium',
                        help='Matmul precision: highest, high, medium')
+
+    # Profiling Options
+    parser.add_argument('--profile_enabled', type=str, default='false', help='Enable PyTorch Profiler')
+    parser.add_argument('--profile_wait_steps', type=int, default=5, help='Steps before profiling starts')
+    parser.add_argument('--profile_warmup_steps', type=int, default=3, help='Warmup steps for profiler')
+    parser.add_argument('--profile_active_steps', type=int, default=5, help='Steps to actively profile')
+    parser.add_argument('--profile_wait_epochs', type=int, default=0, help='Epochs to wait before profiling (adds to wait steps)')
 
     args = parser.parse_args()
     
@@ -152,6 +162,11 @@ def main():
         print(f"Set matmul precision to: {config['performance']['matmul_precision']}")
     except Exception as e:
         print(f"Could not set matmul precision: {e}")
+
+    # Enable cuDNN benchmark mode for faster training
+    if torch.cuda.is_available():
+        torch.backends.cudnn.benchmark = True
+        print("Enabled cuDNN benchmark mode")
 
     # Set up data module
     print("\n" + "="*60)
@@ -256,7 +271,7 @@ def main():
             
             # Safe logging that doesn't break the progress bar
             if (trainer.current_epoch + 1) % self.log_every_n_epochs == 0:
-                self.main_progress_bar.write(f"Epoch {trainer.current_epoch} - Avg Loss: {train_loss:.6f} - LR: {lr:.2e}")
+                self.main_progress_bar.write(f"Epoch {trainer.current_epoch + 1} - Avg Loss: {train_loss:.6f} - LR: {lr:.2e}")
 
         def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
             # Override parent to do nothing ensures we don't crash
@@ -271,6 +286,38 @@ def main():
     if enable_progress_bar:
         callbacks.append(EpochProgressBar(log_every_n_epochs=config['training']['log_every_n_epochs']))
 
+    # Setup Profiler
+    from pytorch_lightning.profilers import PyTorchProfiler
+
+    profile_enabled = args.profile_enabled.lower() == 'true'
+    if profile_enabled:
+        # Calculate additional wait steps from epochs if requested
+        wait_steps = args.profile_wait_steps
+        if args.profile_wait_epochs > 0:
+            dataset_len = len(data_module.dataset)
+            batch_size = config['training']['batch_size']
+            steps_per_epoch = dataset_len // batch_size
+            wait_steps += args.profile_wait_epochs * steps_per_epoch
+            print(f"Adding wait time: {args.profile_wait_epochs} epochs * {steps_per_epoch} steps/epoch = {args.profile_wait_epochs * steps_per_epoch} steps")
+            
+        profiler = PyTorchProfiler(
+            dirpath=str(experiment_dir / "profiler"),
+            filename="training_profile",
+            schedule=torch.profiler.schedule(
+                wait=wait_steps,
+                warmup=args.profile_warmup_steps,
+                active=args.profile_active_steps,
+                repeat=1
+            ),
+            on_trace_ready=torch.profiler.tensorboard_trace_handler(str(experiment_dir / "profiler")),
+            record_shapes=True,
+            profile_memory=True,
+            with_stack=True
+        )
+        print(f"Profiler enabled: wait={wait_steps} steps, warmup={args.profile_warmup_steps} steps, active={args.profile_active_steps} steps")
+    else:
+        profiler = None
+
     # Setup trainer
     trainer = pl.Trainer(
         max_epochs=config['training']['epochs'],
@@ -284,7 +331,8 @@ def main():
         gradient_clip_val=1.0,
         detect_anomaly=False,
         gradient_clip_algorithm="norm",
-        logger=False
+        logger=False,
+        profiler=profiler
     )
     
     # Train model
@@ -296,8 +344,14 @@ def main():
     
     # Save model if requested
     if config['training']['save_model']:
-        trainer.save_checkpoint(str(model_path))
-        print(f"Model saved to {model_path}")
+        weights_only = args.save_weights_only.lower() == 'true'
+        if weights_only:
+            print(f"Saving weights-only checkpoint to {model_path} (Optimizer states excluded)...")
+        else:
+            print(f"Saving full checkpoint to {model_path}...")
+            
+        trainer.save_checkpoint(str(model_path), weights_only=weights_only)
+        print(f"Model saved!")
 
 if __name__ == "__main__":
     main()
