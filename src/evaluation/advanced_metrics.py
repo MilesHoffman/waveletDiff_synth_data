@@ -4,8 +4,8 @@ import pandas as pd
 from scipy.stats import wasserstein_distance, ks_2samp
 from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
-from sklearn.neighbors import KNeighborsClassifier
-from sklearn.metrics import accuracy_score
+from sklearn.neighbors import KNeighborsClassifier, NearestNeighbors
+from sklearn.mixture import GaussianMixture
 from statsmodels.tsa.stattools import acf
 
 def calculate_distribution_fidelity(real, synthetic):
@@ -211,3 +211,107 @@ def calculate_financial_reality(real, synthetic, lags=[1, 5, 20]):
     results["Volatility_MSE"] = vol_mse / n_features
     
     return results
+
+def calculate_memorization_ratio(real, synthetic):
+    """
+    Calculates the 1/3 Rule Memorization Ratio.
+    
+    Metric: Fraction of generated samples where d(gen, NN1) < 1/3 * d(gen, NN2).
+    NN1 and NN2 are nearest neighbors in the training (real) set.
+    """
+    if len(real.shape) == 3:
+        # Flatten: (N, T*D)
+        real_flat = real.reshape(real.shape[0], -1)
+        synth_flat = synthetic.reshape(synthetic.shape[0], -1)
+    else:
+        real_flat = real
+        synth_flat = synthetic
+        
+    # We need 2 nearest neighbors
+    nbrs = NearestNeighbors(n_neighbors=2, algorithm='ball_tree').fit(real_flat)
+    distances, _ = nbrs.kneighbors(synth_flat)
+    
+    # distances[:, 0] is d(gen, NN1)
+    # distances[:, 1] is d(gen, NN2)
+    d1 = distances[:, 0]
+    d2 = distances[:, 1]
+    
+    # Avoid division by zero
+    ratio = d1 / (d2 + 1e-10)
+    
+    # Flag if d1 < 1/3 * d2  => ratio < 1/3
+    memorized_mask = ratio < (1/3)
+    memorization_ratio = np.mean(memorized_mask)
+    
+    return memorization_ratio
+
+def calculate_diversity_metrics(real, synthetic, k=5):
+    """
+    Calculates Coverage metric.
+    
+    Coverage: Fraction of real samples that have at least one generated sample 
+    within their topological neighborhood (distance to k-th NN).
+    """
+    if len(real.shape) == 3:
+        real_flat = real.reshape(real.shape[0], -1)
+        synth_flat = synthetic.reshape(synthetic.shape[0], -1)
+    else:
+        real_flat = real
+        synth_flat = synthetic
+        
+    n_real = len(real_flat)
+    
+    # 1. Estimate manifold radii for real samples
+    # For each real sample, find distance to k-th NN in real set
+    nbrs_real = NearestNeighbors(n_neighbors=k+1).fit(real_flat) # +1 because self is 0
+    distances_real, _ = nbrs_real.kneighbors(real_flat)
+    
+    # Radius is distance to k-th neighbor (index k, since 0 is self)
+    real_radii = distances_real[:, k]
+    
+    # 2. Check coverage
+    # For each real sample, find nearest neighbor in VALID (synthetic) set
+    nbrs_synth = NearestNeighbors(n_neighbors=1).fit(synth_flat)
+    distances_to_synth, _ = nbrs_synth.kneighbors(real_flat)
+    min_dist_to_synth = distances_to_synth[:, 0]
+    
+    # Covered if nearest synthetic is within real radius
+    covered_mask = min_dist_to_synth <= real_radii
+    coverage_score = np.mean(covered_mask)
+    
+    return {"Coverage": coverage_score}
+
+def calculate_fld(real, synthetic, n_components=10):
+    """
+    Calculates Feature Likelihood Divergence (FLD) proxy.
+    
+    Since we don't have a broad test set, we fit a GMM on Real data 
+    and compare the likelihoods of Real samples vs Synthetic samples.
+    
+    Ideally: | LogLikelihood(Real) - LogLikelihood(Synth) | should be small (close to 0).
+    Large difference means Synth is not matching the density of Real.
+    """
+    if len(real.shape) == 3:
+        real_flat = real.reshape(real.shape[0], -1)
+        synth_flat = synthetic.reshape(synthetic.shape[0], -1)
+    else:
+        real_flat = real
+        synth_flat = synthetic
+
+    # Fit GMM on Real Data
+    # Min of 10 or n_samples/10 components to avoid overfitting small data
+    n_comp = min(n_components, real.shape[0] // 20)
+    n_comp = max(1, n_comp)
+    
+    gmm = GaussianMixture(n_components=n_comp, covariance_type='diag', random_state=42)
+    gmm.fit(real_flat)
+    
+    # Score samples (Log Likelihood)
+    ll_real = gmm.score_samples(real_flat)
+    ll_synth = gmm.score_samples(synth_flat)
+    
+    # FLD Score: Divergence in mean log-likelihood
+    # We want Synth to have similar 'probability' of belonging to the distribution as Real data.
+    fld_score = abs(np.mean(ll_real) - np.mean(ll_synth))
+    
+    return fld_score
