@@ -16,6 +16,7 @@ from .layers import TimeEmbedding, WaveletLevelTransformer
 from .attention import CrossLevelAttention
 from torch.optim.lr_scheduler import CosineAnnealingLR, ReduceLROnPlateau, LambdaLR, OneCycleLR
 from utils.noise_schedules import get_noise_schedule
+from utils.timestep_sampler import HybridTimestepSampler
 
 
 # Hyperparameters
@@ -187,6 +188,19 @@ class WaveletDiffusionTransformer(pl.LightningModule):
         self.register_buffer('alpha_all', self.schedule_params["alpha_all"].clone())
         self.register_buffer('alpha_bar_all', self.schedule_params["alpha_bar_all"].clone())
         
+        # Initialize hybrid timestep sampler for importance-weighted sampling
+        # Combines Min-SNR-γ stability with adaptive loss-history optimization
+        self.timestep_sampler = HybridTimestepSampler(
+            alpha_bar_all=self.alpha_bar_all,
+            T=self.T,
+            warmup_steps=5000,       # Use Min-SNR for first 5000 steps
+            gamma=5.0,               # Min-SNR clamping (paper default)
+            exploration_ratio=0.3,   # 70% Min-SNR, 30% adaptive
+            floor_prob=0.001,        # Minimum sampling probability
+            ema_decay=0.995,         # Smooth loss history updates
+            update_frequency=10      # Update history every 10 batches
+        )
+        
         # Loss tracking
         self.training_losses = []
         self.epoch_losses = []
@@ -258,7 +272,7 @@ class WaveletDiffusionTransformer(pl.LightningModule):
             for i, (start_idx, dim) in enumerate(zip(self.level_start_indices, self.level_dims)):
                 # Extract coefficients for this level from all features
                 end_idx = start_idx + dim
-                level_coeffs = x[:, start_idx:end_idx, :]  # (batch_size, dim, num_features)
+                level_coeffs = x[:, start_idx:end_idx, :].contiguous()  # (batch_size, dim, num_features)
                 level_coeffs_list.append(level_coeffs)
 
                 # Get intermediate embeddings
@@ -280,7 +294,7 @@ class WaveletDiffusionTransformer(pl.LightningModule):
             for i, (start_idx, dim) in enumerate(zip(self.level_start_indices, self.level_dims)):
                 # Extract coefficients for this level
                 end_idx = start_idx + dim
-                level_coeffs = x[:, start_idx:end_idx, :]
+                level_coeffs = x[:, start_idx:end_idx, :].contiguous()
                 
                 # Process through level-specific transformer
                 level_output = self.level_transformers[i](level_coeffs, time_embed)
@@ -310,6 +324,34 @@ class WaveletDiffusionTransformer(pl.LightningModule):
             raise ValueError(f"Unknown prediction target: {self.prediction_target}")
         
         return self.wavelet_loss_fn(target, prediction)
+    
+    def compute_loss_with_per_sample(self, x_0, t):
+        """
+        Compute training loss and per-sample losses for timestep sampler updates.
+        
+        Returns:
+            total_loss: Scalar loss for backpropagation
+            per_sample_losses: [batch_size] tensor of per-sample losses
+        """
+        x_t, noise = self.compute_forward_process(x_0, t)
+        t_norm = (t.float() / self.T).clone()
+        prediction = self(x_t, t_norm)
+        
+        if self.prediction_target == "noise":
+            target = noise
+        elif self.prediction_target == "coefficient":
+            target = x_0
+        else:
+            raise ValueError(f"Unknown prediction target: {self.prediction_target}")
+        
+        # Total loss for backpropagation
+        total_loss = self.wavelet_loss_fn(target, prediction)
+        
+        # Per-sample MSE for timestep sampler (simple approximation)
+        # Compute mean over coefficient and feature dimensions
+        per_sample_losses = F.mse_loss(target, prediction, reduction='none').mean(dim=(1, 2))
+        
+        return total_loss, per_sample_losses
 
     def on_train_batch_start(self, batch, batch_idx):
         """Hook called before training step - safe for graph markers."""
@@ -327,14 +369,20 @@ class WaveletDiffusionTransformer(pl.LightningModule):
                 self.log('train_loss', outputs['train_loss'], prog_bar=True, on_step=False, on_epoch=True)
 
     def training_step(self, batch, batch_idx):
-        """Training step optimized for torch.compile compatibility."""
+        """Training step with importance-weighted timestep sampling."""
         x_0 = batch[0]
         
         # Unconditional NaN handling (compile-safe, no control flow)
         x_0 = torch.nan_to_num(x_0, nan=0.0, posinf=1.0, neginf=-1.0)
         
-        t = torch.randint(0, self.T, (x_0.size(0),), device=self.device)
-        loss = self.compute_loss(x_0, t)
+        # Use importance-weighted timestep sampling instead of uniform
+        t = self.timestep_sampler.sample(x_0.size(0), self.device)
+        
+        # Compute loss with per-sample breakdown for sampler updates
+        loss, per_sample_losses = self.compute_loss_with_per_sample(x_0, t)
+        
+        # Update timestep sampler's loss history (handles frequency internally)
+        self.timestep_sampler.update_loss_history(t, per_sample_losses)
         
         # Compile-safe loss stability using torch.where instead of Python if
         loss = torch.where(

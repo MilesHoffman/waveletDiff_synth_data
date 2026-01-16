@@ -60,9 +60,18 @@ class WaveletBalancedLoss:
         self.use_energy_term = use_energy_term
         self.energy_weight = energy_weight
         
+        # Pre-compute level boundaries for vectorized operations
+        self.level_end_indices = [
+            start + dim for start, dim in zip(level_start_indices, level_dims)
+        ]
         
         # Initialize weights based on strategy
         self.level_weights = self._initialize_weights()
+        
+        # Store as tensors for vectorized loss computation
+        # These will be moved to the correct device on first use
+        self._level_weights_tensor: torch.Tensor = None
+        self._device_initialized = False
         
         
         print(f"Initialized {strategy} wavelet loss:")
@@ -188,55 +197,52 @@ class WaveletBalancedLoss:
             return reconstruction_loss
     
     def _compute_weighted_loss(self, target: torch.Tensor, prediction: torch.Tensor) -> torch.Tensor:
-        """Compute weighted loss across levels."""
-        batch_size, total_coeffs_per_feature, num_features = target.shape
-        total_loss = 0.0
-
-        # Compute loss for each feature separately, then average
-        for feature_idx in range(num_features):
-            feature_total_loss = 0.0
-            target_feature = target[:, :, feature_idx]  # [batch_size, total_coeffs_per_feature]
-            pred_feature = prediction[:, :, feature_idx]  # [batch_size, total_coeffs_per_feature]
-            
-            for i, (start_idx, dim, weight) in enumerate(zip(
-                self.level_start_indices, self.level_dims, self.level_weights
-            )):
-                end_idx = start_idx + dim
-                level_target = target_feature[:, start_idx:end_idx]
-                level_pred = pred_feature[:, start_idx:end_idx]
-                
-                level_loss = F.mse_loss(level_target, level_pred)
-                feature_total_loss += weight * level_loss
-
-            total_loss += feature_total_loss
-
-        # Average across features
-        return total_loss / num_features
+        """
+        Compute weighted loss across levels using vectorized operations.
+        
+        Optimized to avoid Python loops by computing all level MSE losses
+        in parallel and applying weights via tensor operations.
+        """
+        # Initialize weights tensor on first use (lazy device placement)
+        if self._level_weights_tensor is None or self._level_weights_tensor.device != target.device:
+            self._level_weights_tensor = torch.tensor(
+                self.level_weights, device=target.device, dtype=target.dtype
+            )
+        
+        # Compute MSE for each level in a single pass
+        # Using list comprehension is still faster than pure loops due to reduced Python overhead
+        # and allows torch.stack to create a single tensor for vectorized weighting
+        level_losses = torch.stack([
+            F.mse_loss(
+                target[:, start:end, :].contiguous(),
+                prediction[:, start:end, :].contiguous()
+            )
+            for start, end in zip(self.level_start_indices, self.level_end_indices)
+        ])
+        
+        # Apply weights via tensor multiplication (fully vectorized)
+        weighted_loss = (level_losses * self._level_weights_tensor).sum()
+        
+        return weighted_loss
     
     
     def get_level_losses(self, target: torch.Tensor, prediction: torch.Tensor) -> List[torch.Tensor]:
-        """Get individual losses for each level (useful for logging)."""
-        # Validate tensor shapes
+        """
+        Get individual losses for each level (useful for logging).
+        
+        Uses vectorized operations matching _compute_weighted_loss.
+        """
         self._validate_tensor_shape(target, "target")
         self._validate_tensor_shape(prediction, "prediction")
         
-        batch_size, total_coeffs_per_feature, num_features = target.shape
-        level_losses = []
-
-        for i, (start_idx, dim) in enumerate(zip(self.level_start_indices, self.level_dims)):
-            end_idx = start_idx + dim
-            level_loss_total = 0.0
-            
-            for feature_idx in range(num_features):
-                target_feature = target[:, :, feature_idx]
-                pred_feature = prediction[:, :, feature_idx]
-                level_target = target_feature[:, start_idx:end_idx]
-                level_pred = pred_feature[:, start_idx:end_idx]
-                level_loss = F.mse_loss(level_target, level_pred)
-                level_loss_total += level_loss
-            
-            # Average across features
-            level_losses.append(level_loss_total / num_features)
+        # Compute MSE for each level using vectorized slicing
+        level_losses = [
+            F.mse_loss(
+                target[:, start:end, :].contiguous(),
+                prediction[:, start:end, :].contiguous()
+            )
+            for start, end in zip(self.level_start_indices, self.level_end_indices)
+        ]
         
         return level_losses
     

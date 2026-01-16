@@ -154,8 +154,8 @@ class CrossLevelAttention(nn.Module):
                 if not other_levels_indices:
                     continue
                     
-                other_levels = level_stack[:, other_levels_indices, :]  # [batch_size, num_other_levels, common_dim]
-                query_level = level_stack[:, i:i+1, :]  # [batch_size, 1, common_dim]
+                other_levels = level_stack[:, other_levels_indices, :].contiguous()  # [batch_size, num_other_levels, common_dim]
+                query_level = level_stack[:, i:i+1, :].contiguous()  # [batch_size, 1, common_dim]
                 
                 # Apply attention
                 _, attn_weights = self.cross_attention_layers[i](
@@ -183,8 +183,9 @@ class CrossLevelAttention(nn.Module):
         """
         batch_size = level_embeddings[0].shape[0]
         
-        # Store original embeddings for residual connections
-        original_embeddings = [emb.clone() for emb in level_embeddings]
+        # Original embeddings are used for residual connections
+        # No clone needed since we don't modify them in-place
+        original_embeddings = level_embeddings
         
         # Step 1: Aggregate each level's coefficient embeddings into a single level representation
         level_representations = []
@@ -231,8 +232,8 @@ class CrossLevelAttention(nn.Module):
                     cross_attended_levels.append(level_representations[i])
                     continue
                     
-                other_levels = level_stack[:, other_levels_indices, :]  # [batch_size, num_other_levels, common_dim]
-                query_level = level_stack[:, i:i+1, :]  # [batch_size, 1, common_dim]
+                other_levels = level_stack[:, other_levels_indices, :].contiguous()  # [batch_size, num_other_levels, common_dim]
+                query_level = level_stack[:, i:i+1, :].contiguous()  # [batch_size, 1, common_dim]
                 
                 # Apply cross-attention (level i attends to all other levels)
                 cross_attended_level, _ = self.cross_attention_layers[i](
