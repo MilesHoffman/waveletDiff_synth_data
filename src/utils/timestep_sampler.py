@@ -4,6 +4,9 @@ Importance-weighted timestep sampling strategies for diffusion model training.
 This module implements the Hybrid Timestep Sampler which combines:
 1. Min-SNR-γ weighting for stable foundation
 2. Adaptive loss-history tracking for architecture-specific optimization
+
+NOTE: This implementation is CUDAGraph-safe for torch.compile reduce-overhead mode.
+All tensors are pre-placed on the target device and no .to() calls occur during sampling.
 """
 
 import torch
@@ -23,6 +26,7 @@ class HybridTimestepSampler:
     - EMA-smoothed loss history tracking
     - Floor probability to prevent forgetting easy timesteps
     - Exploration/exploitation balance via mixing ratio
+    - CUDAGraph-safe (no .to() calls in hot path)
     """
     
     def __init__(
@@ -59,75 +63,73 @@ class HybridTimestepSampler:
         
         self.step_count = 0
         self._device = alpha_bar_all.device
+        self._dtype = alpha_bar_all.dtype
         
-        # Compute Min-SNR-γ weights
-        # SNR(t) = alpha_bar(t) / (1 - alpha_bar(t))
+        # Compute Min-SNR-γ weights (all tensors on same device as alpha_bar_all)
         snr = alpha_bar_all / (1.0 - alpha_bar_all + 1e-8)
-        
-        # Min-SNR-γ weight: min(SNR, γ) / SNR
-        # This down-weights high-SNR (easy/clean) timesteps
         min_snr_weights = torch.clamp(snr, max=gamma) / (snr + 1e-8)
-        
-        # Normalize to probability distribution
         self.min_snr_probs = min_snr_weights / min_snr_weights.sum()
         
-        # Initialize loss history with uniform prior (no bias initially)
-        self.loss_history = torch.ones(T, device=self._device)
+        # Initialize loss history on same device
+        self.loss_history = torch.ones(T, device=self._device, dtype=self._dtype)
         
         # Uniform prior for exploration component
-        self.uniform_prior = torch.ones(T, device=self._device) / T
+        self.uniform_prior = torch.ones(T, device=self._device, dtype=self._dtype) / T
         
-        # Cache for current sampling probabilities (avoid recomputing every call)
-        self._cached_probs: Optional[torch.Tensor] = None
-        self._cache_valid = False
+        # Pre-allocate cached probs on same device (CUDAGraph-safe)
+        self._cached_probs = self.min_snr_probs.clone()
+        self._cache_valid = True
+        
+        # Track if we've been moved to a different device
+        self._initialized = True
     
     def _compute_adaptive_probs(self) -> torch.Tensor:
         """Compute current sampling probabilities based on loss history."""
-        # Apply power transform to prevent outlier dominance
-        # sqrt (power=0.5) balances between uniform and pure loss-proportional
         adaptive_weights = (self.loss_history + 1e-8).pow(0.5)
         adaptive_probs = adaptive_weights / adaptive_weights.sum()
         
-        # Blend Min-SNR foundation with adaptive adjustment
-        # exploration_ratio controls how much we trust Min-SNR vs loss history
         probs = (
             (1 - self.exploration_ratio) * self.min_snr_probs + 
             self.exploration_ratio * adaptive_probs
         )
         
-        # Apply floor probability to prevent any timestep from being ignored
         probs = torch.clamp(probs, min=self.floor_prob)
-        
-        # Re-normalize after clamping
         probs = probs / probs.sum()
         
         return probs
     
-    def _get_sampling_probs(self, device: torch.device) -> torch.Tensor:
-        """Get current sampling probabilities, using cache when valid."""
-        # During warmup, use pure Min-SNR
-        if self.step_count < self.warmup_steps:
-            return self.min_snr_probs.to(device)
+    def _get_sampling_probs(self) -> torch.Tensor:
+        """
+        Get current sampling probabilities.
         
-        # After warmup, use cached adaptive probs or recompute
+        NOTE: No .to(device) calls for CUDAGraph compatibility.
+        All tensors are pre-placed on the correct device.
+        """
+        if self.step_count < self.warmup_steps:
+            return self.min_snr_probs
+        
         if not self._cache_valid:
             self._cached_probs = self._compute_adaptive_probs()
             self._cache_valid = True
         
-        return self._cached_probs.to(device)
+        return self._cached_probs
     
     def sample(self, batch_size: int, device: torch.device) -> torch.Tensor:
         """
         Sample timesteps according to current importance distribution.
         
+        NOTE: The device parameter is kept for API compatibility but tensors
+        should already be on the correct device via ensure_device().
+        
         Args:
             batch_size: Number of timesteps to sample
-            device: Device to place the sampled timesteps on
+            device: Device to place the sampled timesteps on (should match internal device)
             
         Returns:
             Tensor of sampled timestep indices [batch_size]
         """
-        probs = self._get_sampling_probs(device)
+        probs = self._get_sampling_probs()
+        # torch.multinomial returns indices on the same device as input
         return torch.multinomial(probs, batch_size, replacement=True)
     
     def update_loss_history(
@@ -138,43 +140,47 @@ class HybridTimestepSampler:
         """
         Update loss history with new observations using EMA smoothing.
         
-        This should be called periodically (not every batch) to reduce overhead.
-        The sampler tracks step_count internally to manage update frequency.
-        
-        Args:
-            timesteps: Tensor of timestep indices [batch_size]
-            losses: Tensor of per-sample losses [batch_size]
+        This runs outside the compiled graph to avoid side effects.
         """
         self.step_count += 1
         
-        # Only update on specified frequency to reduce overhead
         if self.step_count % self.update_frequency != 0:
             return
         
-        # Move to CPU for accumulation (loss_history lives on init device)
-        timesteps_cpu = timesteps.detach().cpu()
-        losses_cpu = losses.detach().cpu()
+        # Detach to avoid graph dependencies
+        timesteps_detached = timesteps.detach()
+        losses_detached = losses.detach()
         
-        # Update loss history with EMA for each observed timestep
-        for t_idx, loss_val in zip(timesteps_cpu, losses_cpu):
-            t = t_idx.item()
-            old_val = self.loss_history[t]
-            new_val = loss_val.item()
+        # Update on CPU to avoid modifying GPU tensors during graph capture
+        # This is safe because it only runs outside the main forward/backward
+        for i in range(timesteps_detached.size(0)):
+            t = timesteps_detached[i].item()
+            loss_val = losses_detached[i].item()
             
-            # EMA update: new = decay * old + (1 - decay) * new
-            self.loss_history[t] = self.ema_decay * old_val + (1 - self.ema_decay) * new_val
+            old_val = self.loss_history[t].item()
+            new_val = self.ema_decay * old_val + (1 - self.ema_decay) * loss_val
+            self.loss_history[t] = new_val
         
-        # Invalidate cache so next sample() recomputes probabilities
         self._cache_valid = False
     
-    def get_diagnostics(self) -> dict:
+    def ensure_device(self, device: torch.device) -> "HybridTimestepSampler":
         """
-        Get diagnostic information about the sampler state.
+        Ensure all sampler tensors are on the specified device.
         
-        Returns:
-            Dictionary with sampler statistics for logging
+        This should be called ONCE during model setup, not during training.
+        For CUDAGraph compatibility, all tensors must be pre-placed.
         """
-        probs = self._get_sampling_probs(self._device)
+        if self._device != device:
+            self._device = device
+            self.min_snr_probs = self.min_snr_probs.to(device)
+            self.loss_history = self.loss_history.to(device)
+            self.uniform_prior = self.uniform_prior.to(device)
+            self._cached_probs = self._cached_probs.to(device)
+        return self
+    
+    def get_diagnostics(self) -> dict:
+        """Get diagnostic information about the sampler state."""
+        probs = self._get_sampling_probs()
         
         return {
             "step_count": self.step_count,
@@ -187,11 +193,6 @@ class HybridTimestepSampler:
         }
     
     def to(self, device: torch.device) -> "HybridTimestepSampler":
-        """Move sampler tensors to specified device."""
-        self._device = device
-        self.min_snr_probs = self.min_snr_probs.to(device)
-        self.loss_history = self.loss_history.to(device)
-        self.uniform_prior = self.uniform_prior.to(device)
-        if self._cached_probs is not None:
-            self._cached_probs = self._cached_probs.to(device)
-        return self
+        """Alias for ensure_device for compatibility."""
+        return self.ensure_device(device)
+

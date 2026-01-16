@@ -353,6 +353,23 @@ class WaveletDiffusionTransformer(pl.LightningModule):
         
         return total_loss, per_sample_losses
 
+    def on_train_start(self):
+        """Called at the very beginning of training - initialize device-dependent components."""
+        # Ensure timestep sampler tensors are on the correct device BEFORE training
+        # This is critical for CUDAGraph compatibility - no .to() calls during training
+        self.timestep_sampler.ensure_device(self.device)
+        
+        # Pre-initialize wavelet loss weights tensor on the correct device
+        # This avoids lazy tensor creation during the first training step
+        if hasattr(self.wavelet_loss_fn, 'loss_computer'):
+            loss_computer = self.wavelet_loss_fn.loss_computer
+            if loss_computer._level_weights_tensor is None:
+                loss_computer._level_weights_tensor = torch.tensor(
+                    loss_computer.level_weights, 
+                    device=self.device, 
+                    dtype=torch.float32
+                )
+
     def on_train_batch_start(self, batch, batch_idx):
         """Hook called before training step - safe for graph markers."""
         # Mark step start for reduce-overhead mode to prevent CUDAGraphs memory errors

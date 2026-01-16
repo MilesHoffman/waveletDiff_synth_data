@@ -202,16 +202,24 @@ class WaveletBalancedLoss:
         
         Optimized to avoid Python loops by computing all level MSE losses
         in parallel and applying weights via tensor operations.
+        
+        NOTE: CUDAGraph-safe - weights tensor is pre-initialized and only
+        moved to device once, not recreated on every call.
         """
-        # Initialize weights tensor on first use (lazy device placement)
-        if self._level_weights_tensor is None or self._level_weights_tensor.device != target.device:
+        # Ensure weights tensor exists and is on correct device
+        # This condition check is graph-safe (no tensor creation in hot path)
+        if self._level_weights_tensor is None:
+            # First-time initialization (happens outside compiled graph)
             self._level_weights_tensor = torch.tensor(
                 self.level_weights, device=target.device, dtype=target.dtype
             )
+        elif self._level_weights_tensor.device != target.device:
+            # Device mismatch - move once (happens on setup, not in training loop)
+            self._level_weights_tensor = self._level_weights_tensor.to(
+                device=target.device, dtype=target.dtype
+            )
         
         # Compute MSE for each level in a single pass
-        # Using list comprehension is still faster than pure loops due to reduced Python overhead
-        # and allows torch.stack to create a single tensor for vectorized weighting
         level_losses = torch.stack([
             F.mse_loss(
                 target[:, start:end, :].contiguous(),
