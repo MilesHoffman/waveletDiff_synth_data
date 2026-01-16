@@ -35,7 +35,13 @@ class HybridTimestepSampler:
         ema_decay: float = 0.995,
         update_frequency: int = 10
     ):
-        self.T = T
+        # CRITICAL: Derive T from alpha_bar_all to ensure tensor sizes match
+        # The passed T parameter is ignored if it doesn't match
+        actual_T = alpha_bar_all.shape[0]
+        if T != actual_T:
+            print(f"[HybridTimestepSampler] Warning: T={T} doesn't match alpha_bar_all length {actual_T}, using {actual_T}")
+        
+        self.T = actual_T
         self.warmup_steps = warmup_steps
         self.gamma = gamma
         self.exploration_ratio = exploration_ratio
@@ -52,8 +58,8 @@ class HybridTimestepSampler:
         min_snr_weights = torch.clamp(snr, max=gamma) / (snr + 1e-8)
         self.min_snr_probs = min_snr_weights / min_snr_weights.sum()
         
-        # Initialize loss history
-        self.loss_history = torch.ones(T, device=self._device, dtype=self._dtype)
+        # Initialize loss history - MUST use same T as min_snr_probs
+        self.loss_history = torch.ones(self.T, device=self._device, dtype=self._dtype)
         
         # CRITICAL: This is the only tensor used in sample()
         # It gets updated OUTSIDE the compiled graph by _refresh_probs()
