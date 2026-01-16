@@ -59,6 +59,9 @@ def main():
                        help='Compile mode: default, reduce-overhead, max-autotune')
     parser.add_argument('--compile_fullgraph', type=str, default='false', help='true or false')
     
+    # Checkpoint Options
+    parser.add_argument('--save_weights_only', type=str, default='true', help='true or false - if true, optimizer states are excluded (smaller file)')
+    
     # Performance Options
     parser.add_argument('--precision', type=str, default='32',
                        help='Training precision: 32, bf16-mixed, 16-mixed')
@@ -341,8 +344,14 @@ def main():
     
     # Save model if requested
     if config['training']['save_model']:
-        trainer.save_checkpoint(str(model_path))
-        print(f"Model saved to {model_path}")
+        weights_only = args.save_weights_only.lower() == 'true'
+        if weights_only:
+            print(f"Saving weights-only checkpoint to {model_path} (Optimizer states excluded)...")
+        else:
+            print(f"Saving full checkpoint to {model_path}...")
+            
+        trainer.save_checkpoint(str(model_path), weights_only=weights_only)
+        print(f"Model saved!")
 
 if __name__ == "__main__":
     main()
