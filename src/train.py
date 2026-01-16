@@ -65,6 +65,13 @@ def main():
     parser.add_argument('--matmul_precision', type=str, default='medium',
                        help='Matmul precision: highest, high, medium')
 
+    # Profiling Options
+    parser.add_argument('--profile_enabled', type=str, default='false', help='Enable PyTorch Profiler')
+    parser.add_argument('--profile_wait_steps', type=int, default=5, help='Steps before profiling starts')
+    parser.add_argument('--profile_warmup_steps', type=int, default=3, help='Warmup steps for profiler')
+    parser.add_argument('--profile_active_steps', type=int, default=5, help='Steps to actively profile')
+    parser.add_argument('--profile_wait_epochs', type=int, default=0, help='Epochs to wait before profiling (adds to wait steps)')
+
     args = parser.parse_args()
     
     # Load configuration
@@ -276,6 +283,38 @@ def main():
     if enable_progress_bar:
         callbacks.append(EpochProgressBar(log_every_n_epochs=config['training']['log_every_n_epochs']))
 
+    # Setup Profiler
+    from pytorch_lightning.profilers import PyTorchProfiler
+
+    profile_enabled = args.profile_enabled.lower() == 'true'
+    if profile_enabled:
+        # Calculate additional wait steps from epochs if requested
+        wait_steps = args.profile_wait_steps
+        if args.profile_wait_epochs > 0:
+            dataset_len = len(data_module.dataset)
+            batch_size = config['training']['batch_size']
+            steps_per_epoch = dataset_len // batch_size
+            wait_steps += args.profile_wait_epochs * steps_per_epoch
+            print(f"Adding wait time: {args.profile_wait_epochs} epochs * {steps_per_epoch} steps/epoch = {args.profile_wait_epochs * steps_per_epoch} steps")
+            
+        profiler = PyTorchProfiler(
+            dirpath=str(experiment_dir / "profiler"),
+            filename="training_profile",
+            schedule=torch.profiler.schedule(
+                wait=wait_steps,
+                warmup=args.profile_warmup_steps,
+                active=args.profile_active_steps,
+                repeat=1
+            ),
+            on_trace_ready=torch.profiler.tensorboard_trace_handler(str(experiment_dir / "profiler")),
+            record_shapes=True,
+            profile_memory=True,
+            with_stack=True
+        )
+        print(f"Profiler enabled: wait={wait_steps} steps, warmup={args.profile_warmup_steps} steps, active={args.profile_active_steps} steps")
+    else:
+        profiler = None
+
     # Setup trainer
     trainer = pl.Trainer(
         max_epochs=config['training']['epochs'],
@@ -289,7 +328,8 @@ def main():
         gradient_clip_val=1.0,
         detect_anomaly=False,
         gradient_clip_algorithm="norm",
-        logger=False
+        logger=False,
+        profiler=profiler
     )
     
     # Train model
