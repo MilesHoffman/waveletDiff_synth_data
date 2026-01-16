@@ -69,12 +69,13 @@ class Discriminator(nn.Module):
         return logits
 
 
-def discriminative_score_metrics(ori_data, generated_data):
+def discriminative_score_metrics(ori_data, generated_data, compile_mode="none"):
     """Use post-hoc RNN to classify original data and synthetic data
 
     Args:
         - ori_data: original data
         - generated_data: generated synthetic data
+        - compile_mode: torch.compile mode ("none", "default", "reduce-overhead", "max-autotune")
 
     Returns:
         - discriminative_score: np.abs(classification accuracy - 0.5)
@@ -102,6 +103,11 @@ def discriminative_score_metrics(ori_data, generated_data):
 
     # Initialize the discriminator
     discriminator = Discriminator(dim, hidden_dim).to(device)
+
+    # Apply torch.compile if requested
+    if compile_mode != "none":
+        print(f"Compiling Discriminator with mode='{compile_mode}'...")
+        discriminator = torch.compile(discriminator, mode=compile_mode)
     criterion = nn.BCEWithLogitsLoss()
     optimizer = optim.Adam(discriminator.parameters())
 

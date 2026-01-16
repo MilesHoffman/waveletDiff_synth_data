@@ -36,13 +36,14 @@ class Predictor(nn.Module):
         return y_hat
 
 
-def predictive_score_metrics(ori_data, generated_data, window_size=20):
+def predictive_score_metrics(ori_data, generated_data, window_size=20, compile_mode="none"):
     """Report the performance of Post-hoc RNN one-step ahead prediction.
 
     Args:
       - ori_data: original data
       - generated_data: generated synthetic data
       - window_size: number of steps ahead to predict in the univariate case
+      - compile_mode: torch.compile mode ("none", "default", "reduce-overhead", "max-autotune")
 
     Returns:
       - predictive_score: MAE of the predictions on the original data
@@ -58,6 +59,11 @@ def predictive_score_metrics(ori_data, generated_data, window_size=20):
     model = Predictor(input_dim=(dim - 1) if dim > 1 else 1, hidden_dim=hidden_dim).to(
         "cuda" if torch.cuda.is_available() else "cpu"
     )
+
+    # Apply torch.compile if requested
+    if compile_mode != "none":
+        print(f"Compiling Predictor with mode='{compile_mode}'...")
+        model = torch.compile(model, mode=compile_mode)
     criterion = nn.L1Loss()
     optimizer = optim.Adam(model.parameters())
 

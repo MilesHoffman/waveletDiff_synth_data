@@ -19,9 +19,9 @@ def calculate_fid(act1, act2):
     fid = ssdiff + np.trace(sigma1 + sigma2 - 2.0 * covmean)
     return fid
 
-def Context_FID(ori_data, generated_data):
+def Context_FID(ori_data, generated_data, compile_mode="none"):
     model = TS2Vec(input_dims=ori_data.shape[-1], device=0, batch_size=8, lr=0.001, output_dims=320,
-                   max_train_length=3000)
+                   max_train_length=3000, compile_mode=compile_mode)
     model.fit(ori_data, verbose=False)
     ori_represenation = model.encode(ori_data, encoding_window='full_series')
     gen_represenation = model.encode(generated_data, encoding_window='full_series')

@@ -22,7 +22,8 @@ class TS2Vec:
         max_train_length=None,
         temporal_unit=0,
         after_iter_callback=None,
-        after_epoch_callback=None
+        after_epoch_callback=None,
+        compile_mode='none'
     ):
         ''' Initialize a TS2Vec model.
         
@@ -38,6 +39,7 @@ class TS2Vec:
             temporal_unit (int): The minimum unit to perform temporal contrast. When training on a very long sequence, this param helps to reduce the cost of time and memory.
             after_iter_callback (Union[Callable, NoneType]): A callback function that would be called after each iteration.
             after_epoch_callback (Union[Callable, NoneType]): A callback function that would be called after each epoch.
+            compile_mode (str): torch.compile mode.
         '''
         
         super().__init__()
@@ -46,13 +48,18 @@ class TS2Vec:
         self.batch_size = batch_size
         self.max_train_length = max_train_length
         self.temporal_unit = temporal_unit
+        self.compile_mode = compile_mode
         
         self._net = TSEncoder(input_dims=input_dims, output_dims=output_dims, hidden_dims=hidden_dims, depth=depth).to(self.device)
+        self.after_epoch_callback = after_epoch_callback
+        
+        # Apply torch.compile if requested
+        if hasattr(self, 'compile_mode') and self.compile_mode != 'none':
+            print(f"Compiling TS2Vec encoder with mode='{self.compile_mode}'...")
+            self._net = torch.compile(self._net, mode=self.compile_mode)
+
         self.net = torch.optim.swa_utils.AveragedModel(self._net)
         self.net.update_parameters(self._net)
-        
-        self.after_iter_callback = after_iter_callback
-        self.after_epoch_callback = after_epoch_callback
         
         self.n_epochs = 0
         self.n_iters = 0
