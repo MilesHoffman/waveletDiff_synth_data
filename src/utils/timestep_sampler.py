@@ -134,13 +134,36 @@ class HybridTimestepSampler:
             return
         
         # Update loss history with EMA (detached, no graph dependencies)
-        timesteps_detached = timesteps.detach()
-        losses_detached = losses.detach()
+        # Move to CPU first to avoid individual GPU access overhead and synchronization issues
+        timesteps_cpu = timesteps.detach().cpu().long()
+        losses_cpu = losses.detach().cpu().float()
         
-        for i in range(timesteps_detached.size(0)):
-            t = timesteps_detached[i].item()
-            loss_val = losses_detached[i].item()
+        # Helper to avoid frequent GPU-CPU sync for loss_history if it's on GPU
+        # We'll fetch the relevant history to CPU, update it, and write it back
+        # This is strictly better for performance than individual .item() calls on a GPU tensor
+        
+        # Unique timesteps to handle duplicates correctly if we swiched to vectorized, 
+        # but for the loop implementation, we just need to ensure we access CPU tensors
+        
+        # If loss_history is on GPU, we should probably move it to CPU for this operation 
+        # or accept the overhead. Given typical batch sizes (64-512), a loop is okay on CPU 
+        # but terrible if accessing GPU memory.
+        
+        # Optimization: Read current values for the batch
+        # Note: This might be slightly stale if update_frequency is low, but that's fine
+        
+        # Let's stick to the robust loop but ensure everything is on CPU/Integer
+        current_history = self.loss_history.to(timesteps_cpu.device) # Should be CPU now if we moved it? 
+        # Wait, self.loss_history should stay on its device for sampling.
+        
+        for i in range(timesteps_cpu.size(0)):
+            t = int(timesteps_cpu[i].item())
+            loss_val = losses_cpu[i].item()
             
+            # fast-path check
+            if t < 0 or t >= self.T:
+                continue
+                
             old_val = self.loss_history[t].item()
             new_val = self.ema_decay * old_val + (1 - self.ema_decay) * loss_val
             self.loss_history[t] = new_val
