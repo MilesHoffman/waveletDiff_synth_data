@@ -353,11 +353,76 @@ def main():
                     try:
                         self.profiler.__exit__(None, None, None)
                         print(f"Profiler finished. {self.step_count} steps recorded.")
-                        print(f"Trace files saved to: {self.output_dir}")
+                        
+                        # Find the latest trace file
+                        import glob
+                        trace_files = glob.glob(str(self.output_dir / "*.json"))
+                        if trace_files:
+                            latest_trace = max(trace_files, key=os.path.getctime)
+                            print(f"Analyzing trace file: {latest_trace}")
+                            self.analyze_trace_file(latest_trace)
+                        else:
+                            print(f"Warning: No trace files found in {self.output_dir}")
+                            
                     except Exception as e:
                         print(f"Warning: Profiler cleanup error (non-fatal): {e}")
                     finally:
                         self.profiler = None
+
+            def analyze_trace_file(self, trace_path):
+                import json
+                try:
+                    with open(trace_path, 'r') as f:
+                        data = json.load(f)
+                    
+                    if not isinstance(data, dict) or 'traceEvents' not in data:
+                        # Some formats might be a list directly, or invalid
+                        print(f"Warning: Could not parse trace format")
+                        return
+
+                    events = data['traceEvents']
+                    
+                    # Calculate GPU Utilization
+                    gpu_kernels = [e for e in events if e.get('cat') == 'kernel']
+                    total_gpu_time = sum(e.get('dur', 0) for e in gpu_kernels)
+                    
+                    # Estimate active time from range of events
+                    timestamps = [e.get('ts', 0) for e in events if 'ts' in e]
+                    if not timestamps:
+                        print("No events with timestamps found.")
+                        return
+
+                    start_time = min(timestamps)
+                    end_time = max(timestamps)
+                    total_time = end_time - start_time
+                    
+                    gpu_utilization = (total_gpu_time / total_time * 100) if total_time > 0 else 0
+                    
+                    # Filter and aggregate kernels
+                    kernel_times = {}
+                    for k in gpu_kernels:
+                        name = k.get('name', 'unknown')
+                        dur = k.get('dur', 0)
+                        kernel_times[name] = kernel_times.get(name, 0) + dur
+                        
+                    top_kernels = sorted(kernel_times.items(), key=lambda x: x[1], reverse=True)[:5]
+                    
+                    print("\n" + "="*60)
+                    print("PROFILER REPORT")
+                    print("="*60)
+                    print(f"Total Recorded Time: {total_time/1e6:.2f} s")
+                    print(f"Estimated GPU Utilization: {gpu_utilization:.2f}%")
+                    print("-" * 30)
+                    print("Top 5 Bottleneck Operations (Kernels):")
+                    for name, duration in top_kernels:
+                         # Clean up name if too long
+                        clean_name = name.split("<")[0] if "<" in name else name
+                        print(f"  {duration/1000:.2f} ms : {clean_name}")
+                    print("="*60 + "\n")
+                    
+                except Exception as e:
+                    print(f"Warning: Could not analyze trace file: {e}")
+
         
         # Calculate wait steps
         wait_steps = args.profile_wait_steps
