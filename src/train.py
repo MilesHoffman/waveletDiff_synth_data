@@ -286,51 +286,98 @@ def main():
     if enable_progress_bar:
         callbacks.append(EpochProgressBar(log_every_n_epochs=config['training']['log_every_n_epochs']))
 
-    # Setup Profiler
+    # Setup Profiler - Using custom callback to bypass Lightning's broken PyTorchProfiler
     import warnings
+    import logging
+    
+    # Suppress Kineto warnings at the C++ level by filtering the logger
+    logging.getLogger("torch.profiler").setLevel(logging.ERROR)
     warnings.filterwarnings("ignore", message=".*Profiler is not initialized.*")
+    warnings.filterwarnings("ignore", message=".*kineto.*")
     
     profile_enabled = args.profile_enabled.lower() == 'true'
-    profiler = None
+    profiler_callback = None
     
     if profile_enabled:
-        from pytorch_lightning.profilers import PyTorchProfiler
+        from pytorch_lightning.callbacks import Callback
         
         profiler_dir = experiment_dir / "profiler"
         profiler_dir.mkdir(parents=True, exist_ok=True)
         
-        # Calculate schedule parameters
+        class TorchProfilerCallback(Callback):
+            """Custom profiler callback that uses torch.profiler directly."""
+            
+            def __init__(self, output_dir, wait=0, warmup=1, active=5):
+                super().__init__()
+                self.output_dir = Path(output_dir)
+                self.wait = wait
+                self.warmup = warmup
+                self.active = active
+                self.profiler = None
+                self.step_count = 0
+                
+            def on_train_start(self, trainer, pl_module):
+                try:
+                    self.profiler = torch.profiler.profile(
+                        activities=[
+                            torch.profiler.ProfilerActivity.CPU,
+                            torch.profiler.ProfilerActivity.CUDA,
+                        ],
+                        schedule=torch.profiler.schedule(
+                            wait=self.wait,
+                            warmup=self.warmup,
+                            active=self.active,
+                            repeat=1
+                        ),
+                        on_trace_ready=torch.profiler.tensorboard_trace_handler(str(self.output_dir)),
+                        record_shapes=True,
+                        profile_memory=True,
+                        with_stack=False
+                    )
+                    self.profiler.__enter__()
+                    print(f"Profiler started: wait={self.wait}, warmup={self.warmup}, active={self.active}")
+                except Exception as e:
+                    print(f"Warning: Could not start profiler: {e}")
+                    self.profiler = None
+                    
+            def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
+                if self.profiler is not None:
+                    try:
+                        self.profiler.step()
+                        self.step_count += 1
+                    except Exception:
+                        pass
+                        
+            def on_train_end(self, trainer, pl_module):
+                if self.profiler is not None:
+                    try:
+                        self.profiler.__exit__(None, None, None)
+                        print(f"Profiler finished. {self.step_count} steps recorded.")
+                        print(f"Trace files saved to: {self.output_dir}")
+                    except Exception as e:
+                        print(f"Warning: Profiler cleanup error (non-fatal): {e}")
+                    finally:
+                        self.profiler = None
+        
+        # Calculate wait steps
         wait_steps = args.profile_wait_steps
         if args.profile_wait_epochs > 0:
             dataset_len = len(data_module.dataset)
             batch_size = config['training']['batch_size']
             steps_per_epoch = max(1, dataset_len // batch_size)
             wait_steps += args.profile_wait_epochs * steps_per_epoch
-            print(f"Profiler wait: {args.profile_wait_epochs} epochs * {steps_per_epoch} steps/epoch = {wait_steps} total wait steps")
+            print(f"Profiler configured: waiting {wait_steps} steps before profiling")
         
-        try:
-            profiler = PyTorchProfiler(
-                dirpath=str(profiler_dir),
-                filename="training_profile",
-                schedule=torch.profiler.schedule(
-                    wait=wait_steps,
-                    warmup=args.profile_warmup_steps,
-                    active=args.profile_active_steps,
-                    repeat=0  # Profile continuously after first cycle
-                ),
-                on_trace_ready=torch.profiler.tensorboard_trace_handler(str(profiler_dir)),
-                record_shapes=True,
-                profile_memory=True,
-                with_stack=False  # Disable stack traces - often causes issues
-            )
-            print(f"Profiler enabled: wait={wait_steps}, warmup={args.profile_warmup_steps}, active={args.profile_active_steps}")
-            print(f"Profile output: {profiler_dir}")
-        except Exception as e:
-            print(f"Warning: Failed to initialize profiler: {e}")
-            print("Continuing without profiling.")
-            profiler = None
+        profiler_callback = TorchProfilerCallback(
+            output_dir=profiler_dir,
+            wait=wait_steps,
+            warmup=args.profile_warmup_steps,
+            active=args.profile_active_steps
+        )
+        callbacks.append(profiler_callback)
+        print(f"Custom profiler callback enabled. Output: {profiler_dir}")
 
-    # Setup trainer
+    # Setup trainer (no Lightning profiler - using custom callback instead)
     trainer = pl.Trainer(
         max_epochs=config['training']['epochs'],
         accelerator='gpu',
@@ -344,8 +391,9 @@ def main():
         detect_anomaly=False,
         gradient_clip_algorithm="norm",
         logger=False,
-        profiler=profiler
+        profiler=None  # Disabled - using custom callback
     )
+
     
     # Train model
     start_time = time.time()
