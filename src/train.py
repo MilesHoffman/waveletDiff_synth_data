@@ -287,56 +287,48 @@ def main():
         callbacks.append(EpochProgressBar(log_every_n_epochs=config['training']['log_every_n_epochs']))
 
     # Setup Profiler
-    from pytorch_lightning.profilers import PyTorchProfiler
-
-    class RobustPyTorchProfiler(PyTorchProfiler):
-        def _cache_functions_events(self):
-            try:
-                # Check if profiler (Kineto) is initialized before accessing events
-                if hasattr(self, 'profiler') and self.profiler is not None:
-                    try:
-                        # Attempt to access events - this triggers the assertion if not ready
-                        super()._cache_functions_events()
-                    except AssertionError:
-                        print("Warning: PyTorch Profiler did not collect any events (run might be too short for the schedule). Skipping profile summary.")
-                        self.function_events = []
-                    except Exception as e:
-                        print(f"Warning: Failed to cache profiler events: {e}")
-                        self.function_events = []
-                else:
-                    self.function_events = []
-            except Exception:
-                 # Fallback for any other structure issues
-                 self.function_events = []
-
+    import warnings
+    warnings.filterwarnings("ignore", message=".*Profiler is not initialized.*")
+    
     profile_enabled = args.profile_enabled.lower() == 'true'
+    profiler = None
+    
     if profile_enabled:
-        # Calculate additional wait steps from epochs if requested
+        from pytorch_lightning.profilers import PyTorchProfiler
+        
+        profiler_dir = experiment_dir / "profiler"
+        profiler_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Calculate schedule parameters
         wait_steps = args.profile_wait_steps
         if args.profile_wait_epochs > 0:
             dataset_len = len(data_module.dataset)
             batch_size = config['training']['batch_size']
-            steps_per_epoch = dataset_len // batch_size
+            steps_per_epoch = max(1, dataset_len // batch_size)
             wait_steps += args.profile_wait_epochs * steps_per_epoch
-            print(f"Adding wait time: {args.profile_wait_epochs} epochs * {steps_per_epoch} steps/epoch = {args.profile_wait_epochs * steps_per_epoch} steps")
-            
-        profiler = RobustPyTorchProfiler(
-            dirpath=str(experiment_dir / "profiler"),
-            filename="training_profile",
-            schedule=torch.profiler.schedule(
-                wait=wait_steps,
-                warmup=args.profile_warmup_steps,
-                active=args.profile_active_steps,
-                repeat=1
-            ),
-            on_trace_ready=torch.profiler.tensorboard_trace_handler(str(experiment_dir / "profiler")),
-            record_shapes=True,
-            profile_memory=True,
-            with_stack=True
-        )
-        print(f"Profiler enabled: wait={wait_steps} steps, warmup={args.profile_warmup_steps} steps, active={args.profile_active_steps} steps")
-    else:
-        profiler = None
+            print(f"Profiler wait: {args.profile_wait_epochs} epochs * {steps_per_epoch} steps/epoch = {wait_steps} total wait steps")
+        
+        try:
+            profiler = PyTorchProfiler(
+                dirpath=str(profiler_dir),
+                filename="training_profile",
+                schedule=torch.profiler.schedule(
+                    wait=wait_steps,
+                    warmup=args.profile_warmup_steps,
+                    active=args.profile_active_steps,
+                    repeat=0  # Profile continuously after first cycle
+                ),
+                on_trace_ready=torch.profiler.tensorboard_trace_handler(str(profiler_dir)),
+                record_shapes=True,
+                profile_memory=True,
+                with_stack=False  # Disable stack traces - often causes issues
+            )
+            print(f"Profiler enabled: wait={wait_steps}, warmup={args.profile_warmup_steps}, active={args.profile_active_steps}")
+            print(f"Profile output: {profiler_dir}")
+        except Exception as e:
+            print(f"Warning: Failed to initialize profiler: {e}")
+            print("Continuing without profiling.")
+            profiler = None
 
     # Setup trainer
     trainer = pl.Trainer(
