@@ -289,6 +289,26 @@ def main():
     # Setup Profiler
     from pytorch_lightning.profilers import PyTorchProfiler
 
+    class RobustPyTorchProfiler(PyTorchProfiler):
+        def _cache_functions_events(self):
+            try:
+                # Check if profiler (Kineto) is initialized before accessing events
+                if hasattr(self, 'profiler') and self.profiler is not None:
+                    try:
+                        # Attempt to access events - this triggers the assertion if not ready
+                        super()._cache_functions_events()
+                    except AssertionError:
+                        print("Warning: PyTorch Profiler did not collect any events (run might be too short for the schedule). Skipping profile summary.")
+                        self.function_events = []
+                    except Exception as e:
+                        print(f"Warning: Failed to cache profiler events: {e}")
+                        self.function_events = []
+                else:
+                    self.function_events = []
+            except Exception:
+                 # Fallback for any other structure issues
+                 self.function_events = []
+
     profile_enabled = args.profile_enabled.lower() == 'true'
     if profile_enabled:
         # Calculate additional wait steps from epochs if requested
@@ -300,7 +320,7 @@ def main():
             wait_steps += args.profile_wait_epochs * steps_per_epoch
             print(f"Adding wait time: {args.profile_wait_epochs} epochs * {steps_per_epoch} steps/epoch = {args.profile_wait_epochs * steps_per_epoch} steps")
             
-        profiler = PyTorchProfiler(
+        profiler = RobustPyTorchProfiler(
             dirpath=str(experiment_dir / "profiler"),
             filename="training_profile",
             schedule=torch.profiler.schedule(
