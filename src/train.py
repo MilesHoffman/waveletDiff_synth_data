@@ -75,6 +75,10 @@ def main():
     parser.add_argument('--profile_active_steps', type=int, default=5, help='Steps to actively profile')
     parser.add_argument('--profile_wait_epochs', type=int, default=0, help='Epochs to wait before profiling (adds to wait steps)')
 
+    # Inline Evaluation Options
+    parser.add_argument('--inline_eval_every_n_epochs', type=int, default=None, help='Epochs between inline evaluations')
+    parser.add_argument('--inline_eval_n_samples', type=int, default=None, help='Number of samples for inline evaluation')
+
     args = parser.parse_args()
     
     # Load configuration
@@ -98,6 +102,10 @@ def main():
         config['dataset']['seq_len'] = args.seq_len
     if args.epochs:
         config['training']['epochs'] = args.epochs
+    if args.inline_eval_every_n_epochs is not None:
+        config['evaluation']['inline_eval_every_n_epochs'] = args.inline_eval_every_n_epochs
+    if args.inline_eval_n_samples is not None:
+        config['evaluation']['inline_eval_n_samples'] = args.inline_eval_n_samples
     if args.batch_size:
         config['training']['batch_size'] = args.batch_size
     if args.wavelet_type:
