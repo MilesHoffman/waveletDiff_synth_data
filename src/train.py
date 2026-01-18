@@ -11,7 +11,7 @@ from pytorch_lightning.callbacks import Timer
 import numpy as np
 
 from models import WaveletDiffusionTransformer
-from training import DiffusionTrainer
+from training import DiffusionTrainer, InlineEvaluationCallback
 from data import WaveletTimeSeriesDataModule
 from utils import ConfigManager
 
@@ -285,6 +285,20 @@ def main():
     callbacks = [Timer()]
     if enable_progress_bar:
         callbacks.append(EpochProgressBar(log_every_n_epochs=config['training']['log_every_n_epochs']))
+    
+    # Inline evaluation callback
+    eval_every = config['evaluation'].get('inline_eval_every_n_epochs', 200)
+    eval_n_samples = config['evaluation'].get('inline_eval_n_samples', 500)
+    if eval_every > 0:
+        # OHLCV indices for stocks dataset (Open, High, Low, Close, Volume)
+        ohlcv_indices = {'open': 0, 'high': 1, 'low': 2, 'close': 3} if config['dataset']['name'] == 'stocks' else None
+        callbacks.append(InlineEvaluationCallback(
+            data_module=data_module,
+            eval_every_n_epochs=eval_every,
+            n_samples=eval_n_samples,
+            ohlcv_indices=ohlcv_indices
+        ))
+        print(f"Inline evaluation enabled: every {eval_every} epochs, {eval_n_samples} samples")
 
     # Setup Profiler - Using custom callback to bypass Lightning's broken PyTorchProfiler
     import warnings
