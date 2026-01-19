@@ -113,9 +113,11 @@ class InlineEvaluationCallback(pl.Callback):
             
             # Simple DDPM reverse process (can be replaced with DDIM for speed)
             T = pl_module.T
-            betas = pl_module.betas
-            alphas = 1.0 - betas
-            alphas_cumprod = torch.cumprod(alphas, dim=0)
+            # Use registered buffers directly
+            # beta_all corresponds to the beta schedule
+            # alpha_bar_all corresponds to cumulative product of alphas
+            betas = pl_module.beta_all
+            alphas_cumprod = pl_module.alpha_bar_all
             
             # DDIM-style skip (use 50 steps instead of 1000)
             step_size = max(1, T // 50)
