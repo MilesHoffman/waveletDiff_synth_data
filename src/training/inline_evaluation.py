@@ -161,9 +161,10 @@ class InlineEvaluationCallback(pl.Callback):
         
         # A sample is valid if ALL timesteps satisfy ALL invariants
         all_valid = high_valid & low_valid & high_low_valid
-        sample_valid = np.all(all_valid, axis=1)
         
-        return np.mean(sample_valid)
+        # User requested per-timestep validity (percentage of valid days)
+        # instead of strict per-sample validity
+        return np.mean(all_valid)
     
     def _compute_memorization_stats(self, real_ts: np.ndarray, synth_ts: np.ndarray) -> dict:
         """Compute nearest neighbor distance statistics."""
