@@ -232,6 +232,32 @@ class WaveletTimeSeriesDataModule(pl.LightningDataModule):
         """Get wavelet transformation information."""
         return self.wavelet_info
 
+    def inverse_normalize(self, data: np.ndarray) -> np.ndarray:
+        """
+        Inverse normalization to convert generated samples back to original scale.
+        
+        Args:
+            data: Normalized data of shape (..., n_features)
+            
+        Returns:
+            Denormalized data in original scale
+        """
+        if self.norm_stats is None:
+            return data
+        
+        data = data.copy()
+        mean = self.norm_stats['mean']
+        std = self.norm_stats['std']
+        
+        # Inverse z-score
+        data = data * std + mean
+        
+        # Inverse log1p for volume if applicable
+        if self.norm_stats.get('volume_log_transformed', False):
+            data[..., 4] = np.maximum(0, np.expm1(data[..., 4]))
+        
+        return data
+
     def train_dataloader(self):
         # When data is on GPU, use num_workers=0 (no CPU workers needed)
         # When data is on CPU, use persistent workers for speed

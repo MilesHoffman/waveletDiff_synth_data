@@ -110,14 +110,26 @@ def load_exchange_rate_data(data_dir: str, seq_len: int = 24, normalize_data: bo
     return torch.FloatTensor(data), norm_stats
 
 
+OHLCV_COLUMNS = ["open", "high", "low", "close", "volume"]
+
+
+def _select_ohlcv_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Select and reorder DataFrame to strict OHLCV columns (case-insensitive)."""
+    col_map = {c.lower(): c for c in df.columns}
+    
+    missing = [c for c in OHLCV_COLUMNS if c not in col_map]
+    if missing:
+        raise ValueError(f"Missing required OHLCV columns: {missing}. Available: {list(df.columns)}")
+    
+    return df[[col_map[c] for c in OHLCV_COLUMNS]]
+
+
 def load_stocks_data(data_dir: str, seq_len: int = 24, normalize_data: bool = True) -> Tuple[torch.Tensor, dict]:
     """
-    Load Stocks dataset.
+    Load Stocks dataset with strict OHLCV column ordering and log1p volume scaling.
     
-    Args:
-        data_dir: Path to the data directory or direct path to CSV file
-        seq_len: Sequence length for sliding windows
-        normalize_data: Whether to normalize the data
+    Features are loaded in order: Open, High, Low, Close, Volume (indices 0-4).
+    Volume is log1p-transformed before z-score normalization.
     """
     if os.path.isfile(data_dir):
         stocks_path = data_dir
@@ -128,8 +140,18 @@ def load_stocks_data(data_dir: str, seq_len: int = 24, normalize_data: bool = Tr
         raise FileNotFoundError(f"Stocks data not found at: {stocks_path}")
 
     df = pd.read_csv(stocks_path)
-    data, norm_stats = create_sliding_windows(df.values, seq_len=seq_len, stride=1, normalize=normalize_data)
+    df = _select_ohlcv_columns(df)
+    
+    data = df.values.astype(np.float32)
+    
+    # Apply log1p to volume (column index 4) before normalization
+    data[:, 4] = np.log1p(data[:, 4])
+    
+    data, norm_stats = create_sliding_windows(data, seq_len=seq_len, stride=1, normalize=normalize_data)
     data = data.astype(np.float32)
+    
+    if norm_stats is not None:
+        norm_stats['volume_log_transformed'] = True
     
     return torch.FloatTensor(data), norm_stats
 
