@@ -11,7 +11,7 @@ from pytorch_lightning.callbacks import Timer
 import numpy as np
 
 from models import WaveletDiffusionTransformer
-from training import DiffusionTrainer
+from training import DiffusionTrainer, InlineEvaluationCallback
 from data import WaveletTimeSeriesDataModule
 from utils import ConfigManager
 
@@ -75,6 +75,10 @@ def main():
     parser.add_argument('--profile_active_steps', type=int, default=5, help='Steps to actively profile')
     parser.add_argument('--profile_wait_epochs', type=int, default=0, help='Epochs to wait before profiling (adds to wait steps)')
 
+    # Inline Evaluation Options
+    parser.add_argument('--inline_eval_every_n_epochs', type=int, default=None, help='Epochs between inline evaluations')
+    parser.add_argument('--inline_eval_n_samples', type=int, default=None, help='Number of samples for inline evaluation')
+
     args = parser.parse_args()
     
     # Load configuration
@@ -98,6 +102,10 @@ def main():
         config['dataset']['seq_len'] = args.seq_len
     if args.epochs:
         config['training']['epochs'] = args.epochs
+    if args.inline_eval_every_n_epochs is not None:
+        config['evaluation']['inline_eval_every_n_epochs'] = args.inline_eval_every_n_epochs
+    if args.inline_eval_n_samples is not None:
+        config['evaluation']['inline_eval_n_samples'] = args.inline_eval_n_samples
     if args.batch_size:
         config['training']['batch_size'] = args.batch_size
     if args.wavelet_type:
@@ -285,40 +293,178 @@ def main():
     callbacks = [Timer()]
     if enable_progress_bar:
         callbacks.append(EpochProgressBar(log_every_n_epochs=config['training']['log_every_n_epochs']))
+    
+    # Inline evaluation callback
+    eval_every = config['evaluation'].get('inline_eval_every_n_epochs', 200)
+    eval_n_samples = config['evaluation'].get('inline_eval_n_samples', 500)
+    if eval_every > 0:
+        # OHLCV indices for stocks dataset (Open, High, Low, Close, Volume)
+        ohlcv_indices = {'open': 0, 'high': 1, 'low': 2, 'close': 3} if config['dataset']['name'] == 'stocks' else None
+        callbacks.append(InlineEvaluationCallback(
+            data_module=data_module,
+            eval_every_n_epochs=eval_every,
+            n_samples=eval_n_samples,
+            ohlcv_indices=ohlcv_indices
+        ))
+        print(f"Inline evaluation enabled: every {eval_every} epochs, {eval_n_samples} samples")
 
-    # Setup Profiler
-    from pytorch_lightning.profilers import PyTorchProfiler
-
+    # Setup Profiler - Using custom callback to bypass Lightning's broken PyTorchProfiler
+    import warnings
+    import logging
+    
+    # Suppress Kineto warnings at the C++ level by filtering the logger
+    logging.getLogger("torch.profiler").setLevel(logging.ERROR)
+    warnings.filterwarnings("ignore", message=".*Profiler is not initialized.*")
+    warnings.filterwarnings("ignore", message=".*kineto.*")
+    
     profile_enabled = args.profile_enabled.lower() == 'true'
+    profiler_callback = None
+    
     if profile_enabled:
-        # Calculate additional wait steps from epochs if requested
+        from pytorch_lightning.callbacks import Callback
+        
+        profiler_dir = experiment_dir / "profiler"
+        profiler_dir.mkdir(parents=True, exist_ok=True)
+        
+        class TorchProfilerCallback(Callback):
+            """Custom profiler callback that uses torch.profiler directly."""
+            
+            def __init__(self, output_dir, wait=0, warmup=1, active=5):
+                super().__init__()
+                self.output_dir = Path(output_dir)
+                self.wait = wait
+                self.warmup = warmup
+                self.active = active
+                self.profiler = None
+                self.step_count = 0
+                
+            def on_train_start(self, trainer, pl_module):
+                try:
+                    self.profiler = torch.profiler.profile(
+                        activities=[
+                            torch.profiler.ProfilerActivity.CPU,
+                            torch.profiler.ProfilerActivity.CUDA,
+                        ],
+                        schedule=torch.profiler.schedule(
+                            wait=self.wait,
+                            warmup=self.warmup,
+                            active=self.active,
+                            repeat=1
+                        ),
+                        on_trace_ready=torch.profiler.tensorboard_trace_handler(str(self.output_dir)),
+                        record_shapes=True,
+                        profile_memory=True,
+                        with_stack=False
+                    )
+                    self.profiler.__enter__()
+                    print(f"Profiler started: wait={self.wait}, warmup={self.warmup}, active={self.active}")
+                except Exception as e:
+                    print(f"Warning: Could not start profiler: {e}")
+                    self.profiler = None
+                    
+            def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
+                if self.profiler is not None:
+                    try:
+                        self.profiler.step()
+                        self.step_count += 1
+                    except Exception:
+                        pass
+                        
+            def on_train_end(self, trainer, pl_module):
+                if self.profiler is not None:
+                    try:
+                        self.profiler.__exit__(None, None, None)
+                        print(f"Profiler finished. {self.step_count} steps recorded.")
+                        
+                        # Find the latest trace file
+                        import glob
+                        trace_files = glob.glob(str(self.output_dir / "*.json"))
+                        if trace_files:
+                            latest_trace = max(trace_files, key=os.path.getctime)
+                            print(f"Analyzing trace file: {latest_trace}")
+                            self.analyze_trace_file(latest_trace)
+                        else:
+                            print(f"Warning: No trace files found in {self.output_dir}")
+                            
+                    except Exception as e:
+                        print(f"Warning: Profiler cleanup error (non-fatal): {e}")
+                    finally:
+                        self.profiler = None
+
+            def analyze_trace_file(self, trace_path):
+                import json
+                try:
+                    with open(trace_path, 'r') as f:
+                        data = json.load(f)
+                    
+                    if not isinstance(data, dict) or 'traceEvents' not in data:
+                        # Some formats might be a list directly, or invalid
+                        print(f"Warning: Could not parse trace format")
+                        return
+
+                    events = data['traceEvents']
+                    
+                    # Calculate GPU Utilization
+                    gpu_kernels = [e for e in events if e.get('cat') == 'kernel']
+                    total_gpu_time = sum(e.get('dur', 0) for e in gpu_kernels)
+                    
+                    # Estimate active time from range of events
+                    timestamps = [e.get('ts', 0) for e in events if 'ts' in e]
+                    if not timestamps:
+                        print("No events with timestamps found.")
+                        return
+
+                    start_time = min(timestamps)
+                    end_time = max(timestamps)
+                    total_time = end_time - start_time
+                    
+                    gpu_utilization = (total_gpu_time / total_time * 100) if total_time > 0 else 0
+                    
+                    # Filter and aggregate kernels
+                    kernel_times = {}
+                    for k in gpu_kernels:
+                        name = k.get('name', 'unknown')
+                        dur = k.get('dur', 0)
+                        kernel_times[name] = kernel_times.get(name, 0) + dur
+                        
+                    top_kernels = sorted(kernel_times.items(), key=lambda x: x[1], reverse=True)[:5]
+                    
+                    print("\n" + "="*60)
+                    print("PROFILER REPORT")
+                    print("="*60)
+                    print(f"Total Recorded Time: {total_time/1e6:.2f} s")
+                    print(f"Estimated GPU Utilization: {gpu_utilization:.2f}%")
+                    print("-" * 30)
+                    print("Top 5 Bottleneck Operations (Kernels):")
+                    for name, duration in top_kernels:
+                         # Clean up name if too long
+                        clean_name = name.split("<")[0] if "<" in name else name
+                        print(f"  {duration/1000:.2f} ms : {clean_name}")
+                    print("="*60 + "\n")
+                    
+                except Exception as e:
+                    print(f"Warning: Could not analyze trace file: {e}")
+
+        
+        # Calculate wait steps
         wait_steps = args.profile_wait_steps
         if args.profile_wait_epochs > 0:
             dataset_len = len(data_module.dataset)
             batch_size = config['training']['batch_size']
-            steps_per_epoch = dataset_len // batch_size
+            steps_per_epoch = max(1, dataset_len // batch_size)
             wait_steps += args.profile_wait_epochs * steps_per_epoch
-            print(f"Adding wait time: {args.profile_wait_epochs} epochs * {steps_per_epoch} steps/epoch = {args.profile_wait_epochs * steps_per_epoch} steps")
-            
-        profiler = PyTorchProfiler(
-            dirpath=str(experiment_dir / "profiler"),
-            filename="training_profile",
-            schedule=torch.profiler.schedule(
-                wait=wait_steps,
-                warmup=args.profile_warmup_steps,
-                active=args.profile_active_steps,
-                repeat=1
-            ),
-            on_trace_ready=torch.profiler.tensorboard_trace_handler(str(experiment_dir / "profiler")),
-            record_shapes=True,
-            profile_memory=True,
-            with_stack=True
+            print(f"Profiler configured: waiting {wait_steps} steps before profiling")
+        
+        profiler_callback = TorchProfilerCallback(
+            output_dir=profiler_dir,
+            wait=wait_steps,
+            warmup=args.profile_warmup_steps,
+            active=args.profile_active_steps
         )
-        print(f"Profiler enabled: wait={wait_steps} steps, warmup={args.profile_warmup_steps} steps, active={args.profile_active_steps} steps")
-    else:
-        profiler = None
+        callbacks.append(profiler_callback)
+        print(f"Custom profiler callback enabled. Output: {profiler_dir}")
 
-    # Setup trainer
+    # Setup trainer (no Lightning profiler - using custom callback instead)
     trainer = pl.Trainer(
         max_epochs=config['training']['epochs'],
         accelerator='gpu',
@@ -332,8 +478,9 @@ def main():
         detect_anomaly=False,
         gradient_clip_algorithm="norm",
         logger=False,
-        profiler=profiler
+        profiler=None  # Disabled - using custom callback
     )
+
     
     # Train model
     start_time = time.time()
