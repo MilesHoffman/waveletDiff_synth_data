@@ -10,7 +10,7 @@ from .predictive_metrics import predictive_score_metrics
 from .context_fid import Context_FID
 from .cross_correlation import CrossCorrelLoss
 from .metric_utils import display_scores
-from .dtw import dtw_wasserstein_distance, dtw_js_divergence_distance
+from .dtw import dtw_distance, dtw_js_divergence_distance
 
 __all__ = [
     'discriminative_score_metrics',
@@ -18,6 +18,6 @@ __all__ = [
     'Context_FID',
     'CrossCorrelLoss',
     'display_scores',
-    'dtw_wasserstein_distance',
+    'dtw_distance',
     'dtw_js_divergence_distance'
 ]
