@@ -99,8 +99,18 @@ def main():
     real_samples_path = experiment_dir / "real_samples.npy"
     output_file_path = experiment_dir / f"{sampling_method}_samples.npy"
     
-    np.save(real_samples_path, data_module.raw_data_tensor.numpy())
-    np.save(output_file_path, samples_ts.cpu().numpy())
+    # Inverse normalize to get Dollar values (Original Scale)
+    print("Inverse normalizing generated samples to Dollar space...")
+    samples_dollar = data_module.inverse_normalize(samples_ts.cpu().numpy())
+    
+    print("Inverse normalizing Real samples to Dollar space...")
+    # For real data, we must use the actual indices to get correct Anchors/ATRs
+    real_data_norm = data_module.raw_data_tensor.numpy()
+    real_indices = np.arange(len(real_data_norm))
+    real_samples_dollar = data_module.inverse_normalize(real_data_norm, sample_indices=real_indices)
+    
+    np.save(real_samples_path, real_samples_dollar)
+    np.save(output_file_path, samples_dollar)
     
     print(f"Real samples saved to {real_samples_path}")
     print(f"Generated samples saved to {output_file_path}")

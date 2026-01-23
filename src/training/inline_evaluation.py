@@ -57,11 +57,18 @@ class InlineEvaluationCallback(pl.Callback):
         
         # Generate synthetic samples
         synth_wavelet = self._generate_samples(pl_module)
-        synth_ts = self.data_module.convert_wavelet_to_timeseries(synth_wavelet)
-        synth_ts = synth_ts.numpy()
+        synth_ts_norm = self.data_module.convert_wavelet_to_timeseries(synth_wavelet)
         
-        # Get real samples for comparison
-        real_ts = self.data_module.raw_data_tensor[:self.n_samples].numpy()
+        # Get real samples (normalized)
+        real_idx = np.arange(self.n_samples)
+        real_ts_norm = self.data_module.raw_data_tensor[:self.n_samples]
+        
+        # Reconstruct to original space (Dollars) for valid comparison
+        # Synthetic: Use random metadata sampling (unconditional)
+        synth_ts = self.data_module.inverse_normalize(synth_ts_norm.cpu().numpy())
+        
+        # Real: Use actual metadata from indices
+        real_ts = self.data_module.inverse_normalize(real_ts_norm.cpu().numpy(), sample_indices=real_idx)
         
         results = {}
         
