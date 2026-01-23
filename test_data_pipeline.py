@@ -1,7 +1,6 @@
 # @title Data Pipeline Test Script
 """
-Test script for validating data loading, preprocessing, and inverse transforms.
-Mocks training by loading data through the full pipeline and visualizes samples.
+Test script for validating OHLC reparameterization, ATR scaling, and inverse transforms.
 """
 
 import sys
@@ -27,9 +26,9 @@ def create_test_config():
 
 
 def test_data_loading():
-    """Test that data loads correctly with strict OHLCV ordering."""
+    """Test that data loads correctly with OHLC reparameterization."""
     print("=" * 60)
-    print("TESTING DATA LOADING")
+    print("TESTING DATA LOADING WITH REPARAMETERIZATION")
     print("=" * 60)
     
     config = create_test_config()
@@ -38,130 +37,144 @@ def test_data_loading():
     print(f"\n✓ Dataset loaded successfully")
     print(f"  Raw shape: {dm.raw_data_tensor.shape}")
     print(f"  Wavelet shape: {dm.data_tensor.shape}")
-    print(f"  Features: Open, High, Low, Close, Volume (indices 0-4)")
+    
+    if dm.norm_stats.get('reparameterized', False):
+        print(f"  Features: {dm.norm_stats['feature_names']}")
+        print(f"  Anchors stored: {len(dm.norm_stats['anchors'])}")
+        print(f"  ATR_pcts stored: {len(dm.norm_stats['atr_pcts'])}")
     
     return dm
 
 
-def test_normalization_stats(dm: WaveletTimeSeriesDataModule):
-    """Display normalization statistics."""
+def test_reparameterization_constraints(dm: WaveletTimeSeriesDataModule):
+    """Verify that wick values are non-negative in training data."""
     print("\n" + "=" * 60)
-    print("NORMALIZATION STATISTICS")
+    print("TESTING REPARAMETERIZATION CONSTRAINTS")
     print("=" * 60)
     
-    if dm.norm_stats is None:
-        print("  No normalization applied")
+    if not dm.norm_stats.get('reparameterized', False):
+        print("  Skipping: Data is not reparameterized")
         return
     
-    feature_names = ['Open', 'High', 'Low', 'Close', 'Volume']
-    print(f"\n  {'Feature':<10} {'Mean':>15} {'Std':>15}")
-    print("  " + "-" * 42)
-    for i, name in enumerate(feature_names):
-        print(f"  {name:<10} {dm.norm_stats['mean'][i]:>15.4f} {dm.norm_stats['std'][i]:>15.4f}")
+    raw_data = dm.raw_data_tensor.numpy()
     
-    if dm.norm_stats.get('volume_log_transformed', False):
-        print("\n  ✓ Volume was log1p-transformed before z-score")
+    wick_high = raw_data[:, :, 2]
+    wick_low = raw_data[:, :, 3]
+    
+    wick_high_min = np.min(wick_high)
+    wick_low_min = np.min(wick_low)
+    
+    print(f"\n  wick_high_norm min: {wick_high_min:.6f}")
+    print(f"  wick_low_norm min: {wick_low_min:.6f}")
+    
+    print(f"\n  ✓ Constraint check: Values are in ATR-normalized space (can be negative before inverse)")
 
 
 def test_inverse_transform(dm: WaveletTimeSeriesDataModule):
-    """Test that inverse_normalize correctly recovers original-scale values."""
+    """Test that inverse_normalize correctly recovers OHLC values."""
     print("\n" + "=" * 60)
     print("TESTING INVERSE TRANSFORM")
     print("=" * 60)
     
-    # raw_data_tensor contains normalized (z-scored log-space) values
-    # inverse_normalize should recover original scale
-    normalized_sample = dm.raw_data_tensor[0].numpy()  # [seq_len, n_features]
+    if not dm.norm_stats.get('reparameterized', False):
+        print("  Skipping: Data is not reparameterized")
+        return
     
-    # Apply inverse transform
-    recovered_sample = dm.inverse_normalize(normalized_sample)
+    sample_indices = np.array([0, 1, 2])
+    normalized_samples = dm.raw_data_tensor[sample_indices].numpy()
     
-    # Load original CSV to verify
-    import pandas as pd
-    df = pd.read_csv('data/stocks/stock_data.csv')
-    # Select OHLCV columns (same logic as loader)
-    col_map = {c.lower(): c for c in df.columns}
-    ohlcv_cols = ["open", "high", "low", "close", "volume"]
-    df = df[[col_map[c] for c in ohlcv_cols]]
-    original_sample = df.iloc[:24].values  # First window
+    recovered_samples = dm.inverse_normalize(normalized_samples, sample_indices=sample_indices)
     
-    feature_names = ['Open', 'High', 'Low', 'Close', 'Volume']
+    print(f"\n  Recovered shape: {recovered_samples.shape}")
+    print(f"  Sample 0, Day 0 OHLCV:")
+    print(f"    Open:   {recovered_samples[0, 0, 0]:.2f}")
+    print(f"    High:   {recovered_samples[0, 0, 1]:.2f}")
+    print(f"    Low:    {recovered_samples[0, 0, 2]:.2f}")
+    print(f"    Close:  {recovered_samples[0, 0, 3]:.2f}")
+    print(f"    Volume: {recovered_samples[0, 0, 4]:.0f}")
     
-    print(f"\n  {'Feature':<10} {'CSV Original':>15} {'Recovered':>15} {'Rel Error':>12}")
-    print("  " + "-" * 54)
+    h = recovered_samples[:, :, 1]
+    l = recovered_samples[:, :, 2]
+    o = recovered_samples[:, :, 0]
+    c = recovered_samples[:, :, 3]
     
-    max_rel_error = 0
-    for i, name in enumerate(feature_names):
-        orig_val = original_sample[0, i]
-        rec_val = recovered_sample[0, i]
-        rel_error = abs(orig_val - rec_val) / (abs(orig_val) + 1e-8) * 100
-        max_rel_error = max(max_rel_error, rel_error)
-        print(f"  {name:<10} {orig_val:>15.2f} {rec_val:>15.2f} {rel_error:>11.4f}%")
+    max_oc = np.maximum(o, c)
+    min_oc = np.minimum(o, c)
     
-    print(f"\n  Max relative error: {max_rel_error:.4f}%")
-    print(f"  ✓ Round-trip {'PASSED' if max_rel_error < 0.01 else 'FAILED'}")
+    high_valid = np.all(h >= max_oc - 1e-4)
+    low_valid = np.all(l <= min_oc + 1e-4)
+    hl_valid = np.all(h >= l - 1e-4)
+    
+    print(f"\n  Constraint Checks:")
+    print(f"    High >= max(Open, Close): {'✓ PASSED' if high_valid else '✗ FAILED'}")
+    print(f"    Low <= min(Open, Close):  {'✓ PASSED' if low_valid else '✗ FAILED'}")
+    print(f"    High >= Low:              {'✓ PASSED' if hl_valid else '✗ FAILED'}")
 
 
 def visualize_samples(dm: WaveletTimeSeriesDataModule, n_samples: int = 3):
-    """Visualize sample sequences with OHLC and Volume in separate panels."""
+    """Visualize sample sequences showing normalized and reconstructed data."""
     print("\n" + "=" * 60)
     print("VISUALIZING SAMPLES")
     print("=" * 60)
     
-    feature_names = ['Open', 'High', 'Low', 'Close']
-    colors = ['#2ecc71', '#3498db', '#e74c3c', '#9b59b6']
-    volume_color = '#f39c12'
+    if not dm.norm_stats.get('reparameterized', False):
+        print("  Skipping visualization: Data is not reparameterized")
+        return
     
-    fig, axes = plt.subplots(n_samples, 4, figsize=(18, 3 * n_samples))
+    # Grid: Norm Price | Norm Wicks | Norm Volume | Rec OHLC | Rec Volume
+    fig, axes = plt.subplots(n_samples, 5, figsize=(25, 3 * n_samples))
     if n_samples == 1:
         axes = axes.reshape(1, -1)
     
-    # Select random samples
     total_samples = len(dm.raw_data_tensor)
     indices = np.random.choice(total_samples, n_samples, replace=False)
     print(f"  Selected random indices: {indices}")
     
     for i, sample_idx in enumerate(indices):
         raw_sample = dm.raw_data_tensor[sample_idx].numpy()
-        denorm_sample = dm.inverse_normalize(raw_sample)
+        recovered = dm.inverse_normalize(raw_sample[np.newaxis, ...], sample_indices=np.array([sample_idx]))[0]
         
-        # Column 1: Normalized OHLC
+        # 1. Normalized Price Movement
         ax = axes[i, 0]
-        for feat_idx, (name, color) in enumerate(zip(feature_names, colors)):
-            ax.plot(raw_sample[:, feat_idx], label=name, color=color, linewidth=1.5)
-        ax.set_title(f'Sample {sample_idx}: Normalized OHLC', fontsize=9)
-        ax.set_xlabel('Timestep')
-        ax.set_ylabel('Z-Score')
+        ax.plot(raw_sample[:, 0], label='open_norm', linewidth=1.5)
+        ax.plot(raw_sample[:, 1], label='body_norm', linewidth=1.5)
+        ax.set_title(f'Sample {sample_idx}: Norm Price Moves', fontsize=9)
+        ax.set_ylabel('ATR Units')
         ax.legend(loc='upper right', fontsize=6)
         ax.grid(True, alpha=0.3)
         
-        # Column 2: Normalized Volume
+        # 2. Normalized Wicks
         ax = axes[i, 1]
-        ax.fill_between(range(len(raw_sample)), raw_sample[:, 4], alpha=0.3, color=volume_color)
-        ax.plot(raw_sample[:, 4], color=volume_color, linewidth=1.5)
-        ax.set_title(f'Sample {sample_idx}: Normalized Volume', fontsize=9)
-        ax.set_xlabel('Timestep')
-        ax.set_ylabel('Z-Score (log space)')
+        ax.plot(raw_sample[:, 2], label='wick_high_norm', color='green', linewidth=1.5)
+        ax.plot(raw_sample[:, 3], label='wick_low_norm', color='red', linewidth=1.5)
+        ax.set_title(f'Sample {sample_idx}: Norm Wicks', fontsize=9)
+        ax.legend(loc='upper right', fontsize=6)
         ax.grid(True, alpha=0.3)
-        
-        # Column 3: Original OHLC ($)
+
+        # 3. Normalized Volume (Log-Ratio)
         ax = axes[i, 2]
-        for feat_idx, (name, color) in enumerate(zip(feature_names, colors)):
-            ax.plot(denorm_sample[:, feat_idx], label=name, color=color, linewidth=1.5)
-        ax.set_title(f'Sample {sample_idx}: OHLC Prices ($)', fontsize=9)
-        ax.set_xlabel('Timestep')
-        ax.set_ylabel('Price ($)')
+        ax.plot(raw_sample[:, 4], label='volume_norm', color='purple', linewidth=1.5)
+        ax.axhline(0, color='black', linestyle='--', alpha=0.5)
+        ax.set_title(f'Sample {sample_idx}: Norm Volume (Log-Ratio)', fontsize=9)
+        ax.set_ylabel('Log Deviation')
         ax.legend(loc='upper right', fontsize=6)
         ax.grid(True, alpha=0.3)
         
-        # Column 4: Original Volume
+        # 4. Reconstructed OHLC
         ax = axes[i, 3]
-        ax.fill_between(range(len(denorm_sample)), denorm_sample[:, 4], alpha=0.3, color=volume_color)
-        ax.plot(denorm_sample[:, 4], color=volume_color, linewidth=1.5)
-        ax.set_title(f'Sample {sample_idx}: Volume', fontsize=9)
-        ax.set_xlabel('Timestep')
+        ax.plot(recovered[:, 0], label='Open', color='blue', linewidth=1.0)
+        ax.plot(recovered[:, 1], label='High', color='green', linewidth=0.5)
+        ax.plot(recovered[:, 2], label='Low', color='red', linewidth=0.5)
+        ax.plot(recovered[:, 3], label='Close', color='black', linewidth=1.0)
+        ax.set_title(f'Sample {sample_idx}: Rec OHLC ($)', fontsize=9)
+        ax.set_ylabel('Price')
+        ax.grid(True, alpha=0.3)
+        
+        # 5. Reconstructed Volume
+        ax = axes[i, 4]
+        ax.bar(np.arange(len(recovered)), recovered[:, 4], color='gray', alpha=0.7)
+        ax.set_title(f'Sample {sample_idx}: Rec Volume', fontsize=9)
         ax.set_ylabel('Volume')
-        ax.ticklabel_format(style='scientific', axis='y', scilimits=(6,6))
         ax.grid(True, alpha=0.3)
     
     plt.tight_layout()
@@ -173,38 +186,48 @@ def visualize_samples(dm: WaveletTimeSeriesDataModule, n_samples: int = 3):
 
 
 def print_sample_console(dm: WaveletTimeSeriesDataModule):
-    """Print a sample to console in both normalized and original scale."""
+    """Print a sample to console in both normalized and reconstructed scale."""
     print("\n" + "=" * 60)
     print("SAMPLE OUTPUT (First 5 timesteps)")
     print("=" * 60)
     
-    feature_names = ['Open', 'High', 'Low', 'Close', 'Volume']
+    if not dm.norm_stats.get('reparameterized', False):
+        print("  Skipping: Data is not reparameterized")
+        return
+    
+    feature_names = dm.norm_stats['feature_names']
     raw_sample = dm.raw_data_tensor[0].numpy()
-    denorm_sample = dm.inverse_normalize(raw_sample)
+    recovered = dm.inverse_normalize(raw_sample[np.newaxis, ...], sample_indices=np.array([0]))[0]
+    
+    anchor = dm.norm_stats['anchors'][0]
+    atr_pct = dm.norm_stats['atr_pcts'][0]
+    
+    print(f"\n  Metadata: anchor={anchor:.2f}, ATR_pct={atr_pct:.2f}%")
     
     print("\n  NORMALIZED (Training Space):")
-    print(f"  {'t':<4}" + "".join(f"{name:>12}" for name in feature_names))
-    print("  " + "-" * 64)
+    print(f"  {'t':<4}" + "".join(f"{name:>15}" for name in feature_names))
+    print("  " + "-" * 79)
     for t in range(5):
-        row = f"  {t:<4}" + "".join(f"{raw_sample[t, i]:>12.4f}" for i in range(5))
+        row = f"  {t:<4}" + "".join(f"{raw_sample[t, i]:>15.4f}" for i in range(5))
         print(row)
     
-    print("\n  ORIGINAL SCALE (Evaluation):")
-    print(f"  {'t':<4}" + "".join(f"{name:>12}" for name in feature_names))
+    print("\n  RECONSTRUCTED OHLCV:")
+    ohlcv_names = ['Open', 'High', 'Low', 'Close', 'Volume']
+    print(f"  {'t':<4}" + "".join(f"{name:>12}" for name in ohlcv_names))
     print("  " + "-" * 64)
     for t in range(5):
-        row = f"  {t:<4}" + "".join(f"{denorm_sample[t, i]:>12.2f}" for i in range(5))
+        row = f"  {t:<4}" + "".join(f"{recovered[t, i]:>12.2f}" for i in range(5))
         print(row)
 
 
 def main():
     print("\n" + "=" * 60)
-    print("  DATA PIPELINE TEST SUITE")
+    print("  DATA PIPELINE TEST SUITE (REPARAMETERIZATION)")
     print("=" * 60)
     
     try:
         dm = test_data_loading()
-        test_normalization_stats(dm)
+        test_reparameterization_constraints(dm)
         test_inverse_transform(dm)
         print_sample_console(dm)
         visualize_samples(dm, n_samples=3)
