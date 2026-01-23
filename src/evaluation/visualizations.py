@@ -77,35 +77,57 @@ def plot_pdf(real, generated):
     plt.legend()
     plt.show()
 
-def plot_samples(real, generated, n_samples=5):
+def plot_samples(real, generated, n_samples=5, feature_names=None):
     """
-    Plot side-by-side comparison of real and generated time series samples.
-    """
-    # Assuming shape (N, T, D)
-    # We exclude the last feature if it is volume (assuming > 1 feature)
-    n_features = real.shape[2]
-    plot_features = n_features - 1 if n_features > 1 else n_features
+    Plot OHLC and Volume comparison of real and generated samples.
     
-    fig, axes = plt.subplots(2, n_samples, figsize=(n_samples * 4, 6), sharey=True)
+    Args:
+        real: Real data array (N, T, D) where D is 5 for OHLCV
+        generated: Generated data array (N, T, D)
+        n_samples: Number of samples to visualize
+        feature_names: Optional list of feature names. Defaults to OHLCV.
+    """
+    n_features = real.shape[2]
+    has_volume = n_features >= 5
+    n_ohlc = 4 if n_features >= 4 else n_features
+    
+    if feature_names is None:
+        feature_names = ['Open', 'High', 'Low', 'Close', 'Volume'][:n_features]
+    
+    ohlc_colors = {'Open': 'blue', 'High': 'green', 'Low': 'red', 'Close': 'black'}
+    
+    # Grid: 2 rows (Real/Gen) x (n_samples OHLC columns + n_samples Volume columns if applicable)
+    n_cols = n_samples * 2 if has_volume else n_samples
+    fig, axes = plt.subplots(2, n_cols, figsize=(n_cols * 3.5, 6))
     
     for i in range(n_samples):
-        # Real Samples
-        for f in range(plot_features):
-            axes[0, i].plot(real[i, :, f], alpha=0.8)
-        axes[0, i].set_title(f"Real Sample {i}")
-        if i == 0: axes[0, i].set_ylabel("Value (MinMax Scaled)")
+        ohlc_col = i
+        vol_col = n_samples + i if has_volume else None
         
-        # Generated Samples
-        for f in range(plot_features):
-            axes[1, i].plot(generated[i, :, f], alpha=0.8)
-        axes[1, i].set_title(f"Gen Sample {i}")
-        if i == 0: axes[1, i].set_ylabel("Value (MinMax Scaled)")
-    
-    # Create a dummy legend
-    from matplotlib.lines import Line2D
-    lines = [Line2D([0], [0], color=f"C{i}", lw=2) for i in range(plot_features)]
-    fig.legend(lines, [f"Feature {i}" for i in range(plot_features)], loc='lower center', ncol=plot_features)
-    
+        for row, (data, label) in enumerate([(real, 'Real'), (generated, 'Gen')]):
+            sample = data[i]
+            
+            # --- OHLC Subplot ---
+            ax_ohlc = axes[row, ohlc_col]
+            for f_idx in range(n_ohlc):
+                name = feature_names[f_idx]
+                color = ohlc_colors.get(name, f'C{f_idx}')
+                lw = 1.5 if name in ['Open', 'Close'] else 0.8
+                ax_ohlc.plot(sample[:, f_idx], label=name, color=color, linewidth=lw)
+            
+            ax_ohlc.set_title(f'{label} {i}: OHLC ($)', fontsize=9)
+            ax_ohlc.set_ylabel('Price')
+            ax_ohlc.grid(True, alpha=0.3)
+            if row == 0 and i == 0:
+                ax_ohlc.legend(loc='upper right', fontsize=7)
+            
+            # --- Volume Subplot (if applicable) ---
+            if has_volume and vol_col is not None:
+                ax_vol = axes[row, vol_col]
+                ax_vol.plot(sample[:, 4], color='purple', linewidth=1.5)
+                ax_vol.set_title(f'{label} {i}: Volume', fontsize=9)
+                ax_vol.set_ylabel('Volume')
+                ax_vol.grid(True, alpha=0.3)
+
     plt.tight_layout()
-    print(f"Note: Showing {plot_features} features (excluding last/volume feature if D>1)")
     plt.show()
