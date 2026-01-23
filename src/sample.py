@@ -44,10 +44,20 @@ def main():
     experiment_dir = Path(config['paths']['output_dir']) / args.experiment_name
     model_path = experiment_dir / 'checkpoint.ckpt'
     
+    # Construct model path
+    experiment_dir = Path(config['paths']['output_dir']) / args.experiment_name
+    model_path = experiment_dir / 'checkpoint.ckpt'
+    
     if not model_path.exists():
-        print(f"Error: Model checkpoint not found at {model_path}")
-        print(f"Make sure you've trained a model with --experiment_name {args.experiment_name}")
-        sys.exit(1)
+        # Fallback: look for any .ckpt file
+        ckpts = list(experiment_dir.glob("*.ckpt"))
+        if ckpts:
+            model_path = ckpts[0]
+            print(f"Using found checkpoint: {model_path.name}")
+        else:
+            print(f"Error: No checkpoint found in {experiment_dir}")
+            print(f"Make sure you've trained a model or fully unpacked the archive.")
+            sys.exit(1)
     
     print(f"Generating Samples from WaveletDiff Model")
     print(f"Experiment: {args.experiment_name}")
