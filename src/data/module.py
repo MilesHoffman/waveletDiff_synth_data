@@ -344,6 +344,8 @@ class WaveletTimeSeriesDataModule(pl.LightningDataModule):
         # V_norm = log((Volume + eps) / (SMA + eps))
         # Volume ≈ exp(V_norm) * SMA
         if self.norm_stats.get('volume_type') == 'log_ratio_sma' and vol_smas is not None:
+            # Clamp volume_norm to prevent overflow in exp (e.g. +/- 20 is sufficient range for log-ratio)
+            volume_norm = np.clip(volume_norm, -20.0, 20.0)
             volume = np.exp(volume_norm) * vol_smas[..., np.newaxis]
             volume = np.maximum(0, volume)
         else:

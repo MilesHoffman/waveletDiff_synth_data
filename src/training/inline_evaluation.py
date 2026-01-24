@@ -173,8 +173,19 @@ class InlineEvaluationCallback(pl.Callback):
         # instead of strict per-sample validity
         return np.mean(all_valid)
     
+    def _sanitize_data(self, data: np.ndarray) -> np.ndarray:
+        """Replace Infs/NaNs with finite values to prevent sklearn errors."""
+        if not np.all(np.isfinite(data)):
+            # Replace NaNs with 0 and Infs with large finite values
+            data = np.nan_to_num(data, nan=0.0, posinf=1e9, neginf=-1e9)
+        return np.clip(data, -1e9, 1e9)
+
     def _compute_memorization_stats(self, real_ts: np.ndarray, synth_ts: np.ndarray) -> dict:
         """Compute nearest neighbor distance statistics."""
+        # Sanitize inputs to prevent crashes
+        real_ts = self._sanitize_data(real_ts)
+        synth_ts = self._sanitize_data(synth_ts)
+        
         # Flatten time series: (N, T*D)
         real_flat = real_ts.reshape(real_ts.shape[0], -1)
         synth_flat = synth_ts.reshape(synth_ts.shape[0], -1)
@@ -192,6 +203,9 @@ class InlineEvaluationCallback(pl.Callback):
     
     def _compute_var_difference(self, real_ts: np.ndarray, synth_ts: np.ndarray) -> float:
         """Compute difference in 99th percentile of returns (Value-at-Risk)."""
+        real_ts = self._sanitize_data(real_ts)
+        synth_ts = self._sanitize_data(synth_ts)
+        
         # Calculate returns
         eps = 1e-8
         real_returns = np.diff(real_ts, axis=1) / (real_ts[:, :-1, :] + eps)
@@ -209,6 +223,9 @@ class InlineEvaluationCallback(pl.Callback):
     
     def _compute_acf_mse(self, real_ts: np.ndarray, synth_ts: np.ndarray, nlags: int = 20) -> float:
         """Compute MSE between ACF curves of real and synthetic data."""
+        real_ts = self._sanitize_data(real_ts)
+        synth_ts = self._sanitize_data(synth_ts)
+        
         n_features = real_ts.shape[2]
         
         def avg_acf(data, nlags):
@@ -236,6 +253,9 @@ class InlineEvaluationCallback(pl.Callback):
     
     def _compute_wasserstein(self, real_ts: np.ndarray, synth_ts: np.ndarray) -> float:
         """Compute mean Wasserstein distance across features."""
+        real_ts = self._sanitize_data(real_ts)
+        synth_ts = self._sanitize_data(synth_ts)
+        
         n_features = real_ts.shape[2]
         
         # Flatten time dimension
