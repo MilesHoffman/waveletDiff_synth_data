@@ -62,7 +62,7 @@ class InlineEvaluationCallback(pl.Callback):
         
         # Get real samples (normalized)
         real_idx = np.arange(self.n_samples)
-        real_ts_norm = self.data_module.data_tensor[:self.n_samples].cpu().numpy()
+        real_ts_norm = self.data_module.raw_data_tensor[:self.n_samples].cpu().numpy()
         
         results = {}
         
