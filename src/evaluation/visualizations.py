@@ -144,12 +144,19 @@ def plot_candlesticks(real, generated, n_samples=5):
     n_samples = min(n_samples, len(real), len(generated))
     
     # 2 rows (Real vs Gen) x n_samples
-    fig, axes = plt.subplots(2, n_samples, figsize=(n_samples * 4, 8), sharey='row')
+    # Removed sharey='row' to prevent wide-range samples from shrinking others
+    fig, axes = plt.subplots(2, n_samples, figsize=(n_samples * 4, 8))
     
     for row, (data, label) in enumerate([(real, 'Real'), (generated, 'Generated')]):
         for i in range(n_samples):
             ax = axes[row, i]
             sample = data[i] # (T, 5)
+            
+            # --- Tight scaling logic ---
+            # Determine min/max of the specific sample range
+            s_min, s_max = np.min(sample[:, :4]), np.max(sample[:, :4])
+            padding = (s_max - s_min) * 0.1  # 10% padding
+            ax.set_ylim(s_min - padding, s_max + padding)
             
             # Use the time index as X
             t = np.arange(len(sample))
