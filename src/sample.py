@@ -108,22 +108,33 @@ def main():
     # Save results in the same experiment directory
     real_samples_path = experiment_dir / "real_samples.npy"
     output_file_path = experiment_dir / f"{sampling_method}_samples.npy"
+    real_samples_norm_path = experiment_dir / "real_samples_norm.npy"
+    output_norm_path = experiment_dir / f"{sampling_method}_samples_norm.npy"
+    
+    # Get reparameterized time series (what the model actually generates)
+    samples_norm = samples_ts.cpu().numpy()
+    real_data_norm = data_module.raw_data_tensor.numpy()
     
     # Inverse normalize to get Dollar values (Original Scale)
     print("Inverse normalizing generated samples to Dollar space...")
-    samples_dollar = data_module.inverse_normalize(samples_ts.cpu().numpy())
+    samples_dollar = data_module.inverse_normalize(samples_norm.copy())
     
     print("Inverse normalizing Real samples to Dollar space...")
-    # For real data, we must use the actual indices to get correct Anchors/ATRs
-    real_data_norm = data_module.raw_data_tensor.numpy()
     real_indices = np.arange(len(real_data_norm))
-    real_samples_dollar = data_module.inverse_normalize(real_data_norm, sample_indices=real_indices)
+    real_samples_dollar = data_module.inverse_normalize(real_data_norm.copy(), sample_indices=real_indices)
     
+    # Save Dollar Space
     np.save(real_samples_path, real_samples_dollar)
     np.save(output_file_path, samples_dollar)
     
+    # Save Reparameterized Space
+    np.save(real_samples_norm_path, real_data_norm)
+    np.save(output_norm_path, samples_norm)
+    
     print(f"Real samples saved to {real_samples_path}")
     print(f"Generated samples saved to {output_file_path}")
+    print(f"Real samples (norm) saved to {real_samples_norm_path}")
+    print(f"Generated samples (norm) saved to {output_norm_path}")
 
 
 if __name__ == "__main__":
