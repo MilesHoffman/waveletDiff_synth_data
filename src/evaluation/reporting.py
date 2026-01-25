@@ -74,14 +74,7 @@ def generate_summary_scorecard(metrics_dict):
             "Goal": "lower", 
             "Description": "Jensen-Shannon Divergence on Log-Returns."
         })
-    if 'dist_results' in metrics_dict and 'JS_Div_Mean' in metrics_dict['dist_results']:
-         summary_data.append({
-            "Category": "Fidelity (Vibe)", 
-            "Metric": "JS Divergence (Mean)", 
-            "Value": metrics_dict['dist_results']['JS_Div_Mean'], 
-            "Goal": "lower", 
-            "Description": "Jensen-Shannon Divergence on Log-Returns."
-        })
+
 
     # 3. Distribution Fidelity (from dist_results)
     if 'dist_results' in metrics_dict:
