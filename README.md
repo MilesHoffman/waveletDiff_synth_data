@@ -276,6 +276,18 @@ Cross-level attention enables information exchange between scales.
 
 ---
 
+## 📈 Evaluation Methodology: Index-100
+
+To eliminate "price scale noise" and focus purely on temporal dynamics, WaveletDiff uses an **Index-100 Evaluation** style:
+
+1.  **Reparameterized Data**: Samples are generated in percentage-return space (normalized by ATR).
+2.  **Fixed Reconstruction**: During evaluation, the `anchor` price for **both** real and synthetic samples is fixed to **100.0**.
+3.  **Cumulative Dynamics**: This transforms the "Dollar Space" metrics into a pure study of cumulative returns and internal "vibe."
+
+This ensures that a stock at $10 and a stock at $1000 are compared on an equal playing field, revealing whether the model has truly mastered the statistical texture of the market.
+
+---
+
 ## 📈 Evaluation Metrics
 
 The evaluation suite includes:

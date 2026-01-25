@@ -247,7 +247,7 @@ class WaveletTimeSeriesDataModule(pl.LightningDataModule):
         """Get wavelet transformation information."""
         return self.wavelet_info
 
-    def inverse_normalize(self, data: np.ndarray, sample_indices: np.ndarray = None) -> np.ndarray:
+    def inverse_normalize(self, data: np.ndarray, sample_indices: np.ndarray = None, fixed_anchor: float = None) -> np.ndarray:
         """
         Inverse normalization to convert generated samples back to original scale.
         
@@ -257,6 +257,7 @@ class WaveletTimeSeriesDataModule(pl.LightningDataModule):
             data: Normalized data of shape (n_samples, seq_len, n_features)
             sample_indices: Optional indices to select specific anchor/atr_pct values.
                            If None and reparameterized, samples from stored distributions.
+            fixed_anchor: Optional fixed price anchor (e.g. 100.0) to eliminate price scale noise.
             
         Returns:
             Denormalized data in original scale: (n_samples, seq_len, 5) for OHLCV
@@ -267,7 +268,7 @@ class WaveletTimeSeriesDataModule(pl.LightningDataModule):
         data = data.copy()
         
         if self.norm_stats.get('reparameterized', False):
-            return self._inverse_reparameterize_ohlc(data, sample_indices)
+            return self._inverse_reparameterize_ohlc(data, sample_indices, fixed_anchor=fixed_anchor)
         
         mean = self.norm_stats['mean']
         std = self.norm_stats['std']
@@ -278,7 +279,7 @@ class WaveletTimeSeriesDataModule(pl.LightningDataModule):
         
         return data
     
-    def _inverse_reparameterize_ohlc(self, data: np.ndarray, sample_indices: np.ndarray = None) -> np.ndarray:
+    def _inverse_reparameterize_ohlc(self, data: np.ndarray, sample_indices: np.ndarray = None, fixed_anchor: float = None) -> np.ndarray:
         """
         Inverse reparameterization for OHLC data.
         
@@ -286,7 +287,14 @@ class WaveletTimeSeriesDataModule(pl.LightningDataModule):
         """
         n_samples = data.shape[0]
         
-        if sample_indices is not None:
+        if fixed_anchor is not None:
+            anchors = np.full((n_samples,), fixed_anchor)
+            if sample_indices is not None:
+                atr_pcts = self.norm_stats['atr_pcts'][sample_indices]
+            else:
+                indices = np.random.choice(len(self.norm_stats['atr_pcts']), size=n_samples, replace=True)
+                atr_pcts = self.norm_stats['atr_pcts'][indices]
+        elif sample_indices is not None:
             anchors = self.norm_stats['anchors'][sample_indices]
             atr_pcts = self.norm_stats['atr_pcts'][sample_indices]
         else:

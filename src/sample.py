@@ -98,8 +98,18 @@ def main():
     sampling_method = config['sampling']['method']
     use_ddim = (sampling_method == "ddim")
     
+    # Prepare optional scale conditioning (ATR pcts from real data)
+    scale_conditioning = None
+    sample_indices = None
+    if getattr(data_module, 'has_conditioning', False):
+        print("Model has conditioning enabled. Sampling real ATRs for conditioning...")
+        num_avail = len(data_module.norm_stats['atr_pcts'])
+        sample_indices = np.random.choice(num_avail, size=args.num_samples, replace=True)
+        scale_pcts = data_module.norm_stats['atr_pcts'][sample_indices]
+        scale_conditioning = torch.FloatTensor(scale_pcts).to(model.device)
+    
     print(f"Generating {sampling_method.upper()} samples...")
-    samples = trainer_util.generate_samples(args.num_samples, use_ddim=use_ddim)
+    samples = trainer_util.generate_samples(args.num_samples, use_ddim=use_ddim, scale=scale_conditioning)
     
     # Convert to time series
     print("Converting to time series...")
@@ -116,12 +126,15 @@ def main():
     real_data_norm = data_module.raw_data_tensor.numpy()
     
     # Inverse normalize to get Dollar values (Original Scale)
-    print("Inverse normalizing generated samples to Dollar space...")
-    samples_dollar = data_module.inverse_normalize(samples_norm.copy())
+    # We use a fixed anchor of 100.0 to eliminate price scale noise from evaluation
+    FIXED_ANCHOR = 100.0
+    print(f"Inverse normalizing generated samples to Dollar space (Index-{FIXED_ANCHOR})...")
+    # Use the same sample_indices for denormalization to ensure consistency
+    samples_dollar = data_module.inverse_normalize(samples_norm.copy(), sample_indices=sample_indices, fixed_anchor=FIXED_ANCHOR)
     
-    print("Inverse normalizing Real samples to Dollar space...")
+    print(f"Inverse normalizing Real samples to Dollar space (Index-{FIXED_ANCHOR})...")
     real_indices = np.arange(len(real_data_norm))
-    real_samples_dollar = data_module.inverse_normalize(real_data_norm.copy(), sample_indices=real_indices)
+    real_samples_dollar = data_module.inverse_normalize(real_data_norm.copy(), sample_indices=real_indices, fixed_anchor=FIXED_ANCHOR)
     
     # Save Dollar Space
     np.save(real_samples_path, real_samples_dollar)
