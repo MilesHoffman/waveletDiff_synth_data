@@ -2,10 +2,12 @@
 import numpy as np
 import pandas as pd
 from scipy.stats import wasserstein_distance, ks_2samp
+from scipy.spatial.distance import jensenshannon, cdist
 from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
 from sklearn.neighbors import KNeighborsClassifier, NearestNeighbors
 from sklearn.mixture import GaussianMixture
+from sklearn.metrics.pairwise import rbf_kernel
 from statsmodels.tsa.stattools import acf
 
 def calculate_distribution_fidelity(real, synthetic):
@@ -62,6 +64,53 @@ def calculate_distribution_fidelity(real, synthetic):
         results["KS_Stat_Mean"] = np.mean(ks_stats)
         results["KS_PVal_Mean"] = np.mean(p_values)
         
+    # 3. Jensen-Shannon (JS) Divergence on Log-Returns
+    # We bin the distributions to calculate probability masses for JS
+    js_scores = []
+    
+    # Re-use returns if available, or compute them
+    if len(real.shape) == 3:
+        # Use returns from above
+        pass
+    else:
+        # If flattened input, we cannot reliably compute returns unless passed specifically.
+        # Fallback to computing JS on the raw values (marginals)
+        pass
+
+    def compute_js_hist(p_samples, q_samples, bins=50):
+        # Determine common range
+        min_val = min(np.min(p_samples), np.min(q_samples))
+        max_val = max(np.max(p_samples), np.max(q_samples))
+        range_val = (min_val, max_val)
+        
+        p_hist, _ = np.histogram(p_samples, bins=bins, range=range_val, density=True)
+        q_hist, _ = np.histogram(q_samples, bins=bins, range=range_val, density=True)
+        
+        # Add small espilon to avoid 0/0
+        p_hist = p_hist + 1e-8
+        q_hist = q_hist + 1e-8
+        
+        # Normalize again
+        p_hist /= np.sum(p_hist)
+        q_hist /= np.sum(q_hist)
+        
+        return jensenshannon(p_hist, q_hist)
+        
+    for i in range(n_features):
+        # Prefer log-returns if time-series, else raw marginals
+        if len(real.shape) == 3:
+            r_data = real_returns_flat[:, i]
+            s_data = synth_returns_flat[:, i]
+        else:
+            r_data = real_flat[:, i]
+            s_data = synth_flat[:, i]
+            
+        js_val = compute_js_hist(r_data, s_data)
+        js_scores.append(js_val)
+        results[f"JS_Div_Feat_{i}"] = js_val
+        
+    results["JS_Div_Mean"] = np.mean(js_scores)
+
     return results
 
 def calculate_structural_alignment(real, synthetic, n_samples=2000):
@@ -210,6 +259,27 @@ def calculate_financial_reality(real, synthetic, lags=[1, 5, 20]):
         
     results["Volatility_MSE"] = vol_mse / n_features
     
+    # 4. Stylized Facts: ACF of Absolute Returns
+    # Captures "volatility clustering" in a standard financial physics sense
+    abs_acf_mse = 0
+    for i in range(n_features):
+        real_feat = real[..., i]
+        synth_feat = synthetic[..., i]
+        
+        real_ret = np.diff(real_feat, axis=1) / (real_feat[:, :-1] + 1e-8)
+        synth_ret = np.diff(synth_feat, axis=1) / (synth_feat[:, :-1] + 1e-8)
+        
+        real_abs_ret = np.abs(real_ret)
+        synth_abs_ret = np.abs(synth_ret)
+        
+        real_abs_acf = avg_acf_vol(real_abs_ret, nlags=max(lags))
+        synth_abs_acf = avg_acf_vol(synth_abs_ret, nlags=max(lags))
+        
+        mse_i = np.mean((real_abs_acf - synth_abs_acf)**2)
+        abs_acf_mse += mse_i
+        
+    results["Abs_Returns_ACF_MSE"] = abs_acf_mse / n_features
+
     return results
 
 def calculate_memorization_ratio(real, synthetic):
@@ -315,3 +385,93 @@ def calculate_fld(real, synthetic, n_components=10):
     fld_score = abs(np.mean(ll_real) - np.mean(ll_synth))
     
     return fld_score
+
+def calculate_dcr(real, synthetic):
+    """
+    Distance to Closest Record (DCR).
+    Measures Euclidean distance from each synthetic sample to its nearest neighbor in Real.
+    Used to check for memorization (if DCR ~ 0).
+    """
+    if len(real.shape) == 3:
+        real_flat = real.reshape(real.shape[0], -1)
+        synth_flat = synthetic.reshape(synthetic.shape[0], -1)
+    else:
+        real_flat = real
+        synth_flat = synthetic
+        
+    # Nearest neighbor in Real for each Synthetic point
+    nbrs = NearestNeighbors(n_neighbors=1).fit(real_flat)
+    distances, _ = nbrs.kneighbors(synth_flat)
+    
+    # Score is the mean distance
+    dcr_mean = np.mean(distances)
+    
+    return dcr_mean
+
+def calculate_manifold_precision_recall(real, synthetic, k=3):
+    """
+    Approximation of Manifold Precision and Recall using k-NN.
+    
+    Precision: Quality (Do generated samples fall into the real manifold?)
+    Recall: Diversity (Do generated samples cover the real manifold?)
+    """
+    if len(real.shape) == 3:
+        real_flat = real.reshape(real.shape[0], -1)
+        synth_flat = synthetic.reshape(synthetic.shape[0], -1)
+    else:
+        real_flat = real
+        synth_flat = synthetic
+        
+    # Radii for Real samples (manifold extent)
+    nbrs_real = NearestNeighbors(n_neighbors=k+1).fit(real_flat)
+    real_dists, _ = nbrs_real.kneighbors(real_flat)
+    real_radii = real_dists[:, k] # k-th NN distance
+    
+    # Radii for Synthetic samples
+    nbrs_synth = NearestNeighbors(n_neighbors=k+1).fit(synth_flat)
+    synth_dists, _ = nbrs_synth.kneighbors(synth_flat)
+    synth_radii = synth_dists[:, k]
+    
+    # Precision: Fraction of Synth samples that fall within the radius of any Real sample
+    # (Simplified: Is closest Real sample within Real sample's radius?)
+    # More accurate: Check if synth sample is in the hypersphere of *any* real sample.
+    # To be efficient, we check distance to nearest real sample vs that real sample's radius.
+    dists_s2r, idx_s2r = nbrs_real.kneighbors(synth_flat, n_neighbors=1)
+    # dists_s2r[:,0] is dist to nearest real
+    # real_radii[idx_s2r[:,0]] is the radius of that nearest real neighbor
+    precision_mask = dists_s2r[:, 0] <= real_radii[idx_s2r[:, 0]]
+    alpha_precision = np.mean(precision_mask)
+    
+    # Recall: Fraction of Real samples that fall within the radius of any Synth sample
+    dists_r2s, idx_r2s = nbrs_synth.kneighbors(real_flat, n_neighbors=1)
+    recall_mask = dists_r2s[:, 0] <= synth_radii[idx_r2s[:, 0]]
+    beta_recall = np.mean(recall_mask)
+    
+    return alpha_precision, beta_recall
+
+def calculate_mmd(real, synthetic, sigma=1.0):
+    """
+    Maximum Mean Discrepancy (MMD) using RBF kernel.
+    """
+    if len(real.shape) == 3:
+        real_flat = real.reshape(real.shape[0], -1)
+        synth_flat = synthetic.reshape(synthetic.shape[0], -1)
+    else:
+        real_flat = real
+        synth_flat = synthetic
+    
+    # Subsample if too large (MMD is O(N^2))
+    n_max = 1000
+    if len(real_flat) > n_max:
+        idx_r = np.random.choice(len(real_flat), n_max, replace=False)
+        real_flat = real_flat[idx_r]
+    if len(synth_flat) > n_max:
+        idx_s = np.random.choice(len(synth_flat), n_max, replace=False)
+        synth_flat = synth_flat[idx_s]
+        
+    XX = rbf_kernel(real_flat, real_flat, gamma=1.0/(2*sigma**2))
+    YY = rbf_kernel(synth_flat, synth_flat, gamma=1.0/(2*sigma**2))
+    XY = rbf_kernel(real_flat, synth_flat, gamma=1.0/(2*sigma**2))
+    
+    mmd = np.mean(XX) + np.mean(YY) - 2 * np.mean(XY)
+    return mmd

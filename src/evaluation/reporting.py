@@ -66,6 +66,22 @@ def generate_summary_scorecard(metrics_dict):
             "Goal": "lower", 
             "Description": "DTW-based distribution distance."
         })
+    if 'dist_results' in metrics_dict and 'JS_Div_Mean' in metrics_dict['dist_results']:
+         summary_data.append({
+            "Category": "Fidelity (Vibe)", 
+            "Metric": "JS Divergence (Mean)", 
+            "Value": metrics_dict['dist_results']['JS_Div_Mean'], 
+            "Goal": "lower", 
+            "Description": "Jensen-Shannon Divergence on Log-Returns."
+        })
+    if 'dist_results' in metrics_dict and 'JS_Div_Mean' in metrics_dict['dist_results']:
+         summary_data.append({
+            "Category": "Fidelity (Vibe)", 
+            "Metric": "JS Divergence (Mean)", 
+            "Value": metrics_dict['dist_results']['JS_Div_Mean'], 
+            "Goal": "lower", 
+            "Description": "Jensen-Shannon Divergence on Log-Returns."
+        })
 
     # 3. Distribution Fidelity (from dist_results)
     if 'dist_results' in metrics_dict:
@@ -129,6 +145,28 @@ def generate_summary_scorecard(metrics_dict):
         summary_data.append({
             "Category": "New Metrics", "Metric": "FLD (Likelihood Divergence)", 
             "Value": metrics_dict['fld_score'], "Goal": "lower", "Description": "Divergence in likelihood under real data density (GMM)."
+        })
+
+    # New Diversity & Overfitting Metrics (from dcr_score, precision, recall, mmd_score args if present)
+    if 'dcr_score' in metrics_dict:
+         summary_data.append({
+            "Category": "Diversity & Overfitting", "Metric": "DCR (Distance to Closest Record)", 
+            "Value": metrics_dict['dcr_score'], "Goal": "higher", "Description": "Mean distance to nearest real neighbor (Low = Memorization)."
+        })
+    if 'precision' in metrics_dict:
+         summary_data.append({
+            "Category": "Diversity & Overfitting", "Metric": "Manifold Precision", 
+            "Value": metrics_dict['precision'], "Goal": "higher", "Description": "Fidelity: % of synth samples in real manifold."
+        })
+    if 'recall' in metrics_dict:
+         summary_data.append({
+            "Category": "Diversity & Overfitting", "Metric": "Manifold Recall", 
+            "Value": metrics_dict['recall'], "Goal": "higher", "Description": "Diversity: % of real samples covered by synth manifold."
+        })
+    if 'mmd_score' in metrics_dict:
+         summary_data.append({
+            "Category": "Diversity & Overfitting", "Metric": "MMD (RBF Kernel)", 
+            "Value": metrics_dict['mmd_score'], "Goal": "lower", "Description": "Maximum Mean Discrepancy between distributions."
         })
 
     # Create DataFrame

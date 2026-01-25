@@ -15,7 +15,11 @@ from advanced_metrics import (
     calculate_financial_reality, 
     calculate_memorization_ratio, 
     calculate_diversity_metrics, 
-    calculate_fld
+    calculate_fld,
+    calculate_dcr,
+    calculate_manifold_precision_recall,
+    calculate_mmd
+)
 )
 
 def run_discriminative_benchmark(real, generated, iterations=5):
@@ -107,4 +111,14 @@ def run_new_metrics(real_raw, generated_raw):
     print("\nRunning Feature Likelihood Divergence (FLD)...")
     fld_score = calculate_fld(real_raw, generated_raw)
     
-    return mem_ratio, div_results, fld_score
+    # New Metrics (DCR, MMD, Precision/Recall)
+    print("\nRunning Distance to Closest Record (DCR)...")
+    dcr_score = calculate_dcr(real_raw, generated_raw)
+    
+    print("\nRunning Manifold Precision & Recall...")
+    precision, recall = calculate_manifold_precision_recall(real_raw, generated_raw)
+    
+    print("\nRunning Maximum Mean Discrepancy (MMD)...")
+    mmd_score = calculate_mmd(real_raw, generated_raw)
+    
+    return mem_ratio, div_results, fld_score, dcr_score, precision, recall, mmd_score
