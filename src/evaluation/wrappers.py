@@ -18,7 +18,8 @@ from advanced_metrics import (
     calculate_fld,
     calculate_dcr,
     calculate_manifold_precision_recall,
-    calculate_mmd\n)
+    calculate_mmd
+)
 
 def run_discriminative_benchmark(real, generated, iterations=5):
     """Run discriminative score benchmark over multiple iterations."""
