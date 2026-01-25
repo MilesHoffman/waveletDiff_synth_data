@@ -131,3 +131,48 @@ def plot_samples(real, generated, n_samples=5, feature_names=None):
 
     plt.tight_layout()
     plt.show()
+
+def plot_candlesticks(real, generated, n_samples=5):
+    """
+    Plot OHLC candlestick comparison of real and generated samples.
+    
+    Args:
+        real: Real data array (N, T, 5) for OHLCV
+        generated: Generated data array (N, T, 5)
+        n_samples: Number of samples to visualize
+    """
+    n_samples = min(n_samples, len(real), len(generated))
+    
+    # 2 rows (Real vs Gen) x n_samples
+    fig, axes = plt.subplots(2, n_samples, figsize=(n_samples * 4, 8), sharey='row')
+    
+    for row, (data, label) in enumerate([(real, 'Real'), (generated, 'Generated')]):
+        for i in range(n_samples):
+            ax = axes[row, i]
+            sample = data[i] # (T, 5)
+            
+            # Use the time index as X
+            t = np.arange(len(sample))
+            
+            # Plot wires (High-Low)
+            ax.vlines(t, sample[:, 2], sample[:, 1], color='black', linestyle='-', linewidth=1, alpha=0.6)
+            
+            # Determine color for bodies (Open vs Close)
+            # Bullish: Close >= Open (usually Green)
+            # Bearish: Close < Open (usually Red)
+            bullish = sample[:, 3] >= sample[:, 0]
+            
+            # Plot Bullish bodies
+            ax.vlines(t[bullish], sample[bullish, 0], sample[bullish, 3], color='green', linewidth=4, alpha=0.8)
+            # Plot Bearish bodies
+            ax.vlines(t[~bullish], sample[~bullish, 3], sample[~bullish, 0], color='red', linewidth=4, alpha=0.8)
+            
+            if i == 0:
+                ax.set_ylabel(f"{label} Price")
+            
+            ax.set_title(f"{label} Sample {i}")
+            ax.grid(True, alpha=0.3)
+
+    plt.suptitle("OHLC Candlestick Comparison (Real vs Generated)", fontsize=16, y=1.02)
+    plt.tight_layout()
+    plt.show()
