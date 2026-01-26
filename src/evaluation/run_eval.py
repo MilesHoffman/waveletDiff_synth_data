@@ -13,14 +13,12 @@ import torch.nn.functional as F
 # Ensure repo root is in path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
-from src.evaluation import (
-    discriminative_score_metrics,
-    predictive_score_metrics,
-    Context_FID,
-    CrossCorrelLoss,
-    dtw_wasserstein_distance,
-    display_scores
-)
+from src.evaluation.discriminative_metrics import discriminative_score_metrics
+from src.evaluation.predictive_metrics import predictive_score_metrics
+from src.evaluation.context_fid import Context_FID
+from src.evaluation.cross_correlation import CrossCorrelLoss
+from src.evaluation.dtw import dtw_js_divergence_distance as dtw_wasserstein_distance
+from src.evaluation.metric_utils import display_scores
 from src.evaluation.metric_utils import visualization
 
 def run_metrics(real_path, fake_path, output_dir, device='cuda'):

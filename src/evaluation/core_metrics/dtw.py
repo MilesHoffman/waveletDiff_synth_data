@@ -157,10 +157,24 @@ def dtw_distance(
     gen_p = (gen_hist + 1e-10) / (np.sum(gen_hist) + 1e-10 * n_bins)
     real_p = (real_hist + 1e-10) / (np.sum(real_hist) + 1e-10 * n_bins)
     
-    # JS Divergence
-    m = 0.5 * (gen_p + real_p)
-    kl_gen = np.sum(gen_p * np.log(gen_p / m))
-    kl_real = np.sum(real_p * np.log(real_p / m))
-    js_div = 0.5 * kl_gen + 0.5 * kl_real
+    # Compute Jensen-Shannon divergence
+    # JS(P,Q) = 0.5 * KL(P,M) + 0.5 * KL(Q,M), where M = 0.5*(P+Q)
+    m_distribution = 0.5 * (gen_p + real_p)
     
-    return float(js_div)
+    def kl_divergence(p, q):
+        return np.sum(p * np.log(p / q))
+    
+    kl_gen_to_m = kl_divergence(gen_p, m_distribution)
+    kl_real_to_m = kl_divergence(real_p, m_distribution)
+    js_div = 0.5 * kl_gen_to_m + 0.5 * kl_real_to_m
+    
+    kl_gen_to_real = kl_divergence(gen_p, real_p)
+    kl_real_to_gen = kl_divergence(real_p, gen_p)
+    
+    return {
+        'js_divergence': float(js_div),
+        'kl_div_gen_to_real': float(kl_gen_to_real),
+        'kl_div_real_to_gen': float(kl_real_to_gen),
+        'generated_distances': gen_dist,
+        'real_distances': real_dist
+    }

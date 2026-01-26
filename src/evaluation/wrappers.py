@@ -5,11 +5,23 @@ import torch.nn as nn
 from typing import List, Callable
 
 # Legacy imports - use explicit relative imports
-from .discriminative_metrics import discriminative_score_metrics
-from .predictive_metrics import predictive_score_metrics
-from .context_fid import Context_FID
-from .cross_correlation import CrossCorrelLoss
-from .dtw import dtw_js_divergence_distance
+from evaluation.core_metrics.discriminative import discriminative_score as discriminative_score_metrics
+from evaluation.core_metrics.predictive import predictive_utility as predictive_score_metrics
+from evaluation.core_metrics.context_fid import context_fid as Context_FID
+from evaluation.core_metrics.correlation import correlation_score as CrossCorrelLoss_func
+from evaluation.core_metrics.dtw import dtw_distance as dtw_js_divergence_distance
+
+# Adapt CrossCorrelLoss to class if needed by wrappers (wrapper itself wraps it, but for naming consistency)
+import torch
+class CrossCorrelLoss:
+    def __init__(self, x, name='CrossCorrelLoss'):
+        self.x = x
+    def compute(self, y):
+        x_np = self.x.cpu().numpy()
+        y_np = y.cpu().numpy()
+        score = CrossCorrelLoss_func(x_np, y_np)
+        return torch.tensor(score)
+
 
 # Import from the renamed legacy_advanced_metrics.py file
 from .legacy_advanced_metrics import (

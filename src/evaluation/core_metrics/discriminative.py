@@ -162,12 +162,17 @@ def discriminative_score(
         y_pred_fake = torch.sigmoid(discriminator(test_x_hat_tensor, test_t_hat_tensor)).cpu().numpy()
 
     y_pred_final = np.concatenate((y_pred_real, y_pred_fake), axis=0).squeeze()
-    y_label_final = np.concatenate([
-        np.ones(len(y_pred_real)),
-        np.zeros(len(y_pred_fake)),
-    ])
+    y_label_final = np.concatenate(
+        [
+            np.ones(len(y_pred_real)),
+            np.zeros(len(y_pred_fake)),
+        ]
+    )
 
     acc = accuracy_score(y_label_final, y_pred_final > 0.5)
-    score = np.abs(0.5 - acc)
+    fake_acc = accuracy_score(np.zeros(len(y_pred_fake)), y_pred_fake > 0.5)
+    real_acc = accuracy_score(np.ones(len(y_pred_real)), y_pred_real > 0.5)
+
+    discriminative_score = np.abs(0.5 - acc)
     
-    return float(score)
+    return discriminative_score, fake_acc, real_acc
