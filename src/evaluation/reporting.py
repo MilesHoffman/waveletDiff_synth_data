@@ -224,7 +224,8 @@ def generate_summary_scorecard(metrics_dict):
                 "Description": "Diff in statistical moments (Mean/Std/Skew/Kurt)."
             })
 
-    # 2. Discriminative & Predictive
+    # 2. THE 5 ORIGINAL CORE METRICS
+    # Discriminative Score
     if 'discriminative_score' in metrics_dict:
         summary_data.append({
             "Category": "Model Quality", 
@@ -233,6 +234,8 @@ def generate_summary_scorecard(metrics_dict):
             "Goal": "lower", 
             "Description": "Classifier accuracy deviation from 0.5 (Real vs Fake)."
         })
+    
+    # Predictive Score
     if 'predictive_score' in metrics_dict:
         summary_data.append({
             "Category": "Model Quality", 
@@ -241,22 +244,40 @@ def generate_summary_scorecard(metrics_dict):
             "Goal": "lower", 
             "Description": "MAE of TSTR (Train on Synthetic, Test on Real)."
         })
-    if 'context_fid_score' in metrics_dict:
+    
+    # Context-FID (check multiple key names)
+    cfid_val = metrics_dict.get('context_fid_score') or metrics_dict.get('context_fid') or metrics_dict.get('cfid')
+    if cfid_val is not None:
         summary_data.append({
             "Category": "Model Quality", 
             "Metric": "Context-FID", 
-            "Value": np.mean(metrics_dict['context_fid_score']), 
+            "Value": np.mean(cfid_val) if hasattr(cfid_val, '__iter__') and not isinstance(cfid_val, (int, float)) else cfid_val, 
             "Goal": "lower", 
-            "Description": "FID score on embeddings (e.g. Inception/Transformer)."
+            "Description": "FID score on TS2Vec embeddings."
         })
-    if 'correlational_score' in metrics_dict:
+    
+    # Correlation Score / Cross-Correlation Loss (check multiple key names)
+    corr_val = metrics_dict.get('correlational_score') or metrics_dict.get('correlation_score') or metrics_dict.get('cross_correl')
+    if corr_val is not None:
         summary_data.append({
             "Category": "Model Quality", 
             "Metric": "Cross-Correl Loss", 
-            "Value": np.mean(metrics_dict['correlational_score']), 
+            "Value": np.mean(corr_val) if hasattr(corr_val, '__iter__') and not isinstance(corr_val, (int, float)) else corr_val, 
             "Goal": "lower", 
             "Description": "Difference in cross-correlation matrices."
         })
+    
+    # DTW Distance / JS Divergence (check multiple key names)
+    dtw_val = metrics_dict.get('js_results') or metrics_dict.get('dtw_score') or metrics_dict.get('dtw_distance')
+    if dtw_val is not None:
+        summary_data.append({
+            "Category": "Model Quality", 
+            "Metric": "DTW (JS Divergence)", 
+            "Value": np.mean(dtw_val) if hasattr(dtw_val, '__iter__') and not isinstance(dtw_val, (int, float)) else dtw_val, 
+            "Goal": "lower", 
+            "Description": "DTW-based distribution distance."
+        })
+
 
     # 3. Distribution Fidelity
     if 'dist_results' in metrics_dict:
