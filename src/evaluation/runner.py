@@ -141,12 +141,16 @@ class EvaluationRunner:
         
         # 1. Discriminative Score
         print("Computing Discriminative Score...")
-        metrics['discriminative'] = discriminative_score(
+        # Returns (score, fake_acc, real_acc)
+        disc_score, fake_acc, real_acc = discriminative_score(
             data['real']['scaled_01'], 
             data['synth']['scaled_01'],
             iterations=self.config.discriminative_iterations
         )
-        print(f"  → Discriminative: {metrics['discriminative']:.4f}")
+        metrics['discriminative'] = disc_score
+        metrics['discriminative_fake_acc'] = fake_acc
+        metrics['discriminative_real_acc'] = real_acc
+        print(f"  → Discriminative: {metrics['discriminative']:.4f} (Real: {real_acc:.2f}, Fake: {fake_acc:.2f})")
         
         # 2. Predictive Utility (TSTR / TRTR)
         print("Computing Predictive Utility (TSTR/TRTR)...")
@@ -183,12 +187,19 @@ class EvaluationRunner:
         
         # 5. DTW Distance
         print("Computing DTW Distance...")
-        metrics['dtw'] = dtw_distance(
+        dtw_result = dtw_distance(
             data['real']['raw'], 
             data['synth']['raw'],
             n_samples=self.config.dtw_n_samples
         )
-        print(f"  → DTW: {metrics['dtw']:.4f}")
+        # Handle dict return
+        if isinstance(dtw_result, dict):
+            metrics['dtw'] = dtw_result['js_divergence']
+            metrics['dtw_details'] = dtw_result
+        else:
+            metrics['dtw'] = dtw_result
+            
+        print(f"  → DTW (JS Div): {metrics['dtw']:.4f}")
         
         return metrics
     
