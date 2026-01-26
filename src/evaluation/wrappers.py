@@ -4,22 +4,26 @@ import torch
 import torch.nn as nn
 from typing import List, Callable
 
-from discriminative_metrics import discriminative_score_metrics
-from predictive_metrics import predictive_score_metrics
-from context_fid import Context_FID
-from cross_correlation import CrossCorrelLoss
-from dtw import dtw_js_divergence_distance
-from advanced_metrics import (
-    calculate_distribution_fidelity, 
-    calculate_structural_alignment, 
-    calculate_financial_reality, 
-    calculate_memorization_ratio, 
-    calculate_diversity_metrics, 
+# Legacy imports - use explicit relative imports
+from .discriminative_metrics import discriminative_score_metrics
+from .predictive_metrics import predictive_score_metrics
+from .context_fid import Context_FID
+from .cross_correlation import CrossCorrelLoss
+from .dtw import dtw_js_divergence_distance
+
+# Import from the renamed legacy_advanced_metrics.py file
+from .legacy_advanced_metrics import (
+    calculate_distribution_fidelity,
+    calculate_structural_alignment,
+    calculate_financial_reality,
+    calculate_memorization_ratio,
+    calculate_diversity_metrics,
     calculate_fld,
     calculate_dcr,
     calculate_manifold_precision_recall,
     calculate_mmd
 )
+
 
 def run_discriminative_benchmark(real, generated, iterations=5):
     """Run discriminative score benchmark over multiple iterations."""
