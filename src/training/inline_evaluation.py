@@ -124,12 +124,7 @@ class InlineEvaluationCallback(pl.Callback):
             timesteps = list(range(T - 1, -1, -step_size))
             total_steps = len(timesteps)
             
-            start_time = time.time()
-            milestones = [0.2, 0.4, 0.6, 0.8, 1.0]
-            next_milestone_idx = 0
-            
             for i, t in enumerate(timesteps):
-                step_start = time.time()
                 t_tensor = torch.full((self.n_samples,), t, device=device, dtype=torch.long)
                 t_norm = t_tensor.float() / T
                 
@@ -143,20 +138,6 @@ class InlineEvaluationCallback(pl.Callback):
                 # DDIM update (deterministic)
                 x0_pred = (x_t - torch.sqrt(1 - alpha_t) * predicted_noise) / torch.sqrt(alpha_t)
                 x_t = torch.sqrt(alpha_prev) * x0_pred + torch.sqrt(1 - alpha_prev) * predicted_noise
-                
-                step_end = time.time()
-                
-                # Debug timing for first 5 steps
-                if i < 5:
-                    print(f"    [DEBUG] Step {i+1} time: {step_end - step_start:.4f}s")
-                
-                # Debug timing for progress milestones
-                progress = (i + 1) / total_steps
-                if next_milestone_idx < len(milestones) and progress >= milestones[next_milestone_idx]:
-                    current_milestone = milestones[next_milestone_idx]
-                    elapsed = time.time() - start_time
-                    print(f"    [DEBUG] Sampling Progress: {int(current_milestone * 100)}% | Elapsed: {elapsed:.2f}s")
-                    next_milestone_idx += 1
         
         pl_module.train()
         return x_t.cpu()
