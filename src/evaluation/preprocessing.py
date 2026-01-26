@@ -22,8 +22,9 @@ def compute_log_returns(data: np.ndarray, price_col: int = 3) -> np.ndarray:
     Returns:
         Log returns of shape (N, T-1)
     """
-    close = data[:, :, price_col]
-    log_returns = np.diff(np.log(close + 1e-8), axis=1)
+    # Clip to avoid log(0) or log(negative)
+    close = np.maximum(data[:, :, price_col], 1e-8)
+    log_returns = np.diff(np.log(close), axis=1)
     return log_returns
 
 
