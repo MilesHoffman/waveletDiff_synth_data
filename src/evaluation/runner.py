@@ -167,9 +167,10 @@ class EvaluationRunner:
         # 3. Context-FID
         print("Computing Context-FID...")
         try:
+            # Use SCALED data for TS2Vec embeddings (neural nets need normalized inputs)
             metrics['context_fid'] = context_fid(
-                data['real']['raw'], 
-                data['synth']['raw']
+                data['real']['scaled_01'], 
+                data['synth']['scaled_01']
             )
             print(f"  → Context-FID: {metrics['context_fid']:.4f}")
         except Exception as e:
@@ -187,9 +188,10 @@ class EvaluationRunner:
         
         # 5. DTW Distance
         print("Computing DTW Distance...")
+        # Use SCALED data for comparable distances across datasets
         dtw_result = dtw_distance(
-            data['real']['raw'], 
-            data['synth']['raw'],
+            data['real']['scaled_01'], 
+            data['synth']['scaled_01'],
             n_samples=self.config.dtw_n_samples
         )
         # Handle dict return
