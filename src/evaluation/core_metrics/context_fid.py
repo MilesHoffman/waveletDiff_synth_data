@@ -11,31 +11,20 @@ from typing import Optional
 import warnings
 
 
-def _calculate_fid(act1: np.ndarray, act2: np.ndarray) -> float:
-    """
-    Calculate Frechet Inception Distance between two sets of activations.
-    
-    Args:
-        act1: First set of embeddings (N, D)
-        act2: Second set of embeddings (N, D)
-        
-    Returns:
-        FID score (lower is better)
-    """
+def _calculate_fid(act1, act2):
+    # calculate mean and covariance statistics
     mu1, sigma1 = act1.mean(axis=0), np.cov(act1, rowvar=False)
     mu2, sigma2 = act2.mean(axis=0), np.cov(act2, rowvar=False)
-    
-    ssdiff = np.sum((mu1 - mu2) ** 2.0)
-    
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        covmean = scipy.linalg.sqrtm(sigma1.dot(sigma2))
-    
+    # calculate sum squared difference between means
+    ssdiff = np.sum((mu1 - mu2)**2.0)
+    # calculate sqrt of product between cov
+    covmean = scipy.linalg.sqrtm(sigma1.dot(sigma2))
+    # check and correct imaginary numbers from sqrt
     if np.iscomplexobj(covmean):
         covmean = covmean.real
-    
+    # calculate score
     fid = ssdiff + np.trace(sigma1 + sigma2 - 2.0 * covmean)
-    return float(fid)
+    return fid
 
 
 def context_fid(
@@ -67,10 +56,10 @@ def context_fid(
             return float('nan')
     
     model = TS2Vec(
-        input_dims=real_data.shape[-1],
-        device=0 if __import__('torch').cuda.is_available() else 'cpu',
-        batch_size=batch_size,
-        lr=0.001,
+        input_dims=real_data.shape[-1], 
+        device=0 if __import__('torch').cuda.is_available() else 'cpu', 
+        batch_size=batch_size, 
+        lr=0.001, 
         output_dims=output_dims,
         max_train_length=3000
     )
@@ -80,9 +69,9 @@ def context_fid(
     real_repr = model.encode(real_data, encoding_window='full_series')
     synth_repr = model.encode(synth_data, encoding_window='full_series')
     
-    # Shuffle for fair comparison
-    idx = np.random.permutation(min(len(real_repr), len(synth_repr)))
-    real_repr = real_repr[idx[:len(idx)]]
-    synth_repr = synth_repr[idx[:len(idx)]]
+    # Context-FID uses same indices logic
+    idx = np.random.permutation(real_data.shape[0])
+    real_repr = real_repr[idx]
+    synth_repr = synth_repr[idx]
     
-    return _calculate_fid(real_repr, synth_repr)
+    return float(_calculate_fid(real_repr, synth_repr))

@@ -16,56 +16,69 @@ from typing import Tuple
 
 
 def _extract_time(data: np.ndarray) -> Tuple[list, int]:
-    """Extract sequence lengths from data."""
-    time = []
+    """Returns Maximum sequence length and each sequence length."""
+    time = list()
     max_seq_len = 0
     for i in range(len(data)):
         max_seq_len = max(max_seq_len, len(data[i][:, 0]))
         time.append(len(data[i][:, 0]))
+
     return time, max_seq_len
 
 
 def _train_test_divide(data_x, data_x_hat, data_t, data_t_hat, train_rate=0.8):
-    """Divide data into train/test splits."""
+    """Divide train and test data for both original and synthetic data."""
+    # Divide train/test index (original data)
     no = len(data_x)
     idx = np.random.permutation(no)
-    train_idx = idx[:int(no * train_rate)]
-    test_idx = idx[int(no * train_rate):]
+    train_idx = idx[: int(no * train_rate)]
+    test_idx = idx[int(no * train_rate) :]
 
     train_x = [data_x[i] for i in train_idx]
     test_x = [data_x[i] for i in test_idx]
     train_t = [data_t[i] for i in train_idx]
     test_t = [data_t[i] for i in test_idx]
 
-    no_hat = len(data_x_hat)
-    idx_hat = np.random.permutation(no_hat)
-    train_idx_hat = idx_hat[:int(no_hat * train_rate)]
-    test_idx_hat = idx_hat[int(no_hat * train_rate):]
+    # Divide train/test index (synthetic data)
+    no = len(data_x_hat)
+    idx = np.random.permutation(no)
+    train_idx = idx[: int(no * train_rate)]
+    test_idx = idx[int(no * train_rate) :]
 
-    train_x_hat = [data_x_hat[i] for i in train_idx_hat]
-    test_x_hat = [data_x_hat[i] for i in test_idx_hat]
-    train_t_hat = [data_t_hat[i] for i in train_idx_hat]
-    test_t_hat = [data_t_hat[i] for i in test_idx_hat]
+    train_x_hat = [data_x_hat[i] for i in train_idx]
+    test_x_hat = [data_x_hat[i] for i in test_idx]
+    train_t_hat = [data_t_hat[i] for i in train_idx]
+    test_t_hat = [data_t_hat[i] for i in test_idx]
 
-    return (train_x, train_x_hat, test_x, test_x_hat,
-            train_t, train_t_hat, test_t, test_t_hat)
+    return (
+        train_x,
+        train_x_hat,
+        test_x,
+        test_x_hat,
+        train_t,
+        train_t_hat,
+        test_t,
+        test_t_hat,
+    )
 
 
 def _batch_generator(data, time, batch_size):
-    """Generate mini-batches."""
+    """Mini-batch generator."""
     no = len(data)
     idx = np.random.permutation(no)
     train_idx = idx[:batch_size]
+
     X_mb = [data[i] for i in train_idx]
     T_mb = [time[i] for i in train_idx]
+
     return X_mb, T_mb
 
 
 class _Discriminator(nn.Module):
-    """GRU-based discriminator for Real vs Fake classification."""
+    """Discriminator model for distinguishing between real and synthetic time-series data."""
 
-    def __init__(self, input_dim: int, hidden_dim: int):
-        super().__init__()
+    def __init__(self, input_dim, hidden_dim):
+        super(_Discriminator, self).__init__()
         self.rnn = nn.GRU(input_dim, hidden_dim, batch_first=True)
         self.fc = nn.Linear(hidden_dim, 1)
 

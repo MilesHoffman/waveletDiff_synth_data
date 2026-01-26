@@ -20,10 +20,10 @@ from typing import Tuple
 
 
 class _Predictor(nn.Module):
-    """GRU-based predictor for one-step ahead prediction."""
+    """A simple RNN-based predictor model using GRU and a fully connected layer."""
 
-    def __init__(self, input_dim: int, hidden_dim: int):
-        super().__init__()
+    def __init__(self, input_dim, hidden_dim):
+        super(_Predictor, self).__init__()
         self.rnn = nn.GRU(input_dim, hidden_dim, batch_first=True)
         self.fc = nn.Linear(hidden_dim, 1)
 
@@ -59,17 +59,19 @@ def _train_predictor(
 
     def prepare_batch(data, batch_indices):
         if dim > 1:
+            # Multivariate case
             X_mb = [
-                torch.tensor(data[i][:-1, :dim - 1], dtype=torch.float32)
+                torch.tensor(data[i][:-1, : dim - 1], dtype=torch.float32)
                 for i in batch_indices
             ]
             Y_mb = [
-                torch.tensor(data[i][1:, dim - 1:], dtype=torch.float32)
+                torch.tensor(data[i][1:, dim - 1 :], dtype=torch.float32)
                 for i in batch_indices
             ]
             X_tensor = nn.utils.rnn.pad_sequence(X_mb, batch_first=True).to(device)
             Y_tensor = nn.utils.rnn.pad_sequence(Y_mb, batch_first=True).to(device)
         else:
+            # Univariate case
             window_size = 20
             X_mb = [
                 torch.tensor(data[i][:-window_size], dtype=torch.float32).unsqueeze(-1)
@@ -79,8 +81,10 @@ def _train_predictor(
                 torch.tensor(data[i][window_size:], dtype=torch.float32).unsqueeze(-1)
                 for i in batch_indices
             ]
+            # Stack directly in the univariate case since lengths are constant
             X_tensor = torch.stack(X_mb).squeeze(-1).to(device)
             Y_tensor = torch.stack(Y_mb).squeeze(-1).to(device)
+
         return X_tensor, Y_tensor
 
     # Training
