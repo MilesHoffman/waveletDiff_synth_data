@@ -6,10 +6,17 @@ from typing import List, Callable
 
 # Legacy imports - use explicit relative imports
 from evaluation.core_metrics.discriminative import discriminative_score as discriminative_score_metrics
-from evaluation.core_metrics.predictive import predictive_utility as predictive_score_metrics
+from evaluation.core_metrics.predictive import predictive_utility as predictive_utility_func
 from evaluation.core_metrics.context_fid import context_fid as Context_FID
 from evaluation.core_metrics.correlation import correlation_score as CrossCorrelLoss_func
 from evaluation.core_metrics.dtw import dtw_distance as dtw_js_divergence_distance
+
+# Wrapper to handle predictive_utility returning tuple
+def predictive_score_metrics(real, generated, **kwargs):
+    result = predictive_utility_func(real, generated, **kwargs)
+    if isinstance(result, tuple):
+        return result[0] # Return TSTR score only
+    return result
 
 # Adapt CrossCorrelLoss to class if needed by wrappers (wrapper itself wraps it, but for naming consistency)
 import torch
