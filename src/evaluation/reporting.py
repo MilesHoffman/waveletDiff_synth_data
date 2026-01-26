@@ -1,10 +1,209 @@
+"""
+Reporting utilities for evaluation results.
+
+Provides formatted scorecard display for EvaluationResult objects.
+"""
 
 import pandas as pd
 import numpy as np
+from typing import Dict, Any, Optional
+
+
+def display_scorecard(result) -> pd.DataFrame:
+    """
+    Display a formatted scorecard for an EvaluationResult.
+    
+    Args:
+        result: EvaluationResult object from EvaluationRunner
+        
+    Returns:
+        Styled Pandas DataFrame for display
+    """
+    summary_data = []
+    
+    # === Core Metrics (Tier 1) ===
+    core = result.core_metrics
+    
+    if 'discriminative' in core:
+        summary_data.append({
+            "Tier": "Core (Tier 1)",
+            "Category": "Opposing Coach",
+            "Metric": "Discriminative Score",
+            "Value": core['discriminative'],
+            "Goal": "lower",
+            "Ideal": "→ 0",
+            "Description": "Classifier accuracy deviation from 0.5"
+        })
+    
+    if 'predictive_tstr' in core:
+        summary_data.append({
+            "Tier": "Core (Tier 1)",
+            "Category": "Game Analyst",
+            "Metric": "Predictive (TSTR)",
+            "Value": core['predictive_tstr'],
+            "Goal": "lower",
+            "Ideal": "→ TRTR",
+            "Description": "Train on Synth, Test on Real (MAE)"
+        })
+        summary_data.append({
+            "Tier": "Core (Tier 1)",
+            "Category": "Game Analyst",
+            "Metric": "Predictive (TRTR)",
+            "Value": core['predictive_trtr'],
+            "Goal": "baseline",
+            "Ideal": "(Baseline)",
+            "Description": "Train on Real, Test on Real (MAE)"
+        })
+        summary_data.append({
+            "Tier": "Core (Tier 1)",
+            "Category": "Game Analyst",
+            "Metric": "Utility Gap",
+            "Value": core['utility_gap'],
+            "Goal": "lower",
+            "Ideal": "→ 0",
+            "Description": "|TSTR - TRTR|"
+        })
+    
+    if 'context_fid' in core:
+        summary_data.append({
+            "Tier": "Core (Tier 1)",
+            "Category": "Embedding",
+            "Metric": "Context-FID",
+            "Value": core['context_fid'],
+            "Goal": "lower",
+            "Ideal": "→ 0",
+            "Description": "FID on TS2Vec embeddings"
+        })
+    
+    if 'correlation' in core:
+        summary_data.append({
+            "Tier": "Core (Tier 1)",
+            "Category": "Structure",
+            "Metric": "Correlation Score",
+            "Value": core['correlation'],
+            "Goal": "lower",
+            "Ideal": "→ 0",
+            "Description": "Cross-correlation matrix divergence"
+        })
+    
+    if 'dtw' in core:
+        summary_data.append({
+            "Tier": "Core (Tier 1)",
+            "Category": "Temporal",
+            "Metric": "DTW Distance",
+            "Value": core['dtw'],
+            "Goal": "lower",
+            "Ideal": "→ 0",
+            "Description": "JS divergence of DTW distributions"
+        })
+    
+    # === Advanced Metrics (Tier 2) ===
+    adv = result.advanced_metrics
+    
+    if 'visual_scout' in adv:
+        vs = adv['visual_scout']
+        summary_data.append({
+            "Tier": "Advanced (Tier 2)",
+            "Category": "Visual Scout",
+            "Metric": "JS Divergence",
+            "Value": vs['js_divergence'],
+            "Goal": "lower",
+            "Ideal": "→ 0",
+            "Description": "Log-returns distribution similarity"
+        })
+        summary_data.append({
+            "Tier": "Advanced (Tier 2)",
+            "Category": "Visual Scout",
+            "Metric": "ACF Similarity",
+            "Value": vs['acf_similarity'],
+            "Goal": "higher",
+            "Ideal": "→ 1",
+            "Description": "Volatility clustering preservation"
+        })
+    
+    if 'statistician' in adv:
+        stat = adv['statistician']
+        summary_data.append({
+            "Tier": "Advanced (Tier 2)",
+            "Category": "Statistician",
+            "Metric": "α-Precision",
+            "Value": stat['alpha_precision'],
+            "Goal": "higher",
+            "Ideal": "→ 1",
+            "Description": "Manifold fidelity (quality)"
+        })
+        summary_data.append({
+            "Tier": "Advanced (Tier 2)",
+            "Category": "Statistician",
+            "Metric": "β-Recall",
+            "Value": stat['beta_recall'],
+            "Goal": "higher",
+            "Ideal": "→ 1",
+            "Description": "Manifold diversity (coverage)"
+        })
+    
+    if 'integrity_officer' in adv:
+        io = adv['integrity_officer']
+        dcr = io['dcr']
+        summary_data.append({
+            "Tier": "Advanced (Tier 2)",
+            "Category": "Integrity Officer",
+            "Metric": "DCR (Mean)",
+            "Value": dcr['mean'],
+            "Goal": "higher",
+            "Ideal": "High",
+            "Description": "Distance to closest training sample"
+        })
+        summary_data.append({
+            "Tier": "Advanced (Tier 2)",
+            "Category": "Integrity Officer",
+            "Metric": "Memorization Ratio",
+            "Value": io['memorization_ratio'],
+            "Goal": "lower",
+            "Ideal": "< 0.05",
+            "Description": "Fraction of memorized samples"
+        })
+    
+    # Create DataFrame
+    df = pd.DataFrame(summary_data)
+    
+    if df.empty:
+        return df
+    
+    # Apply styling
+    def style_value(row):
+        val = row['Value']
+        goal = row['Goal']
+        
+        if goal == 'baseline':
+            return 'background-color: #bdc3c7; color: black'
+        elif goal == 'higher':
+            if val >= 0.9: return 'background-color: #2ecc71; color: black'
+            elif val >= 0.7: return 'background-color: #82e0aa; color: black'
+            elif val >= 0.5: return 'background-color: #f9e79f; color: black'
+            else: return 'background-color: #e74c3c; color: black'
+        else:  # lower
+            if val <= 0.05: return 'background-color: #2ecc71; color: black'
+            elif val <= 0.15: return 'background-color: #82e0aa; color: black'
+            elif val <= 0.3: return 'background-color: #f9e79f; color: black'
+            else: return 'background-color: #e74c3c; color: black'
+    
+    styled = df.style.apply(
+        lambda row: [style_value(row) if col == 'Value' else '' for col in df.columns], 
+        axis=1
+    )
+    
+    pd.set_option('display.max_rows', None)
+    pd.set_option('display.max_colwidth', None)
+    
+    return styled
+
 
 def generate_summary_scorecard(metrics_dict):
     """
-    Generate a styled Pandas DataFrame scorecard from a dictionary of metrics.
+    Legacy function for backward compatibility.
+    
+    Generates a styled Pandas DataFrame scorecard from a dictionary of metrics.
     
     Args:
         metrics_dict: Dictionary containing metric results from various evaluation runs.
@@ -58,143 +257,76 @@ def generate_summary_scorecard(metrics_dict):
             "Goal": "lower", 
             "Description": "Difference in cross-correlation matrices."
         })
-    if 'js_results' in metrics_dict:
-        summary_data.append({
-            "Category": "Model Quality", 
-            "Metric": "DTW (JS Divergence)", 
-            "Value": np.mean(metrics_dict['js_results']), 
-            "Goal": "lower", 
-            "Description": "DTW-based distribution distance."
-        })
-    if 'dist_results' in metrics_dict and 'JS_Div_Mean' in metrics_dict['dist_results']:
-         summary_data.append({
-            "Category": "Fidelity (Vibe)", 
-            "Metric": "JS Divergence (Mean)", 
-            "Value": metrics_dict['dist_results']['JS_Div_Mean'], 
-            "Goal": "lower", 
-            "Description": "Jensen-Shannon Divergence on Log-Returns."
-        })
 
-
-    # 3. Distribution Fidelity (from dist_results)
+    # 3. Distribution Fidelity
     if 'dist_results' in metrics_dict:
         dist_res = metrics_dict['dist_results']
-        summary_data.append({
-            "Category": "Distribution Fidelity", "Metric": "Wasserstein (Mean)", 
-            "Value": dist_res.get("Wasserstein_Mean", 0), "Goal": "lower", "Description": "Earth Mover's Distance between features."
-        })
-        summary_data.append({
-            "Category": "Distribution Fidelity", "Metric": "KS Test Stat (Mean)", 
-            "Value": dist_res.get("KS_Stat_Mean", 0), "Goal": "lower", "Description": "Kolmogorov-Smirnov statistic (max diff in CDF)."
-        })
-        summary_data.append({
-            "Category": "Distribution Fidelity", "Metric": "KS P-Value (Mean)", 
-            "Value": dist_res.get("KS_PVal_Mean", 0), "Goal": "higher", "Description": "Statistical significance of KS test."
-        })
+        if "Wasserstein_Mean" in dist_res:
+            summary_data.append({
+                "Category": "Distribution Fidelity", "Metric": "Wasserstein (Mean)", 
+                "Value": dist_res.get("Wasserstein_Mean", 0), "Goal": "lower", 
+                "Description": "Earth Mover's Distance between features."
+            })
+        if "KS_Stat_Mean" in dist_res:
+            summary_data.append({
+                "Category": "Distribution Fidelity", "Metric": "KS Test Stat (Mean)", 
+                "Value": dist_res.get("KS_Stat_Mean", 0), "Goal": "lower", 
+                "Description": "Kolmogorov-Smirnov statistic."
+            })
 
-    # 4. Structural Alignment
-    if 'struct_results' in metrics_dict:
-        struct_res = metrics_dict['struct_results']
-        summary_data.append({
-            "Category": "Structural Alignment", "Metric": "PCA EVR Correlation", 
-            "Value": struct_res.get("PCA_EVR_Corr", 0), "Goal": "higher", "Description": "Correlation of PCA Explained Variance Ratios."
-        })
-        # t-SNE 1-NN: ideal is 0.5, so we show distance from 0.5
-        tsne_val = struct_res.get("tSNE_1NN_Acc", 0.5)
-        tsne_error = abs(tsne_val - 0.5)
-        summary_data.append({
-            "Category": "Structural Alignment", "Metric": "t-SNE 1-NN (|x-0.5|)", 
-            "Value": tsne_error, "Goal": "lower", "Description": "Classifier accuracy in t-SNE space (Ideal=0.5)."
-        })
-
-    # 5. Financial Reality
-    if 'fin_results' in metrics_dict:
-        fin_res = metrics_dict['fin_results']
-        summary_data.append({
-            "Category": "Financial Reality", "Metric": "ACF MSE (Lags 1,5,20)", 
-            "Value": fin_res.get("ACF_MSE", 0), "Goal": "lower", "Description": "MSE of Autocorrelation Functions."
-        })
-        summary_data.append({
-            "Category": "Financial Reality", "Metric": "Cross-Corr Matrix Diff", 
-            "Value": fin_res.get("CrossCorr_Norm_Diff", 0), "Goal": "lower", "Description": "Norm difference of correlation matrices."
-        })
-        summary_data.append({
-            "Category": "Financial Reality", "Metric": "Volatility Clustering MSE", 
-            "Value": fin_res.get("Volatility_MSE", 0), "Goal": "lower", "Description": "MSE of squared returns ACF (Volatility)."
-        })
-
-    # 6. New Metrics
+    # 4. New Metrics
     if 'mem_ratio' in metrics_dict:
         summary_data.append({
-            "Category": "New Metrics", "Metric": "Memorization Ratio (1/3 Rule)", 
-            "Value": metrics_dict['mem_ratio'], "Goal": "lower", "Description": "Fraction of samples that are near-duplicates of training data."
-        })
-    if 'div_results' in metrics_dict:
-        summary_data.append({
-            "Category": "New Metrics", "Metric": "Diversity (Coverage)", 
-            "Value": metrics_dict['div_results'].get("Coverage", 0), "Goal": "higher", "Description": "Fraction of real data covered by synthetic samples."
-        })
-    if 'fld_score' in metrics_dict:
-        summary_data.append({
-            "Category": "New Metrics", "Metric": "FLD (Likelihood Divergence)", 
-            "Value": metrics_dict['fld_score'], "Goal": "lower", "Description": "Divergence in likelihood under real data density (GMM)."
-        })
-
-    # New Diversity & Overfitting Metrics (from dcr_score, precision, recall, mmd_score args if present)
-    if 'dcr_score' in metrics_dict:
-         summary_data.append({
-            "Category": "Diversity & Overfitting", "Metric": "DCR (Distance to Closest Record)", 
-            "Value": metrics_dict['dcr_score'], "Goal": "higher", "Description": "Mean distance to nearest real neighbor (Low = Memorization)."
+            "Category": "Integrity", "Metric": "Memorization Ratio", 
+            "Value": metrics_dict['mem_ratio'], "Goal": "lower", 
+            "Description": "Fraction of memorized samples."
         })
     if 'precision' in metrics_dict:
-         summary_data.append({
-            "Category": "Diversity & Overfitting", "Metric": "Manifold Precision", 
-            "Value": metrics_dict['precision'], "Goal": "higher", "Description": "Fidelity: % of synth samples in real manifold."
+        summary_data.append({
+            "Category": "Manifold", "Metric": "α-Precision", 
+            "Value": metrics_dict['precision'], "Goal": "higher", 
+            "Description": "Fidelity (synth in real manifold)."
         })
     if 'recall' in metrics_dict:
-         summary_data.append({
-            "Category": "Diversity & Overfitting", "Metric": "Manifold Recall", 
-            "Value": metrics_dict['recall'], "Goal": "higher", "Description": "Diversity: % of real samples covered by synth manifold."
+        summary_data.append({
+            "Category": "Manifold", "Metric": "β-Recall", 
+            "Value": metrics_dict['recall'], "Goal": "higher", 
+            "Description": "Diversity (real covered by synth)."
         })
-    if 'mmd_score' in metrics_dict:
-         summary_data.append({
-            "Category": "Diversity & Overfitting", "Metric": "MMD (RBF Kernel)", 
-            "Value": metrics_dict['mmd_score'], "Goal": "lower", "Description": "Maximum Mean Discrepancy between distributions."
+    if 'dcr_score' in metrics_dict:
+        summary_data.append({
+            "Category": "Integrity", "Metric": "DCR (Mean)", 
+            "Value": metrics_dict['dcr_score'], "Goal": "higher", 
+            "Description": "Distance to closest record."
         })
 
-    # Create DataFrame
-    df_results = pd.DataFrame(summary_data)
+    df = pd.DataFrame(summary_data)
 
-    if df_results.empty:
-        return df_results
+    if df.empty:
+        return df
 
-    # Custom styling based on Goal (with black text for readability)
     def style_value(row):
         val = row['Value']
         goal = row['Goal']
         
         if goal == 'higher':
-            # Higher is better: Green for high, Red for low
-            if val >= 0.99: return 'background-color: #2ecc71; color: black'
-            elif val >= 0.9: return 'background-color: #82e0aa; color: black'
-            elif val >= 0.7: return 'background-color: #f9e79f; color: black'
+            if val >= 0.9: return 'background-color: #2ecc71; color: black'
+            elif val >= 0.7: return 'background-color: #82e0aa; color: black'
+            elif val >= 0.5: return 'background-color: #f9e79f; color: black'
             else: return 'background-color: #e74c3c; color: black'
         else:
-            # Lower is better: Green for low, Red for high  
-            if val <= 0.01: return 'background-color: #2ecc71; color: black'
-            elif val <= 0.05: return 'background-color: #82e0aa; color: black'
-            elif val <= 0.15: return 'background-color: #f9e79f; color: black'
-            elif val <= 0.3: return 'background-color: #f5b041; color: black'
+            if val <= 0.05: return 'background-color: #2ecc71; color: black'
+            elif val <= 0.15: return 'background-color: #82e0aa; color: black'
+            elif val <= 0.3: return 'background-color: #f9e79f; color: black'
             else: return 'background-color: #e74c3c; color: black'
 
-    # Apply style
-    styled = df_results.style.apply(lambda row: [style_value(row) if col == 'Value' else '' for col in df_results.columns], axis=1)
-    
-    # Set display options globally for this cell context (side effect, but useful in notebook)
-    pd.set_option('display.max_rows', None)
-    pd.set_option('display.max_colwidth', None)
+    styled = df.style.apply(
+        lambda row: [style_value(row) if col == 'Value' else '' for col in df.columns], 
+        axis=1
+    )
     
     return styled
+
 
 def display_feature_stats(real_stats_detail, gen_stats_detail):
     """Display the detailed per-feature statistics dataframe."""
