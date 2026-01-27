@@ -99,11 +99,26 @@ def main():
     
     # Load model
     print("Loading model...")
-    model = WaveletDiffusionTransformer.load_from_checkpoint(
-        model_path,
-        data_module=data_module,
-        config=config,
-    )
+    try:
+        model = WaveletDiffusionTransformer.load_from_checkpoint(
+            model_path,
+            data_module=data_module,
+            config=config,
+        )
+    except RuntimeError as e:
+        print(f"\nFATAL ERROR: Failed to load model checkpoint.")
+        print(f"Error details: {e}")
+        print("-" * 60)
+        print("This is likely due to a CONFIGURATION MISMATCH between the default config and your checkpoint.")
+        print("Common causes:")
+        print("  1. The checkpoint was trained with a different Sequence Length (default: 24).")
+        print("  2. The checkpoint was trained with different Model Dimensions (embed_dim, layers).")
+        print("-" * 60)
+        print("SOLUTION: Specify the correct architecture parameters via CLI.")
+        print("Example: python sample.py ... --seq_len 64 --embed_dim 256")
+        print("-" * 60)
+        sys.exit(1)
+        
     model.eval()
     
     # Move to GPU if available
