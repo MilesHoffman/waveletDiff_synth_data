@@ -28,24 +28,52 @@ def main():
     parser.add_argument('--compile_mode', type=str, choices=['none', 'default', 'reduce-overhead', 'max-autotune'], default='none',
                        help='torch.compile mode')
     
+    # Model Architecture Overrides (for legacy checkpoints without saved config)
+    parser.add_argument('--seq_len', type=int, default=None, help='Sequence length (override)')
+    parser.add_argument('--embed_dim', type=int, default=None, help='Embedding dimension (override)')
+    parser.add_argument('--num_layers', type=int, default=None, help='Number of layers (override)')
+    parser.add_argument('--num_heads', type=int, default=None, help='Number of heads (override)')
+    parser.add_argument('--wavelet_levels', type=int, default=None, help='Wavelet levels (override)')
+    
     args = parser.parse_args()
     
     # Load configuration
     config_manager = ConfigManager()
+    
+    # 1. Determine dataset name
     dataset_name = args.dataset or 'etth1'
+    
+    # 2. Load base defaults for this dataset
     config = config_manager.load(dataset_name=dataset_name)
     
-    if args.dataset:
-        config['dataset']['name'] = args.dataset
-    if args.sampling_method:
-        config['sampling']['method'] = args.sampling_method
+    # 3. Determine experiment directory
+    experiment_name = args.experiment_name
+    experiment_dir = Path(config['paths']['output_dir']) / experiment_name
     
-    # Construct model path from experiment name
-    experiment_dir = Path(config['paths']['output_dir']) / args.experiment_name
-    model_path = experiment_dir / 'checkpoint.ckpt'
+    # 4. Try to load saved config from experiment directory (Priority!)
+    from utils import load_config, merge_configs
+    saved_config_path = experiment_dir / "config.yaml"
+    if saved_config_path.exists():
+        print(f"Loading saved configuration from: {saved_config_path}")
+        saved_config = load_config(str(saved_config_path))
+        # Merge saved config ON TOP of defaults (to ensure we have all keys but use saved values)
+        config = merge_configs(config, saved_config)
+    else:
+        print(f"Warning: No saved config found at {saved_config_path}")
+        print("Using default config for dataset. If model architecture differs, specify overrides via CLI.")
+
+    # 5. Apply CLI overrides (Highest Priority)
+    if args.dataset: config['dataset']['name'] = args.dataset
+    if args.sampling_method: config['sampling']['method'] = args.sampling_method
     
+    # Architecture overrides
+    if args.seq_len: config['dataset']['seq_len'] = args.seq_len
+    if args.embed_dim: config['model']['embed_dim'] = args.embed_dim
+    if args.num_layers: config['model']['num_layers'] = args.num_layers
+    if args.num_heads: config['model']['num_heads'] = args.num_heads
+    if args.wavelet_levels: config['wavelet']['levels'] = args.wavelet_levels
+
     # Construct model path
-    experiment_dir = Path(config['paths']['output_dir']) / args.experiment_name
     model_path = experiment_dir / 'checkpoint.ckpt'
     
     if not model_path.exists():
