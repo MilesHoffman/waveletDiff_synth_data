@@ -55,13 +55,28 @@ class WaveletTimeSeriesDataModule(pl.LightningDataModule):
         # Convert to wavelet coefficients
         self.data_tensor, self.wavelet_info = self._convert_to_wavelet_coefficients()
         
+        # Create ATR tensor for conditioning (if using reparameterized stocks data)
+        if self.norm_stats is not None and self.norm_stats.get('reparameterized', False):
+            self.atr_tensor = torch.FloatTensor(self.norm_stats['atr_pcts'])
+            self.has_conditioning = True
+            print(f"ATR conditioning enabled: {len(self.atr_tensor)} samples")
+        else:
+            self.atr_tensor = None
+            self.has_conditioning = False
+        
         # Move dataset to GPU RAM if available (eliminates PCIe transfer overhead)
         self.data_on_gpu = torch.cuda.is_available()
         if self.data_on_gpu:
             self.data_tensor = self.data_tensor.cuda()
+            if self.atr_tensor is not None:
+                self.atr_tensor = self.atr_tensor.cuda()
             print("Dataset moved to GPU RAM for faster training")
         
-        self.dataset = TensorDataset(self.data_tensor)
+        # Create dataset with conditioning if available
+        if self.has_conditioning:
+            self.dataset = TensorDataset(self.data_tensor, self.atr_tensor)
+        else:
+            self.dataset = TensorDataset(self.data_tensor)
         
         print(f"Converted {self.raw_data_tensor.shape} time series to {self.data_tensor.shape} wavelet coefficients")
         print(f"Wavelet: {self.wavelet_type}, Levels: {self.wavelet_info['levels']}")
@@ -232,31 +247,131 @@ class WaveletTimeSeriesDataModule(pl.LightningDataModule):
         """Get wavelet transformation information."""
         return self.wavelet_info
 
-    def inverse_normalize(self, data: np.ndarray) -> np.ndarray:
+    def inverse_normalize(self, data: np.ndarray, sample_indices: np.ndarray = None, fixed_anchor: float = None) -> np.ndarray:
         """
         Inverse normalization to convert generated samples back to original scale.
         
+        For reparameterized OHLC data, reconstructs O, H, L, C, V from normalized features.
+        
         Args:
-            data: Normalized data of shape (..., n_features)
+            data: Normalized data of shape (n_samples, seq_len, n_features)
+            sample_indices: Optional indices to select specific anchor/atr_pct values.
+                           If None and reparameterized, samples from stored distributions.
+            fixed_anchor: Optional fixed price anchor (e.g. 100.0) to eliminate price scale noise.
             
         Returns:
-            Denormalized data in original scale
+            Denormalized data in original scale: (n_samples, seq_len, 5) for OHLCV
         """
         if self.norm_stats is None:
             return data
         
         data = data.copy()
+        
+        if self.norm_stats.get('reparameterized', False):
+            return self._inverse_reparameterize_ohlc(data, sample_indices, fixed_anchor=fixed_anchor)
+        
         mean = self.norm_stats['mean']
         std = self.norm_stats['std']
-        
-        # Inverse z-score
         data = data * std + mean
         
-        # Inverse log1p for volume if applicable
         if self.norm_stats.get('volume_log_transformed', False):
             data[..., 4] = np.maximum(0, np.expm1(data[..., 4]))
         
         return data
+    
+    def _inverse_reparameterize_ohlc(self, data: np.ndarray, sample_indices: np.ndarray = None, fixed_anchor: float = None) -> np.ndarray:
+        """
+        Inverse reparameterization for OHLC data.
+        
+        Reconstructs OHLCV from: [open_norm, body_norm, wick_high_norm, wick_low_norm, volume_norm]
+        """
+        n_samples = data.shape[0]
+        
+        if fixed_anchor is not None:
+            anchors = np.full((n_samples,), fixed_anchor)
+            if sample_indices is not None:
+                atr_pcts = self.norm_stats['atr_pcts'][sample_indices]
+            else:
+                indices = np.random.choice(len(self.norm_stats['atr_pcts']), size=n_samples, replace=True)
+                atr_pcts = self.norm_stats['atr_pcts'][indices]
+        elif sample_indices is not None:
+            anchors = self.norm_stats['anchors'][sample_indices]
+            atr_pcts = self.norm_stats['atr_pcts'][sample_indices]
+        else:
+            all_anchors = self.norm_stats['anchors']
+            all_atr_pcts = self.norm_stats['atr_pcts']
+            indices = np.random.choice(len(all_anchors), size=n_samples, replace=True)
+            anchors = all_anchors[indices]
+            atr_pcts = all_atr_pcts[indices]
+        
+        anchors = anchors.reshape(-1, 1, 1)
+        atr_pcts = atr_pcts.reshape(-1, 1, 1)
+        
+        open_norm = data[..., 0:1]
+        body_norm = data[..., 1:2]
+        wick_high_norm = data[..., 2:3]
+        wick_low_norm = data[..., 3:4]
+        volume_norm = data[..., 4:5]
+        
+        open_pct = open_norm * atr_pcts
+        body_pct = body_norm * atr_pcts
+        wick_high_pct = np.maximum(0, wick_high_norm * atr_pcts)
+        wick_low_pct = np.maximum(0, wick_low_norm * atr_pcts)
+        
+        vol_smas = None
+        if 'vol_smas' in self.norm_stats:
+            if sample_indices is not None:
+                vol_smas = self.norm_stats['vol_smas'][sample_indices]
+            else:
+                vol_smas = self.norm_stats['vol_smas'][indices]
+        
+        anchors = anchors.reshape(-1, 1, 1)
+        atr_pcts = atr_pcts.reshape(-1, 1, 1)
+        
+        open_norm = data[..., 0:1]
+        body_norm = data[..., 1:2]
+        wick_high_norm = data[..., 2:3]
+        wick_low_norm = data[..., 3:4]
+        volume_norm = data[..., 4:5]
+        
+        open_pct = open_norm * atr_pcts
+        body_pct = body_norm * atr_pcts
+        wick_high_pct = np.maximum(0, wick_high_norm * atr_pcts)
+        wick_low_pct = np.maximum(0, wick_low_norm * atr_pcts)
+        
+        open_prices = anchors + (open_pct / 100.0) * anchors
+        close_prices = open_prices + (body_pct / 100.0) * anchors
+        
+        max_oc = np.maximum(open_prices, close_prices)
+        min_oc = np.minimum(open_prices, close_prices)
+        
+        high_prices = max_oc + (wick_high_pct / 100.0) * anchors
+        low_prices = min_oc - (wick_low_pct / 100.0) * anchors
+        
+        # Volume reconstruction: exp(V_norm) * SMA_20
+        # V_norm = log((Volume + eps) / (SMA + eps))
+        # Volume ≈ exp(V_norm) * SMA
+        if self.norm_stats.get('volume_type') == 'log_ratio_sma' and vol_smas is not None:
+            # Clamp volume_norm to prevent overflow in exp (e.g. +/- 20 is sufficient range for log-ratio)
+            volume_norm = np.clip(volume_norm, -20.0, 20.0)
+            volume = np.exp(volume_norm) * vol_smas[..., np.newaxis]
+            volume = np.maximum(0, volume)
+        else:
+            # Fallback for old method (shouldn't be reached with new loader)
+            vol_mean = self.norm_stats.get('volume_mean', 0)
+            vol_std = self.norm_stats.get('volume_std', 1)
+            volume_log = volume_norm * vol_std + vol_mean
+            volume = np.maximum(0, np.expm1(volume_log))
+        
+        ohlcv = np.concatenate([
+            open_prices,
+            high_prices,
+            low_prices,
+            close_prices,
+            volume
+        ], axis=-1)
+        
+        return ohlcv.astype(np.float32)
 
     def train_dataloader(self):
         # When data is on GPU, use num_workers=0 (no CPU workers needed)

@@ -214,6 +214,12 @@ def main():
     
     print(f"Experiment: {experiment_name}")
     print(f"Model checkpoint will be saved to: {model_path}")
+
+    # Save configuration for reproducibility and sampling
+    config_path = experiment_dir / "config.yaml"
+    from utils import save_config
+    save_config(config, config_path)
+    print(f"Configuration saved to: {config_path}")
     
     # Apply torch.compile if enabled
     if config['compile']['enabled']:

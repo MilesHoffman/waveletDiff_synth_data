@@ -191,6 +191,47 @@ class TimeEmbedding(nn.Module):
         return self.mlp(emb)
 
 
+class ScaleEmbedding(nn.Module):
+    """Embedding for scale conditioning (ATR percentage).
+    
+    Uses log-transformed scale values for robust embedding across different
+    volatility regimes.
+    """
+    
+    def __init__(self, embed_dim):
+        super().__init__()
+        self.embed_dim = embed_dim
+        
+        half_dim = embed_dim // 2
+        emb = math.log(10000) / (half_dim - 1)
+        emb = torch.exp(torch.arange(half_dim) * -emb)
+        self.register_buffer('emb', emb)
+        
+        self.mlp = nn.Sequential(
+            nn.Linear(embed_dim, embed_dim * 4),
+            nn.SiLU(),
+            nn.Linear(embed_dim * 4, embed_dim)
+        )
+    
+    def forward(self, scale):
+        """
+        Args:
+            scale: ATR percentage values, shape (batch_size,)
+                   Typical range: 0.5% to 10%
+        
+        Returns:
+            Scale embeddings of shape (batch_size, embed_dim)
+        """
+        scale = scale.float()
+        scale = torch.log1p(scale * 10.0)
+        scale = scale.unsqueeze(-1)
+        
+        emb = scale * self.emb.unsqueeze(0)
+        emb = torch.cat([torch.sin(emb), torch.cos(emb)], dim=-1)
+        
+        return self.mlp(emb)
+
+
 class PositionalEncoding(nn.Module):
     """Sinusoidal positional encoding for transformer sequences."""
     

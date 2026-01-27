@@ -12,7 +12,7 @@ import pytorch_lightning as pl
 import numpy as np
 import os
 
-from .layers import TimeEmbedding, WaveletLevelTransformer
+from .layers import TimeEmbedding, WaveletLevelTransformer, ScaleEmbedding
 from .attention import CrossLevelAttention
 from torch.optim.lr_scheduler import CosineAnnealingLR, ReduceLROnPlateau, LambdaLR, OneCycleLR
 from utils.noise_schedules import get_noise_schedule
@@ -146,6 +146,12 @@ class WaveletDiffusionTransformer(pl.LightningModule):
         # Time embedding network
         self.time_embedding = TimeEmbedding(time_embed_dim)
         
+        # Scale embedding network for ATR conditioning
+        self.scale_embedding = ScaleEmbedding(time_embed_dim)
+        self.use_scale_conditioning = getattr(data_module, 'has_conditioning', False)
+        if self.use_scale_conditioning:
+            print(f"Scale conditioning enabled (ATR percentage)")
+        
         # Cross-level attention mechanism
         if self.use_cross_level_attention:
             # Get the actual embedding dimensions used by each level transformer
@@ -255,14 +261,23 @@ class WaveletDiffusionTransformer(pl.LightningModule):
         
         print(f"{'='*60}\n")
 
-    def forward(self, x, t):
-        """Forward pass through level-specific transformers with optional cross-level attention."""
-        # x shape: (batch_size, total_coeffs_per_feature, num_features)
-        # Last "coefficient" contains time embedding in first feature position
+    def forward(self, x, t, scale=None):
+        """Forward pass through level-specific transformers with optional cross-level attention.
+        
+        Args:
+            x: Input coefficients (batch_size, total_coeffs_per_feature, num_features)
+            t: Normalized timestep values (batch_size,)
+            scale: Optional ATR percentage values for conditioning (batch_size,)
+        """
         batch_size, total_coeffs_plus_time, num_features = x.shape
         
         # Create time embedding
         time_embed = self.time_embedding(t)
+        
+        # Add scale conditioning if provided
+        if scale is not None:
+            scale_embed = self.scale_embedding(scale)
+            time_embed = time_embed + scale_embed
         
         if self.use_cross_level_attention:
             # Process each level and collect intermediate embeddings for cross-level attention
@@ -310,11 +325,11 @@ class WaveletDiffusionTransformer(pl.LightningModule):
         x_t = torch.sqrt(alpha_bar_t) * x_0 + torch.sqrt(1 - alpha_bar_t) * noise
         return x_t, noise
 
-    def compute_loss(self, x_0, t):
+    def compute_loss(self, x_0, t, scale=None):
         """Compute training loss."""
         x_t, noise = self.compute_forward_process(x_0, t)
-        t_norm = (t.float() / self.T).clone() # Clone to prevent CUDAGraphs overwrite
-        prediction = self(x_t, t_norm)
+        t_norm = (t.float() / self.T).clone()
+        prediction = self(x_t, t_norm, scale=scale)
         
         if self.prediction_target == "noise":
             target = noise
@@ -325,9 +340,14 @@ class WaveletDiffusionTransformer(pl.LightningModule):
         
         return self.wavelet_loss_fn(target, prediction)
     
-    def compute_loss_with_per_sample(self, x_0, t):
+    def compute_loss_with_per_sample(self, x_0, t, scale=None):
         """
         Compute training loss and per-sample losses for timestep sampler updates.
+        
+        Args:
+            x_0: Clean wavelet coefficients
+            t: Diffusion timesteps
+            scale: Optional ATR percentage for conditioning
         
         Returns:
             total_loss: Scalar loss for backpropagation
@@ -335,7 +355,7 @@ class WaveletDiffusionTransformer(pl.LightningModule):
         """
         x_t, noise = self.compute_forward_process(x_0, t)
         t_norm = (t.float() / self.T).clone()
-        prediction = self(x_t, t_norm)
+        prediction = self(x_t, t_norm, scale=scale)
         
         if self.prediction_target == "noise":
             target = noise
@@ -344,11 +364,7 @@ class WaveletDiffusionTransformer(pl.LightningModule):
         else:
             raise ValueError(f"Unknown prediction target: {self.prediction_target}")
         
-        # Total loss for backpropagation
         total_loss = self.wavelet_loss_fn(target, prediction)
-        
-        # Per-sample MSE for timestep sampler (simple approximation)
-        # Compute mean over coefficient and feature dimensions
         per_sample_losses = F.mse_loss(target, prediction, reduction='none').mean(dim=(1, 2))
         
         return total_loss, per_sample_losses
@@ -408,8 +424,11 @@ class WaveletDiffusionTransformer(pl.LightningModule):
                 self.log('train_loss', outputs['train_loss'], prog_bar=True, on_step=False, on_epoch=True)
 
     def training_step(self, batch, batch_idx):
-        """Training step with importance-weighted timestep sampling."""
+        """Training step with importance-weighted timestep sampling and optional scale conditioning."""
         x_0 = batch[0]
+        
+        # Extract scale conditioning if available (reparameterized stocks data)
+        scale = batch[1] if len(batch) > 1 else None
         
         # Unconditional NaN handling (compile-safe, no control flow)
         x_0 = torch.nan_to_num(x_0, nan=0.0, posinf=1.0, neginf=-1.0)
@@ -418,7 +437,7 @@ class WaveletDiffusionTransformer(pl.LightningModule):
         t = self.timestep_sampler.sample(x_0.size(0), self.device)
         
         # Compute loss with per-sample breakdown for sampler updates
-        loss, per_sample_losses = self.compute_loss_with_per_sample(x_0, t)
+        loss, per_sample_losses = self.compute_loss_with_per_sample(x_0, t, scale=scale)
         
         # NOTE: We do NOT call update_loss_history here because it has side effects
         # and Python loops that break CUDAGraphs. Instead, we pass the data
