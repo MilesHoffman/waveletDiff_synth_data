@@ -57,6 +57,7 @@ def _compute_vol_cluster(data: np.ndarray, max_lag: int = 50) -> np.ndarray:
     abs_data = abs_data - abs_data.mean(axis=1, keepdims=True)
     
     N, T, D = data.shape
+    # Ensure max_lag isn't larger than sequence length
     if T <= max_lag:
         max_lag = max(1, T - 1)
         

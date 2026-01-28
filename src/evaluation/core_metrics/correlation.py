@@ -56,11 +56,12 @@ def correlation_score(
     x_synth = torch.from_numpy(synth_data[synth_idx]).float()
     
     # Compute cross-correlation matrices (HARDENING: Increase lag to 50)
-    max_lag = 50
+    # Ensure lag is valid for shorter sequences (e.g., T=24)
+    max_lag = min(50, x_real.shape[1] - 1)
     
     # Needs to ensure seq_len > max_lag
-    if x_real.shape[1] <= max_lag:
-        max_lag = max(1, x_real.shape[1] - 1)
+    if max_lag < 1:
+        max_lag = 1
         
     cross_correl_real = _cacf_torch(x_real, max_lag).mean(0)
     cross_correl_synth = _cacf_torch(x_synth, max_lag).mean(0)
