@@ -55,12 +55,18 @@ def correlation_score(
     x_real = torch.from_numpy(real_data[real_idx]).float()
     x_synth = torch.from_numpy(synth_data[synth_idx]).float()
     
-    # Compute cross-correlation matrices (max_lag=1)
-    cross_correl_real = _cacf_torch(x_real, 1).mean(0)[0]
-    cross_correl_synth = _cacf_torch(x_synth, 1).mean(0)[0]
+    # Compute cross-correlation matrices (HARDENING: Increase lag to 50)
+    # Ensure lag is valid for shorter sequences (e.g., T=24)
+    max_lag = min(50, x_real.shape[1] - 1)
+    
+    # Needs to ensure seq_len > max_lag
+    if max_lag < 1:
+        max_lag = 1
+        
+    cross_correl_real = _cacf_torch(x_real, max_lag).mean(0)
+    cross_correl_synth = _cacf_torch(x_synth, max_lag).mean(0)
     
     # Compute divergence (L1 norm of difference)
-    # Matching CrossCorrelLoss.compute logic: loss = norm_foo(fake - real) / 10.
     loss = torch.abs(cross_correl_synth - cross_correl_real).sum()
     
     return float(loss / 10.0)

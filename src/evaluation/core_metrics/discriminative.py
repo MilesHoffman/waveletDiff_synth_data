@@ -79,14 +79,16 @@ class _Discriminator(nn.Module):
 
     def __init__(self, input_dim, hidden_dim):
         super(_Discriminator, self).__init__()
-        self.rnn = nn.GRU(input_dim, hidden_dim, batch_first=True)
+        # Upgrade to 2-layer LSTM for more capacity
+        self.rnn = nn.LSTM(input_dim, hidden_dim, num_layers=2, batch_first=True, dropout=0.2)
         self.fc = nn.Linear(hidden_dim, 1)
 
     def forward(self, x, seq_lengths):
         packed_input = nn.utils.rnn.pack_padded_sequence(
             x, seq_lengths.cpu(), batch_first=True, enforce_sorted=False
         )
-        _, hidden = self.rnn(packed_input)
+        _, (hidden, _) = self.rnn(packed_input)
+        # Use the last layer's hidden state
         logits = self.fc(hidden[-1])
         return logits
 
@@ -98,12 +100,12 @@ def discriminative_score(
     batch_size: int = 128
 ) -> float:
     """
-    Compute discriminative score using post-hoc RNN classifier.
+    Compute discriminative score using post-hoc LSTM classifier (Hardened).
     
     Args:
         real_data: Real data of shape (N, T, D), should be scaled to [0,1]
         synth_data: Synthetic data of shape (N, T, D), should be scaled to [0,1]
-        iterations: Number of training iterations
+        iterations: Max number of training iterations
         batch_size: Batch size for training
         
     Returns:
@@ -113,7 +115,9 @@ def discriminative_score(
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     no, seq_len, dim = np.asarray(real_data).shape
-    hidden_dim = max(dim // 2, 2)
+    
+    # HARDENING: Increase capacity significantly
+    hidden_dim = 128
 
     ori_time, _ = _extract_time(real_data)
     gen_time, _ = _extract_time(synth_data)
@@ -125,11 +129,31 @@ def discriminative_score(
 
     discriminator = _Discriminator(dim, hidden_dim).to(device)
     criterion = nn.BCEWithLogitsLoss()
-    optimizer = optim.Adam(discriminator.parameters())
+    optimizer = optim.Adam(discriminator.parameters(), lr=0.001)
 
-    # Training
+    # Validation Set for Early Stopping
+    # Split training into train/val (80/20 of the 80% split)
+    val_split = int(len(train_x) * 0.8)
+    val_x = train_x[val_split:]
+    val_t = train_t[val_split:]
+    val_x_hat = train_x_hat[val_split:]
+    val_t_hat = train_t_hat[val_split:]
+    
+    train_x = train_x[:val_split]
+    train_t = train_t[:val_split]
+    train_x_hat = train_x_hat[:val_split]
+    train_t_hat = train_t_hat[:val_split]
+
+    best_val_loss = float('inf')
+    patience = 20
+    counter = 0
+
+    # Training with Early Stopping
     discriminator.train()
-    for _ in tqdm(range(iterations), desc="Discriminative Training", leave=False):
+    pbar = tqdm(range(iterations), desc="Discriminative Training (Extended)", leave=False)
+    
+    for it in pbar:
+        # Train Step
         X_mb, T_mb = _batch_generator(train_x, train_t, batch_size)
         X_hat_mb, T_hat_mb = _batch_generator(train_x_hat, train_t_hat, batch_size)
 
@@ -149,6 +173,38 @@ def discriminative_score(
 
         loss.backward()
         optimizer.step()
+        
+        # Validation Step (every 50 iterations)
+        if it % 50 == 0:
+            discriminator.eval()
+            with torch.no_grad():
+                # Prepare validation batch (use full val set if small, else sample)
+                X_val, T_val = _batch_generator(val_x, val_t, min(len(val_x), 512))
+                X_hat_val, T_hat_val = _batch_generator(val_x_hat, val_t_hat, min(len(val_x_hat), 512))
+                
+                X_val = torch.tensor(np.array(X_val), dtype=torch.float32).to(device)
+                T_val = torch.tensor(np.array(T_val), dtype=torch.long).to(device)
+                X_hat_val = torch.tensor(np.array(X_hat_val), dtype=torch.float32).to(device)
+                T_hat_val = torch.tensor(np.array(T_hat_val), dtype=torch.long).to(device)
+                
+                logits_val_real = discriminator(X_val, T_val)
+                logits_val_fake = discriminator(X_hat_val, T_hat_val)
+                
+                val_loss = criterion(logits_val_real, torch.ones_like(logits_val_real)) + \
+                           criterion(logits_val_fake, torch.zeros_like(logits_val_fake))
+                
+            discriminator.train()
+            
+            pbar.set_postfix({'loss': loss.item(), 'val_loss': val_loss.item()})
+            
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                counter = 0
+            else:
+                counter += 1
+                if counter >= patience:
+                    # Early stopping
+                    break
 
     # Evaluation
     discriminator.eval()

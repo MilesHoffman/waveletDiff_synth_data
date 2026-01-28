@@ -141,6 +141,27 @@ def display_scorecard(result) -> pd.DataFrame:
             "Ideal": "→ 1",
             "Description": "Manifold diversity (coverage)"
         })
+        
+    if 'stylized_facts' in adv:
+        sf = adv['stylized_facts']
+        summary_data.append({
+            "Tier": "Advanced (Tier 2)",
+            "Category": "Stylized Facts",
+            "Metric": "Kurtosis Diff",
+            "Value": sf['kurtosis'],
+            "Goal": "lower",
+            "Ideal": "→ 0",
+            "Description": "Fat-tail distribution match"
+        })
+        summary_data.append({
+            "Tier": "Advanced (Tier 2)",
+            "Category": "Stylized Facts",
+            "Metric": "Vol. Cluster Diff",
+            "Value": sf['volatility_clustering'],
+            "Goal": "lower",
+            "Ideal": "→ 0",
+            "Description": "Preservation of ARCH effects"
+        })
     
     if 'integrity_officer' in adv:
         io = adv['integrity_officer']
