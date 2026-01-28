@@ -107,11 +107,15 @@ class EvaluationRunner:
         space: str
     ) -> EvaluationResult:
         """Evaluate a single data space."""
+        # Detect if this is the reparameterized space
+        is_reparam = (space == 'reparam')
+        
         # Prepare data formats
         data = prepare_evaluation_data(
             real, synth, 
             exclude_volume=self.config.exclude_volume,
-            close_col=self.config.close_col
+            close_col=self.config.close_col,
+            is_reparam=is_reparam
         )
         
         result = EvaluationResult(space=space)
@@ -141,10 +145,10 @@ class EvaluationRunner:
         
         # 1. Discriminative Score
         print("Computing Discriminative Score...")
-        # Returns (score, fake_acc, real_acc)
+        # OPTIMIZATION: Use standardized data for LSTMs
         disc_score, fake_acc, real_acc = discriminative_score(
-            data['real']['scaled_01'], 
-            data['synth']['scaled_01'],
+            data['real']['standardized'], 
+            data['synth']['standardized'],
             iterations=self.config.discriminative_iterations
         )
         metrics['discriminative'] = disc_score
@@ -152,11 +156,12 @@ class EvaluationRunner:
         metrics['discriminative_real_acc'] = real_acc
         print(f"  → Discriminative: {metrics['discriminative']:.4f} (Real: {real_acc:.2f}, Fake: {fake_acc:.2f})")
         
-        # 2. Predictive Utility (TSTR / TRTR)
+        # 2. Predictive Utility
         print("Computing Predictive Utility (TSTR/TRTR)...")
+        # OPTIMIZATION: Use standardized data for LSTMs
         tstr, trtr, gap = predictive_utility(
-            data['real']['scaled_01'], 
-            data['synth']['scaled_01'],
+            data['real']['standardized'], 
+            data['synth']['standardized'],
             iterations=self.config.predictive_iterations
         )
         metrics['predictive_tstr'] = tstr
@@ -167,10 +172,10 @@ class EvaluationRunner:
         # 3. Context-FID
         print("Computing Context-FID...")
         try:
-            # Use SCALED data for TS2Vec embeddings (neural nets need normalized inputs)
+            # OPTIMIZATION: Use standardized data for TS2Vec (FIXED BUG)
             metrics['context_fid'] = context_fid(
-                data['real']['scaled_01'], 
-                data['synth']['scaled_01']
+                data['real']['standardized'], 
+                data['synth']['standardized']
             )
             print(f"  → Context-FID: {metrics['context_fid']:.4f}")
         except Exception as e:
@@ -179,6 +184,10 @@ class EvaluationRunner:
         
         # 4. Correlation Score
         print("Computing Correlation Score...")
+        # Uses raw/standardized difference? Code uses raw usually.
+        # But for 'correlation_score' function it typically wants shape (N, T, D).
+        # Let's keep 'raw' here as correlation is scale-invariant (Pearson),
+        # but we pass the 'raw' (which is actually 'processed' in prepare_data)
         metrics['correlation'] = correlation_score(
             data['real']['raw'], 
             data['synth']['raw'],
@@ -188,10 +197,10 @@ class EvaluationRunner:
         
         # 5. DTW Distance
         print("Computing DTW Distance...")
-        # Use SCALED data for comparable distances across datasets
+        # OPTIMIZATION: Use standardized data so features with larger magnitudes don't dominate
         dtw_result = dtw_distance(
-            data['real']['scaled_01'], 
-            data['synth']['scaled_01'],
+            data['real']['standardized'], 
+            data['synth']['standardized'],
             n_samples=self.config.dtw_n_samples
         )
         # Handle dict return
@@ -238,7 +247,7 @@ class EvaluationRunner:
         print(f"  → JS Divergence: {metrics['visual_scout']['js_divergence']:.4f}")
         print(f"  → ACF Similarity: {metrics['visual_scout']['acf_similarity']:.4f}")
         
-        # Financial Realism (Stylized Facts) - NEW
+        # Financial Realism (Stylized Facts)
         print("Computing Financial Realism metrics...")
         metrics['stylized_facts'] = {
             'kurtosis': kurtosis_score(
@@ -255,15 +264,16 @@ class EvaluationRunner:
 
         # Statistician
         print("Computing Statistician metrics...")
+        # OPTIMIZATION: Use standardized for Euclidean distance in manifold
         metrics['statistician'] = {
             'alpha_precision': alpha_precision(
-                data['real']['scaled_01'],
-                data['synth']['scaled_01'],
+                data['real']['standardized'],
+                data['synth']['standardized'],
                 k=self.config.manifold_k
             ),
             'beta_recall': beta_recall(
-                data['real']['scaled_01'],
-                data['synth']['scaled_01'],
+                data['real']['standardized'],
+                data['synth']['standardized'],
                 k=self.config.manifold_k
             ),
         }
@@ -272,13 +282,14 @@ class EvaluationRunner:
         
         # Integrity Officer
         print("Computing Integrity Officer metrics...")
+        # OPTIMIZATION: Use flattened_standardized to avoid volume domination (FIXED BUG)
         dcr_stats = dcr_score(
-            data['real']['flattened'],
-            data['synth']['flattened']
+            data['real']['flattened_standardized'],
+            data['synth']['flattened_standardized']
         )
         mem_ratio = memorization_ratio(
-            data['real']['flattened'],
-            data['synth']['flattened'],
+            data['real']['flattened_standardized'],
+            data['synth']['flattened_standardized'],
             k=self.config.memorization_k
         )
         metrics['integrity_officer'] = {
