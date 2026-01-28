@@ -13,14 +13,10 @@ import torch
 
 def _compute_kurtosis(data: np.ndarray) -> np.ndarray:
     """Compute kurtosis for each feature."""
-    # Data shape: (N, T, D)
-    # Flatten across N and T to get distribution for each feature D
-    # Or should we compute per-sequence? 
-    # Usually "Fat Tails" is a property of the return distribution.
-    
-    # Check if data is returns or prices. Assuming input is normalized returns or similar.
-    # If standard scaled, mean ~ 0, std ~ 1.
-    
+    # Handle 2D input (N, T) -> (N, T, 1)
+    if data.ndim == 2:
+        data = data[:, :, np.newaxis]
+        
     N, T, D = data.shape
     kurt_vals = []
     
@@ -48,6 +44,10 @@ def _compute_vol_cluster(data: np.ndarray, max_lag: int = 50) -> np.ndarray:
     """
     Compute Autocorrelation of Absolute/Squared Returns (Volatility Clustering).
     """
+    # Handle 2D input (N, T) -> (N, T, 1)
+    if data.ndim == 2:
+        data = data[:, :, np.newaxis]
+
     # Data shape: (N, T, D)
     # We want ACF of |r_t|
     
