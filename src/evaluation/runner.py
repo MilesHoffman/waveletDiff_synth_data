@@ -215,6 +215,10 @@ class EvaluationRunner:
             dcr_score, 
             memorization_ratio
         )
+        from .core_metrics import (
+            kurtosis_score,
+            volatility_clustering_score
+        )
         
         metrics = {}
         
@@ -234,6 +238,21 @@ class EvaluationRunner:
         print(f"  → JS Divergence: {metrics['visual_scout']['js_divergence']:.4f}")
         print(f"  → ACF Similarity: {metrics['visual_scout']['acf_similarity']:.4f}")
         
+        # Financial Realism (Stylized Facts) - NEW
+        print("Computing Financial Realism metrics...")
+        metrics['stylized_facts'] = {
+            'kurtosis': kurtosis_score(
+                data['real']['log_returns'],
+                data['synth']['log_returns']
+            ),
+            'volatility_clustering': volatility_clustering_score(
+                data['real']['log_returns'],
+                data['synth']['log_returns']
+            )
+        }
+        print(f"  → Kurtosis Diff: {metrics['stylized_facts']['kurtosis']:.4f}")
+        print(f"  → Volatility Clustering MAE: {metrics['stylized_facts']['volatility_clustering']:.4f}")
+
         # Statistician
         print("Computing Statistician metrics...")
         metrics['statistician'] = {

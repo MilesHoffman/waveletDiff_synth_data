@@ -20,17 +20,17 @@ from typing import Tuple
 
 
 class _Predictor(nn.Module):
-    """A simple RNN-based predictor model using GRU and a fully connected layer."""
+    """RNN-based predictor model for Multi-step prediction."""
 
-    def __init__(self, input_dim, hidden_dim):
+    def __init__(self, input_dim, hidden_dim, output_dim=1):
         super(_Predictor, self).__init__()
-        self.rnn = nn.GRU(input_dim, hidden_dim, batch_first=True)
-        self.fc = nn.Linear(hidden_dim, 1)
+        self.rnn = nn.GRU(input_dim, hidden_dim, num_layers=2, batch_first=True, dropout=0.1)
+        self.fc = nn.Linear(hidden_dim, output_dim)
 
     def forward(self, x):
         outputs, _ = self.rnn(x)
-        y_hat_logit = self.fc(outputs)
-        y_hat = torch.sigmoid(y_hat_logit)
+        # Predict based on the last hidden state
+        y_hat = self.fc(outputs[:, -1, :])
         return y_hat
 
 
@@ -41,55 +41,60 @@ def _train_predictor(
     batch_size: int = 128
 ) -> float:
     """
-    Train predictor on train_data and evaluate on test_data.
+    Train predictor on train_data and evaluate on test_data (Multi-step).
     
-    Returns MAE score.
+    Returns MAE score over 5-step horizon.
     """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
     no, seq_len, dim = train_data.shape
-    hidden_dim = max(dim // 2, 2)
+    hidden_dim = max(dim, 32)
+    horizon = 5  # HARDENING: Multi-step prediction
+
+    # Ensure sequence length is sufficient
+    if seq_len <= horizon:
+        raise ValueError(f"Sequence length ({seq_len}) must be greater than horizon ({horizon})")
+
+    # Input dim is D, Output is horizon * D (flattened) or just horizon (if univariate)
+    # We predict the next 'horizon' values for all features? Usually TSTR sums over features.
+    # Let's keep it simple: Predict next 5 steps of ALL features.
+    
+    input_seq_len = seq_len - horizon
+    output_dim = horizon * dim
 
     model = _Predictor(
-        input_dim=(dim - 1) if dim > 1 else 1, 
-        hidden_dim=hidden_dim
+        input_dim=dim, 
+        hidden_dim=hidden_dim, 
+        output_dim=output_dim
     ).to(device)
+    
     criterion = nn.L1Loss()
-    optimizer = optim.Adam(model.parameters())
+    optimizer = optim.Adam(model.parameters(), lr=0.001)
 
     def prepare_batch(data, batch_indices):
-        if dim > 1:
-            # Multivariate case
-            X_mb = [
-                torch.tensor(data[i][:-1, : dim - 1], dtype=torch.float32)
-                for i in batch_indices
-            ]
-            Y_mb = [
-                torch.tensor(data[i][1:, dim - 1 :], dtype=torch.float32)
-                for i in batch_indices
-            ]
-            X_tensor = nn.utils.rnn.pad_sequence(X_mb, batch_first=True).to(device)
-            Y_tensor = nn.utils.rnn.pad_sequence(Y_mb, batch_first=True).to(device)
-        else:
-            # Univariate case
-            window_size = 20
-            X_mb = [
-                torch.tensor(data[i][:-window_size], dtype=torch.float32).unsqueeze(-1)
-                for i in batch_indices
-            ]
-            Y_mb = [
-                torch.tensor(data[i][window_size:], dtype=torch.float32).unsqueeze(-1)
-                for i in batch_indices
-            ]
-            # Stack directly in the univariate case since lengths are constant
-            X_tensor = torch.stack(X_mb).squeeze(-1).to(device)
-            Y_tensor = torch.stack(Y_mb).squeeze(-1).to(device)
+        # x: [batch, input_seq_len, dim]
+        # y: [batch, horizon * dim] (flattened)
+        
+        X_mb = []
+        Y_mb = []
+        
+        for i in batch_indices:
+            # Input: 0 to T-H
+            x_seq = data[i, :input_seq_len, :]
+            # Target: T-H to T
+            y_seq = data[i, input_seq_len:, :]
+            
+            X_mb.append(x_seq)
+            Y_mb.append(y_seq.flatten())
+            
+        X_tensor = torch.tensor(np.array(X_mb), dtype=torch.float32).to(device)
+        Y_tensor = torch.tensor(np.array(Y_mb), dtype=torch.float32).to(device)
 
         return X_tensor, Y_tensor
 
     # Training
     model.train()
-    for _ in tqdm(range(iterations), desc="Predictive Training", leave=False):
+    for _ in tqdm(range(iterations), desc="Predictive Training (Multi-step)", leave=False):
         batch_indices = np.random.choice(len(train_data), batch_size, replace=False)
         X_mb, Y_mb = prepare_batch(train_data, batch_indices)
 
@@ -103,16 +108,20 @@ def _train_predictor(
     model.eval()
     test_no = len(test_data)
     batch_indices = np.arange(test_no)
-    X_mb, Y_mb = prepare_batch(test_data, batch_indices)
-
-    with torch.no_grad():
-        pred_Y = model(X_mb)
-
+    
+    # Process in chunks to avoid OOM
+    eval_batch_size = 256
     mae_total = 0
-    for i in range(test_no):
-        pred = pred_Y[i].cpu().numpy()
-        target = Y_mb[i].cpu().numpy()
-        mae_total += mean_absolute_error(target, pred)
+    
+    with torch.no_grad():
+        for start_idx in range(0, test_no, eval_batch_size):
+            end_idx = min(start_idx + eval_batch_size, test_no)
+            indices = np.arange(start_idx, end_idx)
+            
+            X_mb, Y_mb = prepare_batch(test_data, indices)
+            pred_Y = model(X_mb)
+            
+            mae_total += criterion(pred_Y, Y_mb).item() * len(indices)
 
     return mae_total / test_no
 

@@ -9,6 +9,7 @@ from .predictive import predictive_utility
 from .context_fid import context_fid
 from .correlation import correlation_score
 from .dtw import dtw_distance
+from .stylized_facts import kurtosis_score, volatility_clustering_score
 
 __all__ = [
     'discriminative_score',
@@ -16,4 +17,6 @@ __all__ = [
     'context_fid',
     'correlation_score',
     'dtw_distance',
+    'kurtosis_score',
+    'volatility_clustering_score',
 ]
