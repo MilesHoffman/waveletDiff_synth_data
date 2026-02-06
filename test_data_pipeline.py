@@ -20,7 +20,7 @@ def create_test_config():
     return {
         'dataset': {'name': 'stocks', 'seq_len': 24},
         'training': {'batch_size': 32},
-        'data': {'data_dir': 'data/stocks/stock_data.csv', 'normalize_data': True},
+        'data': {'data_dir': os.path.abspath('data/stocks/spy_stock_data.csv'), 'normalize_data': True},
         'wavelet': {'type': 'db2', 'levels': 'auto'},
     }
 
@@ -42,6 +42,12 @@ def test_data_loading():
         print(f"  Features: {dm.norm_stats['feature_names']}")
         print(f"  Anchors stored: {len(dm.norm_stats['anchors'])}")
         print(f"  ATR_pcts stored: {len(dm.norm_stats['atr_pcts'])}")
+        
+        # Verify we have the expected 8 features (OHLCV + DaySin + DayCos + Gap)
+        expected_features = 8
+        if dm.raw_data_tensor.shape[-1] != expected_features:
+            raise ValueError(f"Expected {expected_features} features, got {dm.raw_data_tensor.shape[-1]}")
+        print(f"  ✓ Feature count check passed ({expected_features})")
     
     return dm
 
@@ -121,8 +127,10 @@ def visualize_samples(dm: WaveletTimeSeriesDataModule, n_samples: int = 3):
         print("  Skipping visualization: Data is not reparameterized")
         return
     
-    # Grid: Norm Price | Norm Wicks | Norm Volume | Rec OHLC | Rec Volume
-    fig, axes = plt.subplots(n_samples, 5, figsize=(25, 3 * n_samples))
+    
+    # Grid: Norm Price | Norm Wicks | Norm Volume | Day/Gap | Rec OHLC | Rec Volume
+    # Updated to 6 columns to show Day/Gap features
+    fig, axes = plt.subplots(n_samples, 6, figsize=(30, 3 * n_samples))
     if n_samples == 1:
         axes = axes.reshape(1, -1)
     
@@ -155,13 +163,22 @@ def visualize_samples(dm: WaveletTimeSeriesDataModule, n_samples: int = 3):
         ax = axes[i, 2]
         ax.plot(raw_sample[:, 4], label='volume_norm', color='purple', linewidth=1.5)
         ax.axhline(0, color='black', linestyle='--', alpha=0.5)
-        ax.set_title(f'Sample {sample_idx}: Norm Volume (Log-Ratio)', fontsize=9)
-        ax.set_ylabel('Log Deviation')
+        ax.set_title(f'Sample {sample_idx}: Norm Volume', fontsize=9)
         ax.legend(loc='upper right', fontsize=6)
         ax.grid(True, alpha=0.3)
         
-        # 4. Reconstructed OHLC
+        # 4. Day & Gap Features (New)
         ax = axes[i, 3]
+        if raw_sample.shape[1] >= 8:
+            ax.plot(raw_sample[:, 5], label='day_sin', color='orange', linewidth=1.0)
+            ax.plot(raw_sample[:, 6], label='day_cos', color='cyan', linewidth=1.0)
+            ax.plot(raw_sample[:, 7], label='gap_norm', color='brown', linewidth=1.5)
+            ax.set_title(f'Sample {sample_idx}: Day & Gap', fontsize=9)
+            ax.legend(loc='upper right', fontsize=6)
+            ax.grid(True, alpha=0.3)
+        
+        # 5. Reconstructed OHLC
+        ax = axes[i, 4]
         ax.plot(recovered[:, 0], label='Open', color='blue', linewidth=1.0)
         ax.plot(recovered[:, 1], label='High', color='green', linewidth=0.5)
         ax.plot(recovered[:, 2], label='Low', color='red', linewidth=0.5)
@@ -170,8 +187,8 @@ def visualize_samples(dm: WaveletTimeSeriesDataModule, n_samples: int = 3):
         ax.set_ylabel('Price')
         ax.grid(True, alpha=0.3)
         
-        # 5. Reconstructed Volume
-        ax = axes[i, 4]
+        # 6. Reconstructed Volume
+        ax = axes[i, 5]
         ax.bar(np.arange(len(recovered)), recovered[:, 4], color='gray', alpha=0.7)
         ax.set_title(f'Sample {sample_idx}: Rec Volume', fontsize=9)
         ax.set_ylabel('Volume')
@@ -206,9 +223,9 @@ def print_sample_console(dm: WaveletTimeSeriesDataModule):
     
     print("\n  NORMALIZED (Training Space):")
     print(f"  {'t':<4}" + "".join(f"{name:>15}" for name in feature_names))
-    print("  " + "-" * 79)
-    for t in range(5):
-        row = f"  {t:<4}" + "".join(f"{raw_sample[t, i]:>15.4f}" for i in range(5))
+    print("  " + "-" * (4 + 15 * len(feature_names)))
+    for t in range(10):
+        row = f"  {t:<4}" + "".join(f"{raw_sample[t, i]:>15.4f}" for i in range(len(feature_names)))
         print(row)
     
     print("\n  RECONSTRUCTED OHLCV:")

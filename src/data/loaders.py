@@ -118,7 +118,7 @@ def create_sliding_windows(data: np.ndarray,
             'std': data_std
         }
         data = (data - data_mean) / data_std
-
+    
     n_samples = (total_timesteps - seq_len) // stride + 1
     
     windows = []
@@ -189,18 +189,43 @@ def load_stocks_data(data_dir: str, seq_len: int = 24, normalize_data: bool = Tr
     """
     Load Stocks dataset with OHLC reparameterization and ATR-based local scaling.
     
-    Features output: [open_norm, body_norm, wick_high_norm, wick_low_norm, volume_norm]
-    All OHLC features are in percentage-space, normalized by local ATR_pct.
+    Features output: [open_norm, body_norm, wick_high_norm, wick_low_norm, volume_norm, day_sin, day_cos, gap_norm]
     """
-    if os.path.isfile(data_dir):
-        stocks_path = data_dir
-    else:
-        stocks_path = os.path.join(data_dir, "stocks", "stock_data.csv")
+    # 1. Resolve Path
+    stocks_path = data_dir
+    if not os.path.isfile(stocks_path):
+        # Try finding SPY in subfolder first
+        spy_cand = os.path.join(data_dir, "stocks", "SPY_stock_data.csv")
+        generic_cand = os.path.join(data_dir, "stocks", "stock_data.csv")
         
-    if not os.path.exists(stocks_path):
-        raise FileNotFoundError(f"Stocks data not found at: {stocks_path}")
+        if os.path.exists(spy_cand):
+            stocks_path = spy_cand
+        elif os.path.exists(generic_cand):
+            stocks_path = generic_cand
+        else:
+            raise FileNotFoundError(f"Could not find stock data in {data_dir}")
 
+    print(f"Loading stock data from {stocks_path}...")
     df = pd.read_csv(stocks_path)
+    
+    # 2. Handle Multi-ticker / Metadata headers
+    try:
+        # Check if 'Open' is numeric, if not, it might be a multi-index CSV or have meta-rows
+        pd.to_numeric(df['Open'].iloc[0])
+    except (ValueError, KeyError, TypeError, IndexError):
+        print("Detected non-numeric first row (metadata/headers), dropping...")
+        df = df.iloc[1:].reset_index(drop=True)
+
+    # 3. Date / Day of Week
+    # We prioritize the 'Date' column for real calendar context
+    if 'Date' in df.columns:
+        df['Date'] = pd.to_datetime(df['Date'])
+        day_of_week = df['Date'].dt.dayofweek.values # 0=Monday, 6=Sunday
+    else:
+        print("No 'Date' column found. Falling back to synthetic 5-day cycle.")
+        day_of_week = np.arange(len(df)) % 5
+
+    # Ensure OHLCV columns exist
     df = _select_ohlcv_columns(df)
     
     data = df.values.astype(np.float32)
@@ -228,6 +253,7 @@ def load_stocks_data(data_dir: str, seq_len: int = 24, normalize_data: bool = Tr
     volume = volume[valid_start:]
     atr = atr[valid_start:]
     vol_sma = vol_sma[valid_start:]
+    day_of_week = day_of_week[valid_start:] # Align days with indicators
     
     total_timesteps = len(open_prices)
     
@@ -265,7 +291,43 @@ def load_stocks_data(data_dir: str, seq_len: int = 24, normalize_data: bool = Tr
         
         vol_norm = np.log((curr_vol + eps) / (curr_sma + eps))
         
-        window_features = np.concatenate([reparam, vol_norm.reshape(-1, 1)], axis=1)
+        # --- NEW FEATURES: Day and Gap ---
+        # 1. Day of Week Encoding (Cyclic 7-day)
+        # We need the day of week for this window.
+        curr_days = day_of_week[start_idx:end_idx]
+        day_sin = np.sin(2 * np.pi * curr_days / 7.0)
+        day_cos = np.cos(2 * np.pi * curr_days / 7.0)
+        
+        # 2. Overnight Gap 
+        # Gap[t] = Open[t] - Close[t-1]
+        # For the first element of the window, we look back to global index (start_idx - 1)
+        # If start_idx == 0, gap is 0.
+        prev_close_window = np.zeros_like(ohlc_window[:, 0])
+        # Internal window shift
+        prev_close_window[1:] = ohlc_window[:-1, 3] # Previous closes within window
+        # Boundary condition
+        if start_idx > 0:
+            prev_close_window[0] = close_prices[start_idx - 1]
+        else:
+            prev_close_window[0] = ohlc_window[0, 0] # Assume flat open if no history
+            
+        gap_raw = ohlc_window[:, 0] - prev_close_window
+        
+        # Normalize Gap using the same logic as OHLC: gap_norm = gap / (anchor * atr_pct/100)
+        # This makes the gap relative to local volatility.
+        gap_norm = (gap_raw / anchor) * 100.0 / atr_pct
+        
+        # Concatenate all features:
+        # [Open, Body, High, Low, Vol, DaySin, DayCos, Gap]
+        # dimensions: (seq_len, 4) + (seq_len, 1) + (seq_len, 1) + (seq_len, 1) + (seq_len, 1)
+        
+        window_features = np.concatenate([
+            reparam, 
+            vol_norm.reshape(-1, 1),
+            day_sin.reshape(-1, 1),
+            day_cos.reshape(-1, 1),
+            gap_norm.reshape(-1, 1)
+        ], axis=1)
         
         windows.append(window_features)
         anchors.append(anchor)
@@ -277,15 +339,13 @@ def load_stocks_data(data_dir: str, seq_len: int = 24, normalize_data: bool = Tr
     atr_pcts = np.array(atr_pcts, dtype=np.float32)
     vol_smas_window = np.array(vol_smas_window, dtype=np.float32)
     
-    # No global z-score for volume anymore
-    
     norm_stats = {
         'reparameterized': True,
         'anchors': anchors,
         'atr_pcts': atr_pcts,
         'vol_smas': vol_smas_window,
         'volume_type': 'log_ratio_sma',
-        'feature_names': ['open_norm', 'body_norm', 'wick_high_norm', 'wick_low_norm', 'volume_norm']
+        'feature_names': ['open_norm', 'body_norm', 'wick_high_norm', 'wick_low_norm', 'volume_norm', 'day_sin', 'day_cos', 'gap_norm']
     }
     
     print(f"Loaded {n_samples} windows with OHLC reparameterization + Local Volume scaling")

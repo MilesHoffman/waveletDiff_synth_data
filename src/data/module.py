@@ -307,11 +307,18 @@ class WaveletTimeSeriesDataModule(pl.LightningDataModule):
         anchors = anchors.reshape(-1, 1, 1)
         atr_pcts = atr_pcts.reshape(-1, 1, 1)
         
-        open_norm = data[..., 0:1]
-        body_norm = data[..., 1:2]
-        wick_high_norm = data[..., 2:3]
-        wick_low_norm = data[..., 3:4]
-        volume_norm = data[..., 4:5]
+        if data.shape[-1] > 5:
+            # Drop auxiliary channels (Day, Gap) for reconstruction
+            # We only generate them for conditioning context, not for output
+            data_ohlc = data[..., :5]
+        else:
+            data_ohlc = data 
+            
+        open_norm = data_ohlc[..., 0:1]
+        body_norm = data_ohlc[..., 1:2]
+        wick_high_norm = data_ohlc[..., 2:3]
+        wick_low_norm = data_ohlc[..., 3:4]
+        volume_norm = data_ohlc[..., 4:5]
         
         open_pct = open_norm * atr_pcts
         body_pct = body_norm * atr_pcts

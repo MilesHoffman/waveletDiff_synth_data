@@ -10,3 +10,4 @@ tqdm==4.67.1
 jupyter==1.1.1
 matplotlib==3.10.3
 seaborn==0.13.2
+yfinance
