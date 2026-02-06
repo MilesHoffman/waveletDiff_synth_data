@@ -27,6 +27,8 @@ def main():
                        help='Sampling method (overrides config)')
     parser.add_argument('--compile_mode', type=str, choices=['none', 'default', 'reduce-overhead', 'max-autotune'], default='none',
                        help='torch.compile mode')
+    parser.add_argument('--data_dir', type=str, default=None,
+                       help='Override data directory/path')
     
     # Model Architecture Overrides (for legacy checkpoints without saved config)
     parser.add_argument('--seq_len', type=int, default=None, help='Sequence length (override)')
@@ -65,6 +67,7 @@ def main():
     # 5. Apply CLI overrides (Highest Priority)
     if args.dataset: config['dataset']['name'] = args.dataset
     if args.sampling_method: config['sampling']['method'] = args.sampling_method
+    if args.data_dir: config['data']['data_dir'] = args.data_dir
     
     # Architecture overrides
     if args.seq_len: config['dataset']['seq_len'] = args.seq_len
