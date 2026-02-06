@@ -193,6 +193,14 @@ def load_stocks_data(data_dir: str, seq_len: int = 24, normalize_data: bool = Tr
     """
     # 1. Resolve Path
     stocks_path = data_dir
+    
+    # Check if we need to look in parent dir (common when running from src/)
+    if not os.path.exists(stocks_path) and not os.path.isabs(stocks_path):
+        if os.path.exists(os.path.join("..", stocks_path)):
+            stocks_path = os.path.join("..", stocks_path)
+            # Update data_dir base for directory scans below
+            data_dir = stocks_path
+
     if not os.path.isfile(stocks_path):
         # Try finding SPY in subfolder first
         spy_cand = os.path.join(data_dir, "stocks", "SPY_stock_data.csv")
