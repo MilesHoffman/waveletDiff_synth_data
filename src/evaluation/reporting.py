@@ -97,6 +97,29 @@ def display_scorecard(result) -> pd.DataFrame:
             "Description": "JS divergence of DTW distributions"
         })
     
+    # === Legacy Metrics (Source) ===
+    if 'discriminative_legacy' in core:
+        summary_data.append({
+            "Tier": "Legacy (Source)",
+            "Category": "Opposing Coach",
+            "Metric": "Discriminative (Legacy)",
+            "Value": core['discriminative_legacy'],
+            "Goal": "lower",
+            "Ideal": "→ 0",
+            "Description": "Original 1-layer GRU accuracy - 0.5"
+        })
+    
+    if 'predictive_legacy_mae' in core:
+        summary_data.append({
+            "Tier": "Legacy (Source)",
+            "Category": "Game Analyst",
+            "Metric": "Predictive (Legacy)",
+            "Value": core['predictive_legacy_mae'],
+            "Goal": "lower",
+            "Ideal": "→ 0",
+            "Description": "Original 1-step ahead prediction MAE"
+        })
+    
     # === Advanced Metrics (Tier 2) ===
     adv = result.advanced_metrics
     
