@@ -17,7 +17,9 @@ class EvaluationConfig:
     """Configuration for evaluation run."""
     n_iterations: int = 1
     exclude_volume: bool = True
+    exclude_volume: bool = True
     compute_advanced: bool = True
+    compute_legacy: bool = True  # New flag
     
     # Core metric parameters
     discriminative_iterations: int = 2000
@@ -128,6 +130,11 @@ class EvaluationRunner:
         if self.config.compute_advanced:
             print("\n--- Advanced Metrics (Tier 2) ---")
             result.advanced_metrics = self._run_advanced_metrics(data)
+
+        # === Legacy Metrics (Source) ===
+        if self.config.compute_legacy:
+            print("\n--- Legacy Metrics (Source Implementation) ---")
+            result.core_metrics.update(self._run_legacy_metrics(data))
         
         return result
     
