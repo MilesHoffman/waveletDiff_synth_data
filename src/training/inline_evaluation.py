@@ -56,21 +56,27 @@ class InlineEvaluationCallback(pl.Callback):
         print(f"INLINE EVALUATION - Epoch {epoch}")
         print(f"{'='*60}")
         
+        # Prepare scale conditioning if available
+        scale = None
+        if getattr(self.data_module, 'has_conditioning', False):
+            atr_pcts = self.data_module.norm_stats['atr_pcts']
+            indices = np.random.choice(len(atr_pcts), size=self.n_samples, replace=True)
+            scale = torch.FloatTensor(atr_pcts[indices]).to(pl_module.device)
+
         # Generate synthetic samples
-        synth_wavelet = self._generate_samples(pl_module)
+        synth_wavelet = self._generate_samples(pl_module, scale=scale)
         synth_ts_norm = self.data_module.convert_wavelet_to_timeseries(synth_wavelet).cpu().numpy()
         
         # Get real samples (normalized)
-        real_idx = np.arange(self.n_samples)
         real_ts_norm = self.data_module.raw_data_tensor[:self.n_samples].cpu().numpy()
         
         results = {}
         
-        # 1. OHLC Invariants (Wick Non-negativity in reparameterized space)
+        # 1. OHLC Invariants (Check validity in Price space)
         if self.ohlcv_indices is not None:
             ohlc_valid = self._check_ohlc_invariants(synth_ts_norm)
             results['OHLC_Valid_Pct'] = ohlc_valid * 100
-            print(f"  OHLC Valid (Norm): {ohlc_valid*100:.1f}%")
+            print(f"  OHLC Valid (Price): {ohlc_valid*100:.1f}%")
         
         # 2. Memorization (Geometric Fidelity in Norm Space)
         mem_stats = self._compute_memorization_stats(real_ts_norm, synth_ts_norm)
@@ -99,7 +105,7 @@ class InlineEvaluationCallback(pl.Callback):
         for k, v in results.items():
             pl_module.log(f"eval/{k}", v, prog_bar=False)
     
-    def _generate_samples(self, pl_module) -> torch.Tensor:
+    def _generate_samples(self, pl_module, scale=None) -> torch.Tensor:
         """Generate synthetic wavelet samples using DDIM (fast)."""
         pl_module.eval()
         device = pl_module.device
@@ -129,7 +135,7 @@ class InlineEvaluationCallback(pl.Callback):
                 t_norm = t_tensor.float() / T
                 
                 # Predict noise
-                predicted_noise = pl_module(x_t, t_norm)
+                predicted_noise = pl_module(x_t, t_norm, scale=scale)
                 
                 # Compute x_{t-1}
                 alpha_t = alphas_cumprod[t]
@@ -144,18 +150,27 @@ class InlineEvaluationCallback(pl.Callback):
     
     def _check_ohlc_invariants(self, synth_ts_norm: np.ndarray) -> float:
         """
-        Check OHLC invariants in reparameterized space. 
-        In norm space: [open_norm, body_norm, wick_high_norm, wick_low_norm, volume_norm]
-        Condition: wick_high_norm >= 0, wick_low_norm >= 0
+        Check OHLC invariants in reconstructed price space.
+        Verifies High >= Open/Close/Low and Low <= Open/Close/High.
         """
-        wick_high_norm = synth_ts_norm[:, :, 2]
-        wick_low_norm = synth_ts_norm[:, :, 3]
+        # Reconstruct OHLCV using random anchor/atr context
+        synth_ohlcv = self.data_module.inverse_normalize(synth_ts_norm, sample_indices=None)
         
-        # Wicks should be non-negative
-        high_valid = wick_high_norm >= -1e-5  # Add small epsilon for numerical stability
-        low_valid = wick_low_norm >= -1e-5
+        # Channels: [Open, High, Low, Close, Volume]
+        open_p = synth_ohlcv[..., 0]
+        high_p = synth_ohlcv[..., 1]
+        low_p = synth_ohlcv[..., 2]
+        close_p = synth_ohlcv[..., 3]
         
-        all_valid = high_valid & low_valid
+        # Check geometric invariants (with tiny epsilon for float stability)
+        eps = 1e-7
+        h_ge_o = (high_p >= open_p - eps)
+        h_ge_c = (high_p >= close_p - eps)
+        l_le_o = (low_p <= open_p + eps)
+        l_le_c = (low_p <= close_p + eps)
+        h_ge_l = (high_p >= low_p - eps)
+        
+        all_valid = h_ge_o & h_ge_c & l_le_o & l_le_c & h_ge_l
         return np.mean(all_valid)
     
     def _sanitize_data(self, data: np.ndarray) -> np.ndarray:

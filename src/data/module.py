@@ -347,6 +347,7 @@ class WaveletTimeSeriesDataModule(pl.LightningDataModule):
             # 3. High/Low Calculation (Using Bar Range and Ratio Wicks)
             range_pct = bar_range_norm[:, t] * atr_pcts.squeeze(-1).squeeze(-1)
             total_range = (range_pct / 100.0) * anchors.squeeze(-1).squeeze(-1)
+            total_range = np.maximum(0, total_range) # Ensure positive range
             
             max_oc = np.maximum(open_prices[:, t], close_prices[:, t])
             min_oc = np.minimum(open_prices[:, t], close_prices[:, t])

@@ -119,10 +119,13 @@ def prepare_evaluation_data(
         - 'flattened_standardized': Flattened standardized data (preferred for distances)
     """
     # Optionally exclude volume
-    # NOTE: In reparam space, volume is index 4. If exclude_volume=True, we slice :-1.
-    if exclude_volume and real.shape[2] > 1:
-        real_processed = real[..., :-1]
-        synth_processed = synth[..., :-1]
+    # Column mapping for BOTH spaces (Dollar and Reparam):
+    # Index 4 is Volume.
+    if exclude_volume and real.shape[2] > 4:
+        # Create mask to drop index 4
+        indices = [i for i in range(real.shape[2]) if i != 4]
+        real_processed = real[:, :, indices]
+        synth_processed = synth[:, :, indices]
     else:
         real_processed = real
         synth_processed = synth
