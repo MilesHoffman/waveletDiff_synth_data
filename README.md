@@ -14,7 +14,9 @@ A specialized diffusion model for generating high-fidelity synthetic OHLCV (Open
 
 - **Wavelet-Based Architecture**: Multi-resolution decomposition captures both trends and fine-grained patterns
 - **Level-Specific Transformers**: Dedicated networks for each frequency band with cross-level attention
-- **OHLC Constraint Preservation**: Domain-specific reparameterization ensures valid price relationships (High ≥ Low, etc.)
+  - **8-Channel Feature Pipeline**: Integrated price (4), volume (1), cyclic time (2), and overnight dynamics (1)
+  - **Contextual Encoding**: 'Day of Week' (sin/cos) and 'Overnight Gap' (ATR-normalized) for realistic market cycles
+  - **OHLC Constraint Preservation**: Domain-specific reparameterization ensures valid price relationships (High ≥ Low, etc.)
 - **ATR Conditioning**: Generate samples with specific volatility characteristics
 - **DDPM/DDIM Sampling**: Standard stochastic or accelerated deterministic generation
 - **torch.compile Ready**: Optimized for CUDAGraph and reduce-overhead compilation
@@ -108,12 +110,14 @@ cd src
 python sample.py \
     --experiment_name my_experiment \
     --dataset stocks \
+    --data_dir path/to/your/data.csv \
     --num_samples 10000 \
     --sampling_method ddpm
 
 # Accelerated DDIM sampling
 python sample.py \
     --experiment_name my_experiment \
+    --data_dir path/to/your/data.csv \
     --num_samples 10000 \
     --sampling_method ddim
 ```
@@ -221,7 +225,7 @@ Dataset-specific configs in `configs/datasets/`:
 
 | Dataset | Features | Seq Length | Description |
 |---------|----------|------------|-------------|
-| `stocks` | OHLCV (5) | 24 | Stock market data with reparameterization |
+| `stocks` | 8 (New) | 24 | OHLCV + Day Sin/Cos + Overnight Gap |
 | `etth1/etth2` | 7 | 24-96 | Electricity Transformer Temperature |
 | `exchange_rate` | 8 | 24 | Currency exchange rates |
 | `fmri` | Variable | 24 | fMRI brain activity |
@@ -247,16 +251,20 @@ def load_custom_data(data_dir, seq_len=24, normalize_data=True):
 Raw OHLC prices are transformed into ATR-normalized percentage-space:
 
 ```
-anchor = Open[0]
+anchor = Open[0] (or local pivot)
 ATR_pct = mean(ATR) / anchor × 100
 
 open_norm = (Open - anchor) / anchor / ATR_pct × 100
 body_norm = (Close - Open) / anchor / ATR_pct × 100
 wick_high_norm = (High - max(O,C)) / anchor / ATR_pct × 100  ≥ 0
 wick_low_norm = (min(O,C) - Low) / anchor / ATR_pct × 100    ≥ 0
+
+# New Contextual Features
+day_sin, day_cos = cyclic_encode(day_of_week, 7)
+gap_norm = (Current_Open - Previous_Close) / anchor / ATR_pct × 100
 ```
 
-This ensures generated samples automatically satisfy OHLC constraints.
+The resulting 8-channel vector `[open, body, high, low, vol, sin, cos, gap]` ensures generated samples satisfy OHLC constraints while respecting weekly cycles.
 
 ### Wavelet Decomposition
 
@@ -292,14 +300,15 @@ This ensures that a stock at $10 and a stock at $1000 are compared on an equal p
 
 The evaluation suite includes:
 
-| Category | Metrics |
-|----------|---------|
-| **Visual** | t-SNE, PCA, PDF comparison |
-| **Discriminative** | Post-hoc RNN classifier accuracy |
-| **Predictive** | Post-hoc RNN prediction MAE |
-| **Temporal** | DTW-JS Divergence, Cross-Correlation |
-| **Financial** | ACF similarity, Volatility clustering |
-| **Quality** | Context-FID, Memorization ratio, Coverage |
+| Category | Metrics | Description |
+|----------|---------|-------------|
+| **Visual** | t-SNE, PCA, PDF comparisons | Qualitative manifold and distribution overlap |
+| **Discriminative** | Hardened (LSTM) & Legacy (GRU) | Fidelity of synthetic data against trained classifiers |
+| **Predictive** | Hardened (5-step) & Legacy (1-step) | Utility of synthetic data for downstream forecasting |
+| **Contextual** | **Context-FID** (via TS2Vec) | Deep temporal alignment of patterns and context |
+| **Temporal** | DTW-JS Divergence, Correlation | Statistical preservation of cross-correlations and time-warps |
+| **Financial** | ACF similarity, Volatility clustering | Stylized facts preservation (Fat tails, ARCH effects) |
+| **Quality** | DCR, Memorization Ratio, Precision/Recall | Manifold coverage vs. training data leakage |
 
 ---
 

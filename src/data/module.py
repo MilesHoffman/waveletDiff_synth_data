@@ -308,23 +308,57 @@ class WaveletTimeSeriesDataModule(pl.LightningDataModule):
         atr_pcts = atr_pcts.reshape(-1, 1, 1)
         
         if data.shape[-1] > 5:
-            # Drop auxiliary channels (Day, Gap) for reconstruction
-            # We only generate them for conditioning context, not for output
-            data_ohlc = data[..., :5]
-        else:
-            data_ohlc = data 
+            # We have 9 channels now: [gap, body, wickh, wickl, vol, day_sin, day_cos, cum_ret, bar_range]
+            pass 
             
-        open_norm = data_ohlc[..., 0:1]
-        body_norm = data_ohlc[..., 1:2]
-        wick_high_norm = data_ohlc[..., 2:3]
-        wick_low_norm = data_ohlc[..., 3:4]
-        volume_norm = data_ohlc[..., 4:5]
-        
-        open_pct = open_norm * atr_pcts
-        body_pct = body_norm * atr_pcts
-        wick_high_pct = np.maximum(0, wick_high_norm * atr_pcts)
-        wick_low_pct = np.maximum(0, wick_low_norm * atr_pcts)
-        
+        # Extract features (adjusting for potential auxiliary channels if sequence is longer)
+        gap_norm = data[..., 0]
+        body_norm = data[..., 1]
+        wick_high_ratio = data[..., 2]
+        wick_low_ratio = data[..., 3]
+        volume_norm = data[..., 4]
+        # cum_ret_norm = data[..., 7] # Not strictly needed for reconstruction but available
+        bar_range_norm = data[..., 8]
+
+        # Initialize output arrays
+        seq_len = data.shape[1]
+        open_prices = np.zeros((n_samples, seq_len))
+        close_prices = np.zeros((n_samples, seq_len))
+        high_prices = np.zeros((n_samples, seq_len))
+        low_prices = np.zeros((n_samples, seq_len))
+
+        # Reconstruct step-by-step to maintain continuity
+        for t in range(seq_len):
+            # 1. Open Price Calculation (Chain from previous close)
+            # gap_norm[t] = (open[t] - prev_close) / anchor / (atr_pct/100)
+            gap_pct = gap_norm[:, t] * atr_pcts.squeeze(-1).squeeze(-1)
+            
+            if t == 0:
+                # First bar: open relative to anchor
+                open_prices[:, t] = anchors.squeeze(-1).squeeze(-1) + (gap_pct / 100.0) * anchors.squeeze(-1).squeeze(-1)
+            else:
+                # Subsequent bars: chain from previous close
+                open_prices[:, t] = close_prices[:, t-1] + (gap_pct / 100.0) * anchors.squeeze(-1).squeeze(-1)
+            
+            # 2. Close Price Calculation
+            body_pct = body_norm[:, t] * atr_pcts.squeeze(-1).squeeze(-1)
+            close_prices[:, t] = open_prices[:, t] + (body_pct / 100.0) * anchors.squeeze(-1).squeeze(-1)
+            
+            # 3. High/Low Calculation (Using Bar Range and Ratio Wicks)
+            range_pct = bar_range_norm[:, t] * atr_pcts.squeeze(-1).squeeze(-1)
+            total_range = (range_pct / 100.0) * anchors.squeeze(-1).squeeze(-1)
+            
+            max_oc = np.maximum(open_prices[:, t], close_prices[:, t])
+            min_oc = np.minimum(open_prices[:, t], close_prices[:, t])
+            
+            # Ensure wicks are bounded [0, 1] for stability during generation
+            h_ratio = np.clip(wick_high_ratio[:, t], 0, 1)
+            l_ratio = np.clip(wick_low_ratio[:, t], 0, 1)
+            
+            high_prices[:, t] = max_oc + h_ratio * total_range
+            low_prices[:, t] = min_oc - l_ratio * total_range
+
+        # Volume reconstruction: exp(V_norm) * SMA_20
         vol_smas = None
         if 'vol_smas' in self.norm_stats:
             if sample_indices is not None:
@@ -332,45 +366,17 @@ class WaveletTimeSeriesDataModule(pl.LightningDataModule):
             else:
                 vol_smas = self.norm_stats['vol_smas'][indices]
         
-        anchors = anchors.reshape(-1, 1, 1)
-        atr_pcts = atr_pcts.reshape(-1, 1, 1)
-        
-        open_norm = data[..., 0:1]
-        body_norm = data[..., 1:2]
-        wick_high_norm = data[..., 2:3]
-        wick_low_norm = data[..., 3:4]
-        volume_norm = data[..., 4:5]
-        
-        open_pct = open_norm * atr_pcts
-        body_pct = body_norm * atr_pcts
-        wick_high_pct = np.maximum(0, wick_high_norm * atr_pcts)
-        wick_low_pct = np.maximum(0, wick_low_norm * atr_pcts)
-        
-        open_prices = anchors + (open_pct / 100.0) * anchors
-        close_prices = open_prices + (body_pct / 100.0) * anchors
-        
-        max_oc = np.maximum(open_prices, close_prices)
-        min_oc = np.minimum(open_prices, close_prices)
-        
-        high_prices = max_oc + (wick_high_pct / 100.0) * anchors
-        low_prices = min_oc - (wick_low_pct / 100.0) * anchors
-        
-        # Volume reconstruction: exp(V_norm) * SMA_20
-        # V_norm = log((Volume + eps) / (SMA + eps))
-        # Volume ≈ exp(V_norm) * SMA
         if self.norm_stats.get('volume_type') == 'log_ratio_sma' and vol_smas is not None:
-            # Clamp volume_norm to prevent overflow in exp (e.g. +/- 20 is sufficient range for log-ratio)
-            volume_norm = np.clip(volume_norm, -20.0, 20.0)
-            volume = np.exp(volume_norm) * vol_smas[..., np.newaxis]
+            volume_norm_clipped = np.clip(volume_norm, -20.0, 20.0)
+            volume = np.exp(volume_norm_clipped) * vol_smas
             volume = np.maximum(0, volume)
         else:
-            # Fallback for old method (shouldn't be reached with new loader)
             vol_mean = self.norm_stats.get('volume_mean', 0)
             vol_std = self.norm_stats.get('volume_std', 1)
             volume_log = volume_norm * vol_std + vol_mean
             volume = np.maximum(0, np.expm1(volume_log))
         
-        ohlcv = np.concatenate([
+        ohlcv = np.stack([
             open_prices,
             high_prices,
             low_prices,

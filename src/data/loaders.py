@@ -61,7 +61,8 @@ def reparameterize_ohlc_window(ohlc: np.ndarray, atr_values: np.ndarray) -> Tupl
         atr_values: ATR values for the window, shape (seq_len,)
     
     Returns:
-        reparam: Reparameterized features (seq_len, 4): [open_norm, body_norm, wick_high_norm, wick_low_norm]
+        reparam: Reparameterized features (seq_len, 5): 
+                [body_norm, wick_high_ratio, wick_low_ratio, bar_range_norm, cum_ret_norm]
         anchor: First Open price (scalar)
         atr_pct: Mean ATR as percentage of anchor (scalar)
     """
@@ -76,20 +77,34 @@ def reparameterize_ohlc_window(ohlc: np.ndarray, atr_values: np.ndarray) -> Tupl
     low_prices = ohlc[:, 2]
     close_prices = ohlc[:, 3]
     
-    open_pct = ((open_prices - anchor) / anchor) * 100.0
+    # Base percentage moves relative to anchor
     body_pct = ((close_prices - open_prices) / anchor) * 100.0
+    bar_range_pct = ((high_prices - low_prices) / anchor) * 100.0
+    cum_ret_pct = ((close_prices - anchor) / anchor) * 100.0
+    
+    # Standard normalization for magnitude channels
+    body_norm = body_pct / atr_pct
+    bar_range_norm = bar_range_pct / atr_pct
+    cum_ret_norm = cum_ret_pct / atr_pct
+    
+    # Ratio-based wicks (bounded [0, 1])
+    # wick = distance / total_range
+    total_range = high_prices - low_prices
+    total_range = np.where(total_range < 1e-9, 1e-9, total_range) # Prevent div by zero
     
     max_oc = np.maximum(open_prices, close_prices)
     min_oc = np.minimum(open_prices, close_prices)
-    wick_high_pct = ((high_prices - max_oc) / anchor) * 100.0
-    wick_low_pct = ((min_oc - low_prices) / anchor) * 100.0
     
-    open_norm = open_pct / atr_pct
-    body_norm = body_pct / atr_pct
-    wick_high_norm = wick_high_pct / atr_pct
-    wick_low_norm = wick_low_pct / atr_pct
+    wick_high_ratio = (high_prices - max_oc) / total_range
+    wick_low_ratio = (min_oc - low_prices) / total_range
     
-    reparam = np.stack([open_norm, body_norm, wick_high_norm, wick_low_norm], axis=1)
+    reparam = np.stack([
+        body_norm, 
+        wick_high_ratio, 
+        wick_low_ratio, 
+        bar_range_norm, 
+        cum_ret_norm
+    ], axis=1)
     
     return reparam.astype(np.float32), float(anchor), float(atr_pct)
 
@@ -189,7 +204,7 @@ def load_stocks_data(data_dir: str, seq_len: int = 24, normalize_data: bool = Tr
     """
     Load Stocks dataset with OHLC reparameterization and ATR-based local scaling.
     
-    Features output: [open_norm, body_norm, wick_high_norm, wick_low_norm, volume_norm, day_sin, day_cos, gap_norm]
+    Features output: [gap_norm, body_norm, wick_high_ratio, wick_low_ratio, volume_norm, day_sin, day_cos, cum_ret_norm, bar_range_norm]
     """
     # 1. Resolve Path
     stocks_path = data_dir
@@ -325,16 +340,19 @@ def load_stocks_data(data_dir: str, seq_len: int = 24, normalize_data: bool = Tr
         # This makes the gap relative to local volatility.
         gap_norm = (gap_raw / anchor) * 100.0 / atr_pct
         
-        # Concatenate all features:
-        # [Open, Body, High, Low, Vol, DaySin, DayCos, Gap]
-        # dimensions: (seq_len, 4) + (seq_len, 1) + (seq_len, 1) + (seq_len, 1) + (seq_len, 1)
+        # Concatenate all 9 features:
+        # [Gap, Body, WickH, WickL, Vol, DaySin, DayCos, CumRet, BarRange]
         
         window_features = np.concatenate([
-            reparam, 
+            gap_norm.reshape(-1, 1),
+            reparam[:, 0:1], # body_norm
+            reparam[:, 1:2], # wick_high_ratio
+            reparam[:, 2:3], # wick_low_ratio
             vol_norm.reshape(-1, 1),
             day_sin.reshape(-1, 1),
             day_cos.reshape(-1, 1),
-            gap_norm.reshape(-1, 1)
+            reparam[:, 4:5], # cum_ret_norm
+            reparam[:, 3:4]  # bar_range_norm
         ], axis=1)
         
         windows.append(window_features)
@@ -353,7 +371,7 @@ def load_stocks_data(data_dir: str, seq_len: int = 24, normalize_data: bool = Tr
         'atr_pcts': atr_pcts,
         'vol_smas': vol_smas_window,
         'volume_type': 'log_ratio_sma',
-        'feature_names': ['open_norm', 'body_norm', 'wick_high_norm', 'wick_low_norm', 'volume_norm', 'day_sin', 'day_cos', 'gap_norm']
+        'feature_names': ['gap_norm', 'body_norm', 'wick_high_ratio', 'wick_low_ratio', 'volume_norm', 'day_sin', 'day_cos', 'cum_ret_norm', 'bar_range_norm']
     }
     
     print(f"Loaded {n_samples} windows with OHLC reparameterization + Local Volume scaling")
