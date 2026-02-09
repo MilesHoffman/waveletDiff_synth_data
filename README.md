@@ -14,9 +14,10 @@ A specialized diffusion model for generating high-fidelity synthetic OHLCV (Open
 
 - **Wavelet-Based Architecture**: Multi-resolution decomposition captures both trends and fine-grained patterns
 - **Level-Specific Transformers**: Dedicated networks for each frequency band with cross-level attention
-  - **8-Channel Feature Pipeline**: Integrated price (4), volume (1), cyclic time (2), and overnight dynamics (1)
-  - **Contextual Encoding**: 'Day of Week' (sin/cos) and 'Overnight Gap' (ATR-normalized) for realistic market cycles
-  - **OHLC Constraint Preservation**: Domain-specific reparameterization ensures valid price relationships (High ≥ Low, etc.)
+  - **9-Channel Feature Pipeline**: Integrated price interval (gap, body, range), volume, and cyclic time
+  - **Ratio-Based Wicks**: Wicks modeled as ratios of the bar range [0, 1] for guaranteed valid OHLC construction
+  - **Contextual Encoding**: 'Day of Week' (sin/cos) and 'Gap' (ATR-normalized) for realistic market microsctructure
+  - **OHLC Constraint Preservation**: Mathematical guarantees that High ≥ Open/Close ≥ Low
 - **ATR Conditioning**: Generate samples with specific volatility characteristics
 - **DDPM/DDIM Sampling**: Standard stochastic or accelerated deterministic generation
 - **torch.compile Ready**: Optimized for CUDAGraph and reduce-overhead compilation
@@ -26,8 +27,8 @@ A specialized diffusion model for generating high-fidelity synthetic OHLCV (Open
 ## 🏗️ Architecture Overview
 
 ```
-Raw OHLCV → OHLC Reparameterization → Wavelet Transform → Level Transformers
-                                                                    ↓
+Raw OHLCV → 9-Channel Reparameterization → Wavelet Transform → Level Transformers
+                                                                     ↓
 Synthetic OHLCV ← Inverse Reparam ← Inverse Wavelet ← Cross-Level Attention
 ```
 
@@ -37,7 +38,7 @@ Synthetic OHLCV ← Inverse Reparam ← Inverse Wavelet ← Cross-Level Attentio
 |-----------|-------------|
 | **WaveletDiffusionTransformer** | Main model with level-specific processing |
 | **CrossLevelAttention** | Information exchange between wavelet bands |
-| **OHLC Reparameterization** | ATR-normalized percentage-space features |
+| **9-Channel Reparam** | Ratio-based wicks, normalized gaps, and volume |
 | **HybridTimestepSampler** | Importance-weighted training |
 
 ---
@@ -225,7 +226,7 @@ Dataset-specific configs in `configs/datasets/`:
 
 | Dataset | Features | Seq Length | Description |
 |---------|----------|------------|-------------|
-| `stocks` | 8 (New) | 24 | OHLCV + Day Sin/Cos + Overnight Gap |
+| `stocks` | 16 | 24 | OHLCV + Indicators (SMA, RSI, MFI, ATR) |
 | `etth1/etth2` | 7 | 24-96 | Electricity Transformer Temperature |
 | `exchange_rate` | 8 | 24 | Currency exchange rates |
 | `fmri` | Variable | 24 | fMRI brain activity |
@@ -246,25 +247,32 @@ def load_custom_data(data_dir, seq_len=24, normalize_data=True):
 
 ## 🔬 Technical Details
 
-### OHLC Reparameterization
+### 17-Channel Feature Pipeline
 
-Raw OHLC prices are transformed into ATR-normalized percentage-space:
+WaveletDiff uses a **Ratio-Based** structural decomposition with integrated technical indicators:
 
 ```
-anchor = Open[0] (or local pivot)
-ATR_pct = mean(ATR) / anchor × 100
+# --- Core OHLC (9 Channels) ---
+[0] gap_norm = (Open_t - Close_{t-1}) / ATR_pct
+[1] body_norm = (Close_t - Open_t) / ATR_pct
+[2] wick_high_ratio = (High - max(O,C)) / (High - Low)  # [0, 1]
+[3] wick_low_ratio = (min(O,C) - Low) / (High - Low)    # [0, 1]
+[4] volume_norm = log(Volume / SMA_20(Volume))
+[5] day_sin, [6] day_cos = Cyclic Day Encoding
+[7] cum_ret_norm = (Close - Open_0) / ATR_pct
+[8] bar_range_norm = (High - Low) / ATR_pct
 
-open_norm = (Open - anchor) / anchor / ATR_pct × 100
-body_norm = (Close - Open) / anchor / ATR_pct × 100
-wick_high_norm = (High - max(O,C)) / anchor / ATR_pct × 100  ≥ 0
-wick_low_norm = (min(O,C) - Low) / anchor / ATR_pct × 100    ≥ 0
-
-# New Contextual Features
-day_sin, day_cos = cyclic_encode(day_of_week, 7)
-gap_norm = (Current_Open - Previous_Close) / anchor / ATR_pct × 100
+# --- Technical Indicators (7 Channels) ---
+[9-12] sma_*_dev = (Close - SMA_N) / ATR_pct   # N = 200, 100, 50, 20
+[13] atr_ratio = log(ATR / SMA_20(ATR))
+[14] rsi_norm = (RSI - 50) / 50                 # [-1, 1]
+[15] mfi_norm = (MFI - 50) / 50                 # [-1, 1]
 ```
 
-The resulting 8-channel vector `[open, body, high, low, vol, sin, cos, gap]` ensures generated samples satisfy OHLC constraints while respecting weekly cycles.
+**OHLC Constraints** are mathematically guaranteed by the ratio-based wick representation:
+1.  `High >= Low` (by definition of range)
+2.  `High >= max(Open, Close)` (by definition of wick ratios)
+3.  `Low <= min(Open, Close)` (by definition of wick ratios)
 
 ### Wavelet Decomposition
 
