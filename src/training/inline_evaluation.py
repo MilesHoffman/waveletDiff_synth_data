@@ -228,9 +228,15 @@ class InlineEvaluationCallback(pl.Callback):
             acfs = []
             for sample in data:
                 try:
+                    # Check for zero variance (constant signal)
+                    if np.var(sample) < 1e-9:
+                        acfs.append(np.zeros(nlags + 1))
+                        continue
+                        
                     acfs.append(acf(sample, nlags=nlags, fft=True))
-                except:
-                    pass
+                except Exception:
+                    # Fallback for any other errors
+                    acfs.append(np.zeros(nlags + 1))
             return np.mean(acfs, axis=0) if acfs else np.zeros(nlags + 1)
         
         total_mse = 0
