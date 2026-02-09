@@ -18,6 +18,7 @@ class EvaluationConfig:
     n_iterations: int = 1
     exclude_volume: bool = True
     compute_advanced: bool = True
+    compute_legacy: bool = True  # New flag
     
     # Core metric parameters
     discriminative_iterations: int = 2000
@@ -128,6 +129,11 @@ class EvaluationRunner:
         if self.config.compute_advanced:
             print("\n--- Advanced Metrics (Tier 2) ---")
             result.advanced_metrics = self._run_advanced_metrics(data)
+
+        # === Legacy Metrics (Source) ===
+        if self.config.compute_legacy:
+            print("\n--- Legacy Metrics (Source Implementation) ---")
+            result.core_metrics.update(self._run_legacy_metrics(data))
         
         return result
     
@@ -292,11 +298,44 @@ class EvaluationRunner:
             data['synth']['flattened_standardized'],
             k=self.config.memorization_k
         )
-        metrics['integrity_officer'] = {
-            'dcr': dcr_stats,
-            'memorization_ratio': mem_ratio,
-        }
-        print(f"  → DCR (mean): {dcr_stats['mean']:.4f}")
-        print(f"  → Memorization Ratio: {mem_ratio:.4f}")
+        return metrics
+
+    def _run_legacy_metrics(self, data: dict) -> dict:
+        """Run Legacy (Source) metrics for comparison."""
+        from .core_metrics.legacy import (
+            discriminative_score_legacy,
+            predictive_score_legacy
+        )
         
+        metrics = {}
+        
+        # 1. Discriminative Score (Legacy GRU)
+        print("Computing Legacy Discriminative Score (GRU)...")
+        # Legacy typically used min-max scaled data [0,1]
+        try:
+            disc_score = discriminative_score_legacy(
+                data['real']['scaled_01'], 
+                data['synth']['scaled_01'],
+                iterations=self.config.discriminative_iterations
+            )
+            metrics['discriminative_legacy'] = disc_score
+            print(f"  → Discriminative (Legacy): {metrics['discriminative_legacy']:.4f}")
+        except Exception as e:
+            warnings.warn(f"Legacy Discriminative failed: {e}")
+            metrics['discriminative_legacy'] = float('nan')
+            
+        # 2. Predictive Score (Legacy 1-step)
+        print("Computing Legacy Predictive Score (1-step)...")
+        try:
+            pred_score = predictive_score_legacy(
+                data['real']['scaled_01'],
+                data['synth']['scaled_01'],
+                iterations=self.config.predictive_iterations
+            )
+            metrics['predictive_legacy_mae'] = pred_score
+            print(f"  → Predictive (Legacy): {metrics['predictive_legacy_mae']:.4f}")
+        except Exception as e:
+            warnings.warn(f"Legacy Predictive failed: {e}")
+            metrics['predictive_legacy_mae'] = float('nan')
+            
         return metrics

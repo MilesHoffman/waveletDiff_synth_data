@@ -51,6 +51,61 @@ def compute_sma(data: np.ndarray, period: int) -> np.ndarray:
     return np.concatenate([pad, sma])
 
 
+def compute_rsi(close: np.ndarray, period: int = 14) -> np.ndarray:
+    """
+    Compute Relative Strength Index (RSI) using Wilder's smoothing.
+    
+    Returns array of same length as input, with first `period` values as NaN.
+    """
+    delta = np.diff(close, prepend=close[0])
+    
+    gains = np.where(delta > 0, delta, 0.0)
+    losses = np.where(delta < 0, -delta, 0.0)
+    
+    avg_gain = np.full_like(close, np.nan)
+    avg_loss = np.full_like(close, np.nan)
+    
+    avg_gain[period] = np.mean(gains[1:period + 1])
+    avg_loss[period] = np.mean(losses[1:period + 1])
+    
+    multiplier = 1.0 / period
+    for i in range(period + 1, len(close)):
+        avg_gain[i] = avg_gain[i - 1] * (1 - multiplier) + gains[i] * multiplier
+        avg_loss[i] = avg_loss[i - 1] * (1 - multiplier) + losses[i] * multiplier
+    
+    rs = avg_gain / (avg_loss + 1e-10)
+    rsi = 100.0 - (100.0 / (1.0 + rs))
+    
+    return rsi
+
+
+def compute_mfi(high: np.ndarray, low: np.ndarray, close: np.ndarray, 
+                volume: np.ndarray, period: int = 14) -> np.ndarray:
+    """
+    Compute Money Flow Index (MFI).
+    
+    Returns array of same length as input, with first `period` values as NaN.
+    """
+    typical_price = (high + low + close) / 3.0
+    raw_money_flow = typical_price * volume
+    
+    tp_diff = np.diff(typical_price, prepend=typical_price[0])
+    
+    positive_flow = np.where(tp_diff > 0, raw_money_flow, 0.0)
+    negative_flow = np.where(tp_diff < 0, raw_money_flow, 0.0)
+    
+    mfi = np.full_like(close, np.nan)
+    
+    for i in range(period, len(close)):
+        pos_sum = np.sum(positive_flow[i - period + 1:i + 1])
+        neg_sum = np.sum(negative_flow[i - period + 1:i + 1])
+        
+        money_ratio = pos_sum / (neg_sum + 1e-10)
+        mfi[i] = 100.0 - (100.0 / (1.0 + money_ratio))
+    
+    return mfi
+
+
 
 def reparameterize_ohlc_window(ohlc: np.ndarray, atr_values: np.ndarray) -> Tuple[np.ndarray, float, float]:
     """
@@ -61,7 +116,8 @@ def reparameterize_ohlc_window(ohlc: np.ndarray, atr_values: np.ndarray) -> Tupl
         atr_values: ATR values for the window, shape (seq_len,)
     
     Returns:
-        reparam: Reparameterized features (seq_len, 4): [open_norm, body_norm, wick_high_norm, wick_low_norm]
+        reparam: Reparameterized features (seq_len, 5): 
+                [body_norm, wick_high_ratio, wick_low_ratio, bar_range_norm, cum_ret_norm]
         anchor: First Open price (scalar)
         atr_pct: Mean ATR as percentage of anchor (scalar)
     """
@@ -76,20 +132,34 @@ def reparameterize_ohlc_window(ohlc: np.ndarray, atr_values: np.ndarray) -> Tupl
     low_prices = ohlc[:, 2]
     close_prices = ohlc[:, 3]
     
-    open_pct = ((open_prices - anchor) / anchor) * 100.0
+    # Base percentage moves relative to anchor
     body_pct = ((close_prices - open_prices) / anchor) * 100.0
+    bar_range_pct = ((high_prices - low_prices) / anchor) * 100.0
+    cum_ret_pct = ((close_prices - anchor) / anchor) * 100.0
+    
+    # Standard normalization for magnitude channels
+    body_norm = body_pct / atr_pct
+    bar_range_norm = bar_range_pct / atr_pct
+    cum_ret_norm = cum_ret_pct / atr_pct
+    
+    # Ratio-based wicks (bounded [0, 1])
+    # wick = distance / total_range
+    total_range = high_prices - low_prices
+    total_range = np.where(total_range < 1e-9, 1e-9, total_range) # Prevent div by zero
     
     max_oc = np.maximum(open_prices, close_prices)
     min_oc = np.minimum(open_prices, close_prices)
-    wick_high_pct = ((high_prices - max_oc) / anchor) * 100.0
-    wick_low_pct = ((min_oc - low_prices) / anchor) * 100.0
     
-    open_norm = open_pct / atr_pct
-    body_norm = body_pct / atr_pct
-    wick_high_norm = wick_high_pct / atr_pct
-    wick_low_norm = wick_low_pct / atr_pct
+    wick_high_ratio = (high_prices - max_oc) / total_range
+    wick_low_ratio = (min_oc - low_prices) / total_range
     
-    reparam = np.stack([open_norm, body_norm, wick_high_norm, wick_low_norm], axis=1)
+    reparam = np.stack([
+        body_norm, 
+        wick_high_ratio, 
+        wick_low_ratio, 
+        bar_range_norm, 
+        cum_ret_norm
+    ], axis=1)
     
     return reparam.astype(np.float32), float(anchor), float(atr_pct)
 
@@ -118,7 +188,7 @@ def create_sliding_windows(data: np.ndarray,
             'std': data_std
         }
         data = (data - data_mean) / data_std
-
+    
     n_samples = (total_timesteps - seq_len) // stride + 1
     
     windows = []
@@ -187,20 +257,69 @@ def _select_ohlcv_columns(df: pd.DataFrame) -> pd.DataFrame:
 
 def load_stocks_data(data_dir: str, seq_len: int = 24, normalize_data: bool = True) -> Tuple[torch.Tensor, dict]:
     """
-    Load Stocks dataset with OHLC reparameterization and ATR-based local scaling.
+    Load Stocks dataset with OHLC reparameterization, ATR-based scaling, and technical indicators.
     
-    Features output: [open_norm, body_norm, wick_high_norm, wick_low_norm, volume_norm]
-    All OHLC features are in percentage-space, normalized by local ATR_pct.
+    Features output (16 channels):
+        [0] gap_norm: Overnight gap (ATR-normalized)
+        [1] body_norm: Close - Open (ATR-normalized)
+        [2] wick_high_ratio: Upper wick / bar range
+        [3] wick_low_ratio: Lower wick / bar range
+        [4] volume_norm: log(Volume / SMA_20(Volume))
+        [5] day_sin: Sin(day of week)
+        [6] day_cos: Cos(day of week)
+        [7] cum_ret_norm: Cumulative return (ATR-normalized)
+        [8] bar_range_norm: High - Low (ATR-normalized)
+        [9] sma_200_dev: Close - SMA_200 (ATR-normalized)
+        [10] sma_100_dev: Close - SMA_100 (ATR-normalized)
+        [11] sma_50_dev: Close - SMA_50 (ATR-normalized)
+        [12] sma_20_dev: Close - SMA_20 (ATR-normalized)
+        [13] atr_ratio: log(ATR / SMA_20(ATR))
+        [14] rsi_norm: (RSI - 50) / 50
+        [15] mfi_norm: (MFI - 50) / 50
     """
-    if os.path.isfile(data_dir):
-        stocks_path = data_dir
-    else:
-        stocks_path = os.path.join(data_dir, "stocks", "stock_data.csv")
-        
-    if not os.path.exists(stocks_path):
-        raise FileNotFoundError(f"Stocks data not found at: {stocks_path}")
+    # 1. Resolve Path
+    stocks_path = data_dir
+    
+    # Check if we need to look in parent dir (common when running from src/)
+    if not os.path.exists(stocks_path) and not os.path.isabs(stocks_path):
+        if os.path.exists(os.path.join("..", stocks_path)):
+            stocks_path = os.path.join("..", stocks_path)
+            # Update data_dir base for directory scans below
+            data_dir = stocks_path
 
+    if not os.path.isfile(stocks_path):
+        # Try finding SPY in subfolder first
+        spy_cand = os.path.join(data_dir, "stocks", "SPY_stock_data.csv")
+        generic_cand = os.path.join(data_dir, "stocks", "stock_data.csv")
+        
+        if os.path.exists(spy_cand):
+            stocks_path = spy_cand
+        elif os.path.exists(generic_cand):
+            stocks_path = generic_cand
+        else:
+            raise FileNotFoundError(f"Could not find stock data in {data_dir}")
+
+    print(f"Loading stock data from {stocks_path}...")
     df = pd.read_csv(stocks_path)
+    
+    # 2. Handle Multi-ticker / Metadata headers
+    try:
+        # Check if 'Open' is numeric, if not, it might be a multi-index CSV or have meta-rows
+        pd.to_numeric(df['Open'].iloc[0])
+    except (ValueError, KeyError, TypeError, IndexError):
+        print("Detected non-numeric first row (metadata/headers), dropping...")
+        df = df.iloc[1:].reset_index(drop=True)
+
+    # 3. Date / Day of Week
+    # We prioritize the 'Date' column for real calendar context
+    if 'Date' in df.columns:
+        df['Date'] = pd.to_datetime(df['Date'])
+        day_of_week = df['Date'].dt.dayofweek.values # 0=Monday, 6=Sunday
+    else:
+        print("No 'Date' column found. Falling back to synthetic 5-day cycle.")
+        day_of_week = np.arange(len(df)) % 5
+
+    # Ensure OHLCV columns exist
     df = _select_ohlcv_columns(df)
     
     data = df.values.astype(np.float32)
@@ -218,8 +337,22 @@ def load_stocks_data(data_dir: str, seq_len: int = 24, normalize_data: bool = Tr
     vol_sma_period = 20
     vol_sma = compute_sma(volume, period=vol_sma_period)
     
-    # Start after both indicators are valid
-    valid_start = max(ATR_PERIOD, vol_sma_period) - 1
+    # --- NEW: Technical Indicators ---
+    # SMAs for price context
+    sma_200 = compute_sma(close_prices, period=200)
+    sma_100 = compute_sma(close_prices, period=100)
+    sma_50 = compute_sma(close_prices, period=50)
+    sma_20 = compute_sma(close_prices, period=20)
+    
+    # ATR SMA for relative volatility
+    atr_sma_20 = compute_sma(atr, period=20)
+    
+    # RSI and MFI
+    rsi = compute_rsi(close_prices, period=14)
+    mfi = compute_mfi(high_prices, low_prices, close_prices, volume, period=14)
+    
+    # Start after ALL indicators are valid (200-day SMA is the limiter)
+    valid_start = 200
     
     open_prices = open_prices[valid_start:]
     high_prices = high_prices[valid_start:]
@@ -228,6 +361,17 @@ def load_stocks_data(data_dir: str, seq_len: int = 24, normalize_data: bool = Tr
     volume = volume[valid_start:]
     atr = atr[valid_start:]
     vol_sma = vol_sma[valid_start:]
+    day_of_week = day_of_week[valid_start:]
+    
+    # Slice new indicators
+    sma_200 = sma_200[valid_start:]
+    sma_100 = sma_100[valid_start:]
+    sma_50 = sma_50[valid_start:]
+    sma_20 = sma_20[valid_start:]
+    atr_sma_20 = atr_sma_20[valid_start:]
+    rsi = rsi[valid_start:]
+    mfi = mfi[valid_start:]
+
     
     total_timesteps = len(open_prices)
     
@@ -265,7 +409,64 @@ def load_stocks_data(data_dir: str, seq_len: int = 24, normalize_data: bool = Tr
         
         vol_norm = np.log((curr_vol + eps) / (curr_sma + eps))
         
-        window_features = np.concatenate([reparam, vol_norm.reshape(-1, 1)], axis=1)
+        # --- NEW FEATURES: Day and Gap ---
+        # 1. Day of Week Encoding (Cyclic 7-day)
+        curr_days = day_of_week[start_idx:end_idx]
+        day_sin = np.sin(2 * np.pi * curr_days / 7.0)
+        day_cos = np.cos(2 * np.pi * curr_days / 7.0)
+        
+        # 2. Overnight Gap 
+        prev_close_window = np.zeros_like(ohlc_window[:, 0])
+        prev_close_window[1:] = ohlc_window[:-1, 3]
+        if start_idx > 0:
+            prev_close_window[0] = close_prices[start_idx - 1]
+        else:
+            prev_close_window[0] = ohlc_window[0, 0]
+            
+        gap_raw = ohlc_window[:, 0] - prev_close_window
+        gap_norm = (gap_raw / anchor) * 100.0 / atr_pct
+        
+        # --- NEW: Technical Indicator Features ---
+        # SMA Deviations: (Close - SMA) / (anchor * atr_pct / 100)
+        # This normalizes distance from SMA by local volatility
+        scale_factor = anchor * atr_pct / 100.0
+        
+        curr_close = close_prices[start_idx:end_idx]
+        sma_200_dev = (curr_close - sma_200[start_idx:end_idx]) / scale_factor
+        sma_100_dev = (curr_close - sma_100[start_idx:end_idx]) / scale_factor
+        sma_50_dev = (curr_close - sma_50[start_idx:end_idx]) / scale_factor
+        sma_20_dev = (curr_close - sma_20[start_idx:end_idx]) / scale_factor
+        
+        # ATR Ratio: log(ATR / SMA_20(ATR))
+        # Centered around 0 when ATR equals its recent average
+        curr_atr = atr[start_idx:end_idx]
+        curr_atr_sma = atr_sma_20[start_idx:end_idx]
+        atr_ratio = np.log((curr_atr + eps) / (curr_atr_sma + eps))
+        
+        # RSI/MFI: (X - 50) / 50 → Maps [0, 100] to [-1, 1]
+        rsi_norm = (rsi[start_idx:end_idx] - 50.0) / 50.0
+        mfi_norm = (mfi[start_idx:end_idx] - 50.0) / 50.0
+        
+        # Concatenate all 17 features
+        window_features = np.concatenate([
+            gap_norm.reshape(-1, 1),
+            reparam[:, 0:1],  # body_norm
+            reparam[:, 1:2],  # wick_high_ratio
+            reparam[:, 2:3],  # wick_low_ratio
+            vol_norm.reshape(-1, 1),
+            day_sin.reshape(-1, 1),
+            day_cos.reshape(-1, 1),
+            reparam[:, 4:5],  # cum_ret_norm
+            reparam[:, 3:4],  # bar_range_norm
+            # --- NEW ---
+            sma_200_dev.reshape(-1, 1),
+            sma_100_dev.reshape(-1, 1),
+            sma_50_dev.reshape(-1, 1),
+            sma_20_dev.reshape(-1, 1),
+            atr_ratio.reshape(-1, 1),
+            rsi_norm.reshape(-1, 1),
+            mfi_norm.reshape(-1, 1)
+        ], axis=1)
         
         windows.append(window_features)
         anchors.append(anchor)
@@ -277,22 +478,27 @@ def load_stocks_data(data_dir: str, seq_len: int = 24, normalize_data: bool = Tr
     atr_pcts = np.array(atr_pcts, dtype=np.float32)
     vol_smas_window = np.array(vol_smas_window, dtype=np.float32)
     
-    # No global z-score for volume anymore
-    
     norm_stats = {
         'reparameterized': True,
         'anchors': anchors,
         'atr_pcts': atr_pcts,
         'vol_smas': vol_smas_window,
         'volume_type': 'log_ratio_sma',
-        'feature_names': ['open_norm', 'body_norm', 'wick_high_norm', 'wick_low_norm', 'volume_norm']
+        'feature_names': [
+            'gap_norm', 'body_norm', 'wick_high_ratio', 'wick_low_ratio', 'volume_norm',
+            'day_sin', 'day_cos', 'cum_ret_norm', 'bar_range_norm',
+            'sma_200_dev', 'sma_100_dev', 'sma_50_dev', 'sma_20_dev',
+            'atr_ratio', 'rsi_norm', 'mfi_norm'
+        ]
     }
     
-    print(f"Loaded {n_samples} windows with OHLC reparameterization + Local Volume scaling")
+    print(f"Loaded {n_samples} windows with 16-channel feature pipeline")
     print(f"  ATR_pct range: [{atr_pcts.min():.2f}%, {atr_pcts.max():.2f}%]")
-    print(f"  Volume Norm mean: {windows[:, :, 4].mean():.4f} (should be close to 0)")
+    print(f"  Volume Norm mean: {windows[:, :, 4].mean():.4f} (should be ~0)")
+    print(f"  RSI Norm mean: {windows[:, :, 14].mean():.4f} (should be ~0)")
     
     return torch.FloatTensor(windows), norm_stats
+
 
 
 def load_eeg_data(data_dir: str, seq_len: int = 24, normalize_data: bool = True) -> Tuple[torch.Tensor, dict]:

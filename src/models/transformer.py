@@ -483,6 +483,8 @@ class WaveletDiffusionTransformer(pl.LightningModule):
             # Get a sample batch from the training dataloader
             sample_batch = next(iter(self.trainer.train_dataloader))
             x_0 = sample_batch[0][:8].to(self.device)  # Use first 8 samples
+            # Sanitize inputs (match training_step)
+            x_0 = torch.nan_to_num(x_0, nan=0.0, posinf=1.0, neginf=-1.0)
             t = torch.randint(0, self.T, (x_0.size(0),), device=self.device)
             
             with torch.no_grad():
