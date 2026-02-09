@@ -247,7 +247,7 @@ def load_custom_data(data_dir, seq_len=24, normalize_data=True):
 
 ## 🔬 Technical Details
 
-### 17-Channel Feature Pipeline
+### 16-Channel Feature Pipeline
 
 WaveletDiff uses a **Ratio-Based** structural decomposition with integrated technical indicators:
 
