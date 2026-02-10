@@ -570,7 +570,7 @@ class WaveletDiffusionTransformer(pl.LightningModule):
         use_fused = torch.cuda.is_available() and 'fused' in torch.optim.AdamW.__init__.__code__.co_varnames
         optimizer = torch.optim.AdamW(
             self.parameters(), 
-            lr=self.lr, 
+            lr=self.max_lr, 
             weight_decay=self.weight_decay,
             eps=1e-8,
             betas=(0.9, 0.999),
@@ -605,8 +605,7 @@ class WaveletDiffusionTransformer(pl.LightningModule):
                 elif progress > 1.0:
                     progress = 1.0
 
-                # Scale between eta_min/lr and 1 using cosine
-                min_scale = float(self.cosine_eta_min) / float(self.lr if self.lr != 0 else 1e-12)
+                min_scale = float(self.min_lr) / float(self.max_lr if self.max_lr != 0 else 1e-12)
                 scale = min_scale + (1.0 - min_scale) * 0.5 * (1.0 + np.cos(np.pi * progress))
                 return float(scale)
 
@@ -634,11 +633,14 @@ class WaveletDiffusionTransformer(pl.LightningModule):
             ]
         
         elif self.scheduler_type == "onecycle":
+            div_factor = max(self.max_lr / self.min_lr, 1.0)
             scheduler = OneCycleLR(
                 optimizer,
-                max_lr=self.onecycle_max_lr,
+                max_lr=self.max_lr,
                 total_steps=self.total_training_steps,
-                pct_start=self.onecycle_pct_start,
+                pct_start=self.pct_start,
+                div_factor=div_factor,
+                final_div_factor=1.0,
                 anneal_strategy='cos'
             )
             return [optimizer], [{"scheduler": scheduler, "interval": "step"}]
@@ -648,7 +650,7 @@ class WaveletDiffusionTransformer(pl.LightningModule):
             scheduler = CosineAnnealingLR(
                 optimizer, 
                 T_max=self.total_training_steps, 
-                eta_min=self.cosine_eta_min
+                eta_min=self.min_lr
             )
             return [optimizer], [{"scheduler": scheduler, "interval": "step"}]
         
