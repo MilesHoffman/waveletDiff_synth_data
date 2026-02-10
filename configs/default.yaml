@@ -48,7 +48,9 @@ data:
 optimizer:
   scheduler_type: "onecycle"  # "cosine_warmup", "plateau_warmup", "onecycle", "cosine", "plateau"
   warmup_epochs: 50
-  lr: 0.0002
+  max_lr: 0.0002
+  min_lr: 1e-6
+  pct_start: 0.3
 
 # Dataset configuration (can be overridden by dataset-specific configs)
 dataset:

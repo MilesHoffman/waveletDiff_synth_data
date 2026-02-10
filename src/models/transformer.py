@@ -49,39 +49,36 @@ class WaveletDiffusionTransformer(pl.LightningModule):
         noise_schedule = config['noise']['schedule']
         scheduler_type = config['optimizer']['scheduler_type']
         warmup_epochs = config['optimizer']['warmup_epochs']
-        lr = config['optimizer']['lr']
-        cosine_eta_min = kwargs.get('cosine_eta_min', 1e-6)
+        max_lr = config['optimizer'].get('max_lr', config['optimizer'].get('lr', 2e-4))
+        min_lr = config['optimizer'].get('min_lr', 1e-6)
+        pct_start = config['optimizer'].get('pct_start', 0.3)
         plateau_patience = kwargs.get('plateau_patience', 50)
-        plateau_factor = kwargs.get('plateau_factor', 0.7)
         plateau_factor = kwargs.get('plateau_factor', 0.7)
         super().__init__()
         self.data_module = data_module
         self.embed_dim = embed_dim
         self.time_embed_dim = time_embed_dim
-        self.prediction_target = prediction_target  # "noise" or "coefficient"
+        self.prediction_target = prediction_target
         self.use_cross_level_attention = use_cross_level_attention
         self.max_epochs = max_epochs
         self.log_every_n_epochs = config['training'].get('log_every_n_epochs', 1)
         self.compile_config = config.get('compile', {})
         
-        # Store the number of diffusion timesteps as an instance attribute
         self.T = T
         
-        # Noise schedule parameters
         self.noise_schedule = noise_schedule
         
         # Scheduler parameters
         self.scheduler_type = scheduler_type
         self.warmup_epochs = warmup_epochs
-        self.lr = lr
-        self.cosine_eta_min = cosine_eta_min
+        self.max_lr = max_lr
+        self.min_lr = min_lr
+        self.pct_start = pct_start
         self.plateau_patience = plateau_patience
         self.plateau_factor = plateau_factor
         
-        # optimizer parameters
+        # Optimizer parameters
         self.weight_decay = 1e-5
-        self.onecycle_max_lr = 1e-3
-        self.onecycle_pct_start = 0.3
         
         # Step-based scheduling helpers
         self.steps_per_epoch = None
