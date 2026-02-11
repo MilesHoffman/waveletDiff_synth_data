@@ -50,7 +50,8 @@ class WaveletDiffusionTransformer(pl.LightningModule):
         scheduler_type = config['optimizer']['scheduler_type']
         warmup_epochs = config['optimizer']['warmup_epochs']
         max_lr = config['optimizer'].get('max_lr', config['optimizer'].get('lr', 2e-4))
-        min_lr = config['optimizer'].get('min_lr', 1e-6)
+        start_lr = config['optimizer'].get('start_lr', 1e-5)
+        final_lr = config['optimizer'].get('final_lr', 1e-6)
         pct_start = config['optimizer'].get('pct_start', 0.3)
         plateau_patience = kwargs.get('plateau_patience', 50)
         plateau_factor = kwargs.get('plateau_factor', 0.7)
@@ -72,7 +73,8 @@ class WaveletDiffusionTransformer(pl.LightningModule):
         self.scheduler_type = scheduler_type
         self.warmup_epochs = warmup_epochs
         self.max_lr = max_lr
-        self.min_lr = min_lr
+        self.start_lr = start_lr
+        self.final_lr = final_lr
         self.pct_start = pct_start
         self.plateau_patience = plateau_patience
         self.plateau_factor = plateau_factor
@@ -590,8 +592,8 @@ class WaveletDiffusionTransformer(pl.LightningModule):
                 elif progress > 1.0:
                     progress = 1.0
 
-                min_scale = float(self.min_lr) / float(self.max_lr if self.max_lr != 0 else 1e-12)
-                scale = min_scale + (1.0 - min_scale) * 0.5 * (1.0 + np.cos(np.pi * progress))
+                final_scale = float(self.final_lr) / float(self.max_lr if self.max_lr != 0 else 1e-12)
+                scale = final_scale + (1.0 - final_scale) * 0.5 * (1.0 + np.cos(np.pi * progress))
                 return float(scale)
 
             scheduler = LambdaLR(optimizer, lr_lambda=_cosine_warmup_lambda)
@@ -618,14 +620,15 @@ class WaveletDiffusionTransformer(pl.LightningModule):
             ]
         
         elif self.scheduler_type == "onecycle":
-            div_factor = max(self.max_lr / self.min_lr, 1.0)
+            div_factor = max(self.max_lr / self.start_lr, 1.0)
+            final_div_factor = max(self.start_lr / self.final_lr, 1.0)
             scheduler = OneCycleLR(
                 optimizer,
                 max_lr=self.max_lr,
                 total_steps=self.total_training_steps,
                 pct_start=self.pct_start,
                 div_factor=div_factor,
-                final_div_factor=1.0,
+                final_div_factor=final_div_factor,
                 anneal_strategy='cos'
             )
             return [optimizer], [{"scheduler": scheduler, "interval": "step"}]
@@ -635,7 +638,7 @@ class WaveletDiffusionTransformer(pl.LightningModule):
             scheduler = CosineAnnealingLR(
                 optimizer, 
                 T_max=self.total_training_steps, 
-                eta_min=self.min_lr
+                eta_min=self.final_lr
             )
             return [optimizer], [{"scheduler": scheduler, "interval": "step"}]
         

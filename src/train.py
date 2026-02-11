@@ -45,7 +45,8 @@ def main():
     # Training & Optimizer Overrides
     parser.add_argument('--lr', type=float, default=None, help='Alias for --max_lr (backward compat)')
     parser.add_argument('--max_lr', type=float, default=None, help='Peak learning rate')
-    parser.add_argument('--min_lr', type=float, default=None, help='Minimum learning rate')
+    parser.add_argument('--start_lr', type=float, default=None, help='Initial learning rate (before warmup)')
+    parser.add_argument('--final_lr', type=float, default=None, help='Final learning rate (end of training)')
     parser.add_argument('--pct_start', type=float, default=None, help='Fraction of training spent warming up')
     parser.add_argument('--scheduler_type', type=str, default=None)
     parser.add_argument('--warmup_epochs', type=int, default=None)
@@ -131,7 +132,8 @@ def main():
         config['optimizer']['max_lr'] = args.max_lr
     elif args.lr is not None:
         config['optimizer']['max_lr'] = args.lr
-    if args.min_lr is not None: config['optimizer']['min_lr'] = args.min_lr
+    if args.start_lr is not None: config['optimizer']['start_lr'] = args.start_lr
+    if args.final_lr is not None: config['optimizer']['final_lr'] = args.final_lr
     if args.pct_start is not None: config['optimizer']['pct_start'] = args.pct_start
     if args.scheduler_type: config['optimizer']['scheduler_type'] = args.scheduler_type
     if args.warmup_epochs: config['optimizer']['warmup_epochs'] = args.warmup_epochs
