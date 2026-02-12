@@ -19,7 +19,7 @@ class EvaluationConfig:
     exclude_volume: bool = True
     compute_advanced: bool = True
     compute_legacy: bool = True
-    generate_plots: bool = True # Enable visualizations
+    generate_plots: bool = False
     
     # Core metric parameters
     discriminative_iterations: int = 2000

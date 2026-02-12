@@ -250,7 +250,7 @@ def plot_financial_stylized_facts(real, generated, feature_names=None):
     # Average ACF across features
     def get_avg_acf(data, lags=20):
         acfs = []
-        for i in range(data.shape[2]): # features
+        for i in range(data.shape[2]):
             feat_data = data[..., i]
             feat_sq = feat_data ** 2
             for j in range(len(feat_sq)):
@@ -258,10 +258,13 @@ def plot_financial_stylized_facts(real, generated, feature_names=None):
                     acfs.append(np.zeros(lags + 1))
                     continue
                 try:
-                    acfs.append(acf(feat_sq[j], nlags=lags, fft=False))
+                    a = acf(feat_sq[j], nlags=lags, fft=False)
+                    if len(a) < lags + 1:
+                        a = np.pad(a, (0, lags + 1 - len(a)))
+                    acfs.append(a[:lags + 1])
                 except Exception:
                     acfs.append(np.zeros(lags + 1))
-        return np.mean(acfs, axis=0)
+        return np.nan_to_num(np.mean(acfs, axis=0))
 
     lags = 30
     real_vol_acf = get_avg_acf(real_ret, lags)
