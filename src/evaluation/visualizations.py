@@ -253,9 +253,14 @@ def plot_financial_stylized_facts(real, generated, feature_names=None):
         for i in range(data.shape[2]): # features
             feat_data = data[..., i]
             feat_sq = feat_data ** 2
-            # Per sample
             for j in range(len(feat_sq)):
-                 acfs.append(acf(feat_sq[j], nlags=lags, fft=False))
+                if np.var(feat_sq[j]) < 1e-9:
+                    acfs.append(np.zeros(lags + 1))
+                    continue
+                try:
+                    acfs.append(acf(feat_sq[j], nlags=lags, fft=False))
+                except Exception:
+                    acfs.append(np.zeros(lags + 1))
         return np.mean(acfs, axis=0)
 
     lags = 30

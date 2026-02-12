@@ -80,12 +80,7 @@ class InlineEvaluationCallback(pl.Callback):
         # 2. Memorization (Geometric Fidelity in Norm Space)
         mem_stats = self._compute_memorization_stats(real_ts_norm, synth_ts_norm)
         results.update(mem_stats)
-        mem_stats = self._compute_memorization_stats(real_ts_norm, synth_ts_norm)
-        results.update(mem_stats)
         
-        # 3. Tail Fidelity (VaR of Body Normalized features as return proxy)
-        var_diff = self._compute_var_difference(real_ts_norm, synth_ts_norm)
-        results['VaR_Norm_Diff'] = var_diff
         # 3. Tail Fidelity (VaR of Body Normalized features as return proxy)
         var_diff = self._compute_var_difference(real_ts_norm, synth_ts_norm)
         results['VaR_Norm_Diff'] = var_diff
@@ -93,13 +88,7 @@ class InlineEvaluationCallback(pl.Callback):
         # 4. Temporal Fidelity (ACF MSE in Norm Space)
         acf_mse = self._compute_acf_mse(real_ts_norm, synth_ts_norm)
         results['ACF_MSE_Norm'] = acf_mse
-        # 4. Temporal Fidelity (ACF MSE in Norm Space)
-        acf_mse = self._compute_acf_mse(real_ts_norm, synth_ts_norm)
-        results['ACF_MSE_Norm'] = acf_mse
         
-        # 5. Distribution (Wasserstein in Norm Space)
-        w_dist = self._compute_wasserstein(real_ts_norm, synth_ts_norm)
-        results['Wasserstein_Norm'] = w_dist
         # 5. Distribution (Wasserstein in Norm Space)
         w_dist = self._compute_wasserstein(real_ts_norm, synth_ts_norm)
         results['Wasserstein_Norm'] = w_dist
@@ -107,17 +96,12 @@ class InlineEvaluationCallback(pl.Callback):
         # 6. Correlation Matrix Norm (Structure Check)
         corr_diff = self._compute_correlation_matrix_diff(real_ts_norm, synth_ts_norm)
         results['Corr_Norm_Diff'] = corr_diff
-        # 6. Correlation Matrix Norm (Structure Check)
-        corr_diff = self._compute_correlation_matrix_diff(real_ts_norm, synth_ts_norm)
-        results['Corr_Norm_Diff'] = corr_diff
         
         # 7. Moment Drift (Gaussianity Check)
         moments = self._compute_moment_drift(real_ts_norm, synth_ts_norm)
         results.update(moments)
-        # 7. Moment Drift (Gaussianity Check)
-        moments = self._compute_moment_drift(real_ts_norm, synth_ts_norm)
-        results.update(moments)
         
+        # --- Structured Output ---
         print(f"  • Structural Fidelity")
         if self.ohlcv_indices is not None:
              print(f"    OHLC Valid:      {results['OHLC_Valid_Pct']:.1f}%")
@@ -129,6 +113,10 @@ class InlineEvaluationCallback(pl.Callback):
         print(f"    Kurtosis Drift:  {moments['Kurt_Drift']:.4f}")
         print(f"    VaR Diff:        {results['VaR_Norm_Diff']:.4f}")
         print(f"    ACF MSE:         {results['ACF_MSE_Norm']:.4f}")
+
+        print(f"\n  • Memorization / Privacy")
+        print(f"    NN Dist Min:     {results['NN_Dist_Min']:.4f}")
+        print(f"    NN Dist Avg:     {results['NN_Dist_Avg']:.4f}")
         
         print("-" * 80)
         
@@ -207,13 +195,11 @@ class InlineEvaluationCallback(pl.Callback):
     def _sanitize_data(self, data: np.ndarray) -> np.ndarray:
         """Replace Infs/NaNs with finite values to prevent sklearn errors."""
         if not np.all(np.isfinite(data)):
-            # Replace NaNs with 0 and Infs with large finite values
             data = np.nan_to_num(data, nan=0.0, posinf=1e9, neginf=-1e9)
         return np.clip(data, -1e9, 1e9)
 
     def _compute_memorization_stats(self, real_ts: np.ndarray, synth_ts: np.ndarray) -> dict:
         """Compute nearest neighbor distance statistics."""
-        # Sanitize inputs to prevent crashes
         real_ts = self._sanitize_data(real_ts)
         synth_ts = self._sanitize_data(synth_ts)
         
@@ -259,14 +245,12 @@ class InlineEvaluationCallback(pl.Callback):
             acfs = []
             for sample in data:
                 try:
-                    # Check for zero variance (constant signal)
                     if np.var(sample) < 1e-9:
                         acfs.append(np.zeros(nlags + 1))
                         continue
                         
                     acfs.append(acf(sample, nlags=nlags, fft=True))
                 except Exception:
-                    # Fallback for any other errors
                     acfs.append(np.zeros(nlags + 1))
             return np.mean(acfs, axis=0) if acfs else np.zeros(nlags + 1)
         
@@ -305,13 +289,15 @@ class InlineEvaluationCallback(pl.Callback):
         real_flat = real_ts.reshape(-1, real_ts.shape[2])
         synth_flat = synth_ts.reshape(-1, synth_ts.shape[2])
         
-        # Pearson correlation
-        corr_real = np.corrcoef(real_flat, rowvar=False)
-        corr_synth = np.corrcoef(synth_flat, rowvar=False)
+        with np.errstate(divide='ignore', invalid='ignore'):
+            corr_real = np.corrcoef(real_flat, rowvar=False)
+            corr_synth = np.corrcoef(synth_flat, rowvar=False)
         
-        # Handle Nans
         corr_real = np.nan_to_num(corr_real)
         corr_synth = np.nan_to_num(corr_synth)
+        
+        if not np.all(np.isfinite(corr_real)): corr_real[:] = 0
+        if not np.all(np.isfinite(corr_synth)): corr_synth[:] = 0
         
         return np.linalg.norm(corr_real - corr_synth)
 

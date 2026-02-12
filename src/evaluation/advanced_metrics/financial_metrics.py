@@ -39,9 +39,23 @@ def calculate_tail_dependence(
     
     Assuming D > 1 for cross-sectional tail dependence.
     """
+    if real.ndim == 2:
+        # (N, T) -> Single asset -> No cross-sectional tail dependence
+        return {
+            "Tail_Dep_Lower_Diff": 0.0,
+            "Tail_Dep_Upper_Diff": 0.0,
+            "Real_Tail_L": 0.0,
+            "Synth_Tail_L": 0.0
+        }
+        
     n_features = real.shape[2]
     if n_features < 2:
-        return {"Tail_Dep_Lower_Err": 0.0, "Tail_Dep_Upper_Err": 0.0}
+        return {
+            "Tail_Dep_Lower_Diff": 0.0,
+            "Tail_Dep_Upper_Diff": 0.0,
+            "Real_Tail_L": 0.0,
+            "Synth_Tail_L": 0.0
+        }
 
     def get_avg_tail_dep(data: np.ndarray, quantile: float) -> Tuple[float, float]:
         # data: (N, T, D) -> Flatten to (N*T, D) to treat as i.i.d observations of the joint vector
@@ -95,22 +109,7 @@ def calculate_hurst_exponent(series: np.ndarray, max_lag: int = 20) -> float:
     H < 0.5: Mean Reverting
     H > 0.5: Trending / Long Memory
     """
-    lags = range(2, max_lag)
-    tau = [np.sqrt(np.std(np.subtract(series[lag:], series[:-lag]))) for lag in lags]
-    
-    # Very rudimentary R/S proxy via variance scaling: Var(tau) ~ tau^{2H}
-    # Standard: log(R/S) = H * log(n) + c
-    
-    # Rigorous R/S implementation:
-    rs_values = []
-    n_values = []
-    
-    # Split series into chunks of size n
-    # We use a simplified Aggregated Variance method for speed
-    # Var(X^m) ~ m^(2H-2) for fractional noise, or Var(y) ~ t^(2H) for fbm
-    
-    # Using Higuchi's method or similar is complex. 
-    # Let's use the R/S statistic on full series for several window sizes.
+    # R/S statistic on full series for several window sizes
     N = len(series)
     min_window = 10
     
@@ -153,6 +152,12 @@ def calculate_hurst_exponent(series: np.ndarray, max_lag: int = 20) -> float:
 
 def calculate_hurst_metrics(real: np.ndarray, synthetic: np.ndarray) -> Dict[str, float]:
     """Computes Hurst Exponent for Real and Synthetic data."""
+    # Handle (N, T) inputs by expanding to (N, T, 1)
+    if real.ndim == 2:
+        real = real[:, :, None]
+    if synthetic.ndim == 2:
+        synthetic = synthetic[:, :, None]
+        
     # real: (N, T, D)
     n_features = real.shape[2]
     
@@ -194,6 +199,11 @@ def calculate_leverage_effect(real: np.ndarray, synthetic: np.ndarray) -> Dict[s
     Corr(r_t, r_{t+1}^2) or Corr(r_t, |r_{t+1}|).
     Typically negative in equities (price drop -> high vol).
     """
+    if real.ndim == 2:
+        real = real[:, :, None]
+    if synthetic.ndim == 2:
+        synthetic = synthetic[:, :, None]
+        
     n_features = real.shape[2]
     
     def get_leverage_corr(data):

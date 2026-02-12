@@ -18,7 +18,8 @@ class EvaluationConfig:
     n_iterations: int = 1
     exclude_volume: bool = True
     compute_advanced: bool = True
-    compute_legacy: bool = True  # New flag
+    compute_legacy: bool = True
+    generate_plots: bool = True # Enable visualizations
     
     # Core metric parameters
     discriminative_iterations: int = 2000
@@ -134,8 +135,26 @@ class EvaluationRunner:
         if self.config.compute_legacy:
             print("\n--- Legacy Metrics (Source Implementation) ---")
             result.core_metrics.update(self._run_legacy_metrics(data))
+            
+        # === Visualizations ===
+        if self.config.generate_plots:
+            print("\n--- Generating Visualizations ---")
+            self._run_visualizations(data)
         
         return result
+    
+    def _run_visualizations(self, data: dict):
+        """Generate plots."""
+        from .visualizations import plot_financial_stylized_facts
+        
+        # We use the 'raw' (price-like) data for this plot as it computes its own returns
+        try:
+            plot_financial_stylized_facts(
+                data['real']['raw'],
+                data['synth']['raw']
+            )
+        except Exception as e:
+            print(f"Visualization failed: {e}")
     
     def _run_core_metrics(self, data: dict) -> dict:
         """Run Tier 1 metrics."""
@@ -343,11 +362,17 @@ class EvaluationRunner:
             data['real']['flattened_standardized'],
             data['synth']['flattened_standardized']
         )
+        metrics['integrity'] = {'dcr': dcr_stats}
+
         mem_ratio = memorization_ratio(
             data['real']['flattened_standardized'],
             data['synth']['flattened_standardized'],
             k=self.config.memorization_k
         )
+        metrics['integrity']['memorization_ratio'] = mem_ratio
+        print(f"  → DCR: {dcr_stats:.4f}" if isinstance(dcr_stats, float) else f"  → DCR: {dcr_stats}")
+        print(f"  → Memorization Ratio: {mem_ratio:.4f}")
+
         return metrics
 
     def _run_legacy_metrics(self, data: dict) -> dict:
