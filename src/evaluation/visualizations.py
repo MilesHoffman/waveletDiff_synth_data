@@ -211,19 +211,22 @@ def plot_financial_stylized_facts(real, generated, feature_names=None):
     # 1. Fat Tail Analysis: Clipped KDE + Empirical CCDF
     fig, axes = plt.subplots(1, 2, figsize=(18, 6))
     
-    # --- Left Panel: KDE with x-axis clipped to 1st-99th percentile ---
+    # --- Left Panel: KDE with log y-axis to expose tail differences ---
     combined = np.concatenate([real_flat, synth_flat])
-    lo, hi = np.percentile(combined, [1, 99])
+    lo, hi = np.percentile(combined, [0.5, 99.5])
     clip_real = real_flat[(real_flat >= lo) & (real_flat <= hi)]
     clip_synth = synth_flat[(synth_flat >= lo) & (synth_flat <= hi)]
 
-    sns.kdeplot(clip_real, ax=axes[0], fill=True, color=COLORS["Real"], label="Real", alpha=0.3, linewidth=2)
-    sns.kdeplot(clip_synth, ax=axes[0], fill=True, color=COLORS["Generated"], label="Generated", alpha=0.3, linewidth=2)
+    sns.kdeplot(clip_real, ax=axes[0], color=COLORS["Real"], label="Real", alpha=0.8, linewidth=2, fill=False)
+    sns.kdeplot(clip_synth, ax=axes[0], color=COLORS["Generated"], label="Generated", alpha=0.8, linewidth=2, fill=False)
     axes[0].set_xlim(lo, hi)
-    axes[0].set_title("Return Distribution (1st–99th Percentile)")
+    axes[0].set_yscale('log')
+    axes[0].set_ylim(bottom=1e-3)
+    axes[0].set_title("Return Distribution (Log Density)")
     axes[0].set_xlabel("Return")
-    axes[0].set_ylabel("Density")
+    axes[0].set_ylabel("Log Density")
     axes[0].legend(fontsize=11)
+    axes[0].grid(True, which='both', alpha=0.2)
     
     # --- Right Panel: Empirical CCDF on log-log scale P(|r| > x) ---
     def empirical_ccdf(data):
