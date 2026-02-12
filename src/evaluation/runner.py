@@ -234,6 +234,12 @@ class EvaluationRunner:
             kurtosis_score,
             volatility_clustering_score
         )
+        from .advanced_metrics.financial_metrics import (
+            calculate_tail_dependence,
+            calculate_hurst_metrics,
+            calculate_leverage_effect,
+            calculate_drawdown_stats
+        )
         
         metrics = {}
         
@@ -267,6 +273,50 @@ class EvaluationRunner:
         }
         print(f"  → Kurtosis Diff: {metrics['stylized_facts']['kurtosis']:.4f}")
         print(f"  → Volatility Clustering MAE: {metrics['stylized_facts']['volatility_clustering']:.4f}")
+
+        # Quantitative Finance (New Tier)
+        print("Computing Quantitative Finance metrics...")
+        # Use log-returns for financial metrics
+        real_ret = data['real']['log_returns'] # (N, T, D)
+        synth_ret = data['synth']['log_returns']
+        
+        # Tail Dependence
+        metrics['quant_finance'] = {}
+        try:
+            td_res = calculate_tail_dependence(real_ret, synth_ret, q=0.05)
+            metrics['quant_finance'].update(td_res)
+            print(f"  → Tail Dep Diff (Low): {td_res['Tail_Dep_Lower_Diff']:.4f}")
+        except Exception as e:
+            print(f"  → Tail Dep failed: {e}")
+
+        # Hurst Exponent
+        try:
+            hurst_res = calculate_hurst_metrics(real_ret, synth_ret)
+            metrics['quant_finance'].update(hurst_res)
+            print(f"  → Hurst Diff: {hurst_res['Hurst_Diff']:.4f}")
+        except Exception as e:
+            print(f"  → Hurst failed: {e}")
+
+        # Leverage Effect
+        try:
+            lev_res = calculate_leverage_effect(real_ret, synth_ret)
+            metrics['quant_finance'].update(lev_res)
+            print(f"  → Leverage Diff: {lev_res['Leverage_Diff']:.4f}")
+        except Exception as e:
+            print(f"  → Leverage failed: {e}")
+            
+        # Drawdown Dynamics
+        try:
+            # Drawdowns calculated on Price paths (standardized -> re-cumprod or use raw if available?)
+            # Ideally use Raw Price paths if they exist, but 'data' dict might not have them readily in 'raw' if scaled.
+            # prepare_evaluation_data 'raw' is usually the original input.
+            # Let's use data['real']['raw'] which is presumably prices.
+            dd_res = calculate_drawdown_stats(data['real']['raw'], data['synth']['raw'])
+            metrics['quant_finance'].update(dd_res)
+            print(f"  → Drawdown KS Stat: {dd_res['MaxDD_KS_Stat']:.4f}")
+        except Exception as e:
+            print(f"  → Drawdown failed: {e}")
+
 
         # Statistician
         print("Computing Statistician metrics...")

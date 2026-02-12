@@ -1,0 +1,30 @@
+================================================================================
+EPOCH 1000/2600 [====================>.......] 38% | 1.81 it/s | ETA: 14:45
+================================================================================
+
+[TRAINING METRICS]
+  Total Loss:      0.0873  (Avg: 0.0873)
+  Learning Rate:   4.82e-04
+  NaN Rate:        0.0%
+
+[WAVELET LOSS BREAKDOWN]
+  Level 0 (Approx): 0.1092  [Weight: 0.50]
+  Level 1 (Detail): 0.0427  [Weight: 0.25]
+  Level 2 (Detail): 0.0382  [Weight: 0.16]
+  Level 3 (Detail): 0.0450  [Weight: 0.10]
+  ----------------------------------------
+  Energy Term:      0.0123  [Weight: 0.10] (if enabled)
+
+[INLINE EVALUATION] (Every 200 epochs)
+  > Structural Fidelity
+    OHLC Valid:     98.5%   [Target: >95%]
+    Corr Norm Diff: 0.1245  [Target: <0.15]
+    Wasserstein:    0.0452
+
+  > Stylized Facts
+    Skew Drift:     0.0521
+    Kurtosis Drift: 0.1102
+    VaR Diff:       0.0023
+    ACF MSE:        0.0015
+
+================================================================================
