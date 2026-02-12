@@ -208,23 +208,51 @@ def plot_financial_stylized_facts(real, generated, feature_names=None):
     real_flat = real_ret.flatten()
     synth_flat = synth_ret.flatten()
     
-    # 1. Return Distribution (Linear + Log Scale)
-    fig, axes = plt.subplots(1, 2, figsize=(16, 6))
+    # 1. Fat Tail Analysis: Clipped KDE + Empirical CCDF
+    fig, axes = plt.subplots(1, 2, figsize=(18, 6))
     
-    # Linear Scale
-    sns.kdeplot(real_flat, ax=axes[0], fill=True, color=COLORS["Real"], label="Real", alpha=0.3)
-    sns.kdeplot(synth_flat, ax=axes[0], fill=True, color=COLORS["Generated"], label="Generated", alpha=0.3)
-    axes[0].set_title("Return Distribution (Linear Scale)")
-    axes[0].legend()
+    # --- Left Panel: KDE with x-axis clipped to 1st-99th percentile ---
+    combined = np.concatenate([real_flat, synth_flat])
+    lo, hi = np.percentile(combined, [1, 99])
+    clip_real = real_flat[(real_flat >= lo) & (real_flat <= hi)]
+    clip_synth = synth_flat[(synth_flat >= lo) & (synth_flat <= hi)]
+
+    sns.kdeplot(clip_real, ax=axes[0], fill=True, color=COLORS["Real"], label="Real", alpha=0.3, linewidth=2)
+    sns.kdeplot(clip_synth, ax=axes[0], fill=True, color=COLORS["Generated"], label="Generated", alpha=0.3, linewidth=2)
+    axes[0].set_xlim(lo, hi)
+    axes[0].set_title("Return Distribution (1st–99th Percentile)")
+    axes[0].set_xlabel("Return")
+    axes[0].set_ylabel("Density")
+    axes[0].legend(fontsize=11)
     
-    # Log Scale (to see tails)
-    sns.kdeplot(real_flat, ax=axes[1], fill=True, color=COLORS["Real"], label="Real", alpha=0.3)
-    sns.kdeplot(synth_flat, ax=axes[1], fill=True, color=COLORS["Generated"], label="Generated", alpha=0.3)
+    # --- Right Panel: Empirical CCDF on log-log scale P(|r| > x) ---
+    def empirical_ccdf(data):
+        """Compute complementary CDF of absolute values."""
+        abs_data = np.sort(np.abs(data))
+        n = len(abs_data)
+        ccdf = 1.0 - np.arange(1, n + 1) / n
+        return abs_data, ccdf
+
+    r_x, r_ccdf = empirical_ccdf(real_flat)
+    s_x, s_ccdf = empirical_ccdf(synth_flat)
+    
+    # Subsample for plotting performance
+    step_r = max(1, len(r_x) // 2000)
+    step_s = max(1, len(s_x) // 2000)
+    
+    axes[1].plot(r_x[::step_r], r_ccdf[::step_r], color=COLORS["Real"], label="Real", alpha=0.8, linewidth=1.5)
+    axes[1].plot(s_x[::step_s], s_ccdf[::step_s], color=COLORS["Generated"], label="Generated", alpha=0.8, linewidth=1.5)
+    axes[1].set_xscale('log')
     axes[1].set_yscale('log')
-    axes[1].set_title("Return Distribution (Log Scale)")
-    axes[1].legend()
+    axes[1].set_title("Tail Weight: P(|r| > x)  [Log-Log]")
+    axes[1].set_xlabel("|Return|")
+    axes[1].set_ylabel("P(|r| > x)")
+    axes[1].axhline(y=0.05, color='gray', linestyle='--', alpha=0.5, label='5% VaR')
+    axes[1].axhline(y=0.01, color='gray', linestyle=':', alpha=0.5, label='1% VaR')
+    axes[1].legend(fontsize=10)
+    axes[1].grid(True, which='both', alpha=0.2)
     
-    plt.suptitle("Fat Tail Analysis")
+    plt.suptitle("Fat Tail Analysis", fontsize=14, fontweight='bold')
     plt.tight_layout()
     plt.show()
     
