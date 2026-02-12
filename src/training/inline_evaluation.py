@@ -32,7 +32,7 @@ class InlineEvaluationCallback(pl.Callback):
         self,
         data_module,
         eval_every_n_epochs: int = 200,
-        n_samples: int = 500,
+        n_samples: int = 128,
         ohlcv_indices: dict = None
     ):
         """
@@ -144,8 +144,8 @@ class InlineEvaluationCallback(pl.Callback):
             betas = pl_module.beta_all
             alphas_cumprod = pl_module.alpha_bar_all
             
-            # DDIM-style skip (use 50 steps instead of 1000)
-            step_size = max(1, T // 50)
+            # DDIM-style skip (use 20 steps for speed)
+            step_size = max(1, T // 20)
             timesteps = list(range(T - 1, -1, -step_size))
             total_steps = len(timesteps)
             
@@ -240,19 +240,26 @@ class InlineEvaluationCallback(pl.Callback):
         
         n_features = real_ts_norm.shape[2]
         
+        max_acf_samples = 64
+        
         def avg_acf(data, nlags):
-            """Average ACF across all samples for a single feature."""
+            """Average ACF across subsampled data for a single feature."""
+            if len(data) > max_acf_samples:
+                idx = np.random.choice(len(data), max_acf_samples, replace=False)
+                data = data[idx]
             acfs = []
             for sample in data:
                 try:
                     if np.var(sample) < 1e-9:
                         acfs.append(np.zeros(nlags + 1))
                         continue
-                        
-                    acfs.append(acf(sample, nlags=nlags, fft=True))
+                    a = acf(sample, nlags=nlags, fft=True)
+                    if len(a) < nlags + 1:
+                        a = np.pad(a, (0, nlags + 1 - len(a)))
+                    acfs.append(a[:nlags + 1])
                 except Exception:
                     acfs.append(np.zeros(nlags + 1))
-            return np.mean(acfs, axis=0) if acfs else np.zeros(nlags + 1)
+            return np.nan_to_num(np.mean(acfs, axis=0)) if acfs else np.zeros(nlags + 1)
         
         total_mse = 0
         for feat_idx in range(n_features):
@@ -315,7 +322,10 @@ class InlineEvaluationCallback(pl.Callback):
         real_kurt = kurtosis(real_flat, axis=0)
         synth_kurt = kurtosis(synth_flat, axis=0)
         
+        skew_diff = np.nan_to_num(np.abs(real_skew - synth_skew))
+        kurt_diff = np.nan_to_num(np.abs(real_kurt - synth_kurt))
+        
         return {
-            'Skew_Drift': np.mean(np.abs(real_skew - synth_skew)),
-            'Kurt_Drift': np.mean(np.abs(real_kurt - synth_kurt))
+            'Skew_Drift': float(np.mean(skew_diff)),
+            'Kurt_Drift': float(np.mean(kurt_diff))
         }
