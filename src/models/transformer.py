@@ -198,12 +198,12 @@ class WaveletDiffusionTransformer(pl.LightningModule):
         self.timestep_sampler = HybridTimestepSampler(
             alpha_bar_all=self.alpha_bar_all,
             T=self.T,
-            warmup_steps=5000,       # Use Min-SNR for first 5000 steps
-            gamma=5.0,               # Min-SNR clamping (paper default)
-            exploration_ratio=0.3,   # 70% Min-SNR, 30% adaptive
-            floor_prob=0.001,        # Minimum sampling probability
-            ema_decay=0.995,         # Smooth loss history updates
-            update_frequency=10      # Update history every 10 batches
+            warmup_pct=self.pct_start * 0.8,  # End warmup BEFORE LR peak to allow adaptation
+            gamma=5.0,                        # Min-SNR clamping (paper default)
+            exploration_ratio=0.3,            # 70% Min-SNR, 30% adaptive
+            floor_prob=0.001,                 # Minimum sampling probability
+            ema_decay=0.997,                  # Smooth loss history updates
+            update_frequency=10               # Update history every 10 batches
         )
         
         # Loss tracking
@@ -373,6 +373,10 @@ class WaveletDiffusionTransformer(pl.LightningModule):
         # Ensure timestep sampler tensors are on the correct device BEFORE training
         # This is critical for CUDAGraph compatibility - no .to() calls during training
         self.timestep_sampler.ensure_device(self.device)
+        
+        # Resolve percentage-based warmup now that total_training_steps is known
+        if self.total_training_steps is not None:
+            self.timestep_sampler.set_total_steps(self.total_training_steps)
         
         # Pre-initialize wavelet loss weights tensor on the correct device
         # This avoids lazy tensor creation during the first training step
