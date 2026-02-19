@@ -320,6 +320,16 @@ The evaluation suite includes:
 
 ---
 
+## 🔬 Adaptive Timestep Sampling (Importance Weighting)
+
+WaveletDiff implements a **Hybrid Timestep Sampler** that transitions from broad stability (Min-SNR-γ) to targeted "hard" example sampling. This ensures the model spends more capacity on the most difficult diffusion stages once the base manifold is established.
+
+- **Warmup Phase**: The sampler stays in high-stability Min-SNR-γ mode for the first **50%** of the `OneCycleLR` warmup (`pct_start * 0.5`).
+- **Adaptive Phase**: Automatically increases the sampling probability of timesteps with higher relative loss.
+- **Stability**: Uses a high EMA decay (**0.997**) to prevent the sampling distribution from "shaking" and a **30%** exploration ratio to ensure the entire diffusion path is still covered.
+
+---
+
 ## 🎮 Google Colab
 
 Training and evaluation notebooks are Colab-ready:

@@ -198,7 +198,7 @@ class WaveletDiffusionTransformer(pl.LightningModule):
         self.timestep_sampler = HybridTimestepSampler(
             alpha_bar_all=self.alpha_bar_all,
             T=self.T,
-            warmup_pct=self.pct_start * 0.8,  # End warmup BEFORE LR peak to allow adaptation
+            warmup_pct=self.pct_start * 0.5,  # End warmup BEFORE LR peak to allow adaptation
             gamma=5.0,                        # Min-SNR clamping (paper default)
             exploration_ratio=0.3,            # 70% Min-SNR, 30% adaptive
             floor_prob=0.001,                 # Minimum sampling probability
