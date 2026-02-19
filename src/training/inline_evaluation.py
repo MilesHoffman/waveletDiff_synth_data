@@ -58,13 +58,22 @@ class InlineEvaluationCallback(pl.Callback):
         
         # Prepare scale conditioning if available
         scale = None
+        conditions = None
+        indices = None
         if getattr(self.data_module, 'has_conditioning', False):
             atr_pcts = self.data_module.norm_stats['atr_pcts']
             indices = np.random.choice(len(atr_pcts), size=self.n_samples, replace=True)
             scale = torch.FloatTensor(atr_pcts[indices]).to(pl_module.device)
 
+        # Prepare quarter-profile conditions if available
+        if getattr(self.data_module, 'has_quarter_conditioning', False) and indices is not None:
+            qp = self.data_module.norm_stats['quarter_profiles']
+            conditions = []
+            for name in self.data_module.quarter_profile_names:
+                conditions.append(torch.FloatTensor(qp[name][indices]).to(pl_module.device))
+
         # Generate synthetic samples
-        synth_wavelet = self._generate_samples(pl_module, scale=scale)
+        synth_wavelet = self._generate_samples(pl_module, scale=scale, conditions=conditions)
         synth_ts_norm = self.data_module.convert_wavelet_to_timeseries(synth_wavelet).cpu().numpy()
         
         # Get real samples (normalized)
@@ -124,7 +133,7 @@ class InlineEvaluationCallback(pl.Callback):
         for k, v in results.items():
             pl_module.log(f"eval/{k}", v, prog_bar=False)
     
-    def _generate_samples(self, pl_module, scale=None) -> torch.Tensor:
+    def _generate_samples(self, pl_module, scale=None, conditions=None) -> torch.Tensor:
         """Generate synthetic wavelet samples using DDIM (fast)."""
         pl_module.eval()
         device = pl_module.device
@@ -136,25 +145,20 @@ class InlineEvaluationCallback(pl.Callback):
             # Start from pure noise
             x_t = torch.randn(self.n_samples, *sample_shape, device=device)
             
-            # Simple DDPM reverse process (can be replaced with DDIM for speed)
             T = pl_module.T
-            # Use registered buffers directly
-            # beta_all corresponds to the beta schedule
-            # alpha_bar_all corresponds to cumulative product of alphas
             betas = pl_module.beta_all
             alphas_cumprod = pl_module.alpha_bar_all
             
             # DDIM-style skip (use 20 steps for speed)
             step_size = max(1, T // 20)
             timesteps = list(range(T - 1, -1, -step_size))
-            total_steps = len(timesteps)
             
             for i, t in enumerate(timesteps):
                 t_tensor = torch.full((self.n_samples,), t, device=device, dtype=torch.long)
                 t_norm = t_tensor.float() / T
                 
                 # Predict noise
-                predicted_noise = pl_module(x_t, t_norm, scale=scale)
+                predicted_noise = pl_module(x_t, t_norm, scale=scale, conditions=conditions)
                 
                 # Compute x_{t-1}
                 alpha_t = alphas_cumprod[t]

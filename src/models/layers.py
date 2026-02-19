@@ -232,6 +232,32 @@ class ScaleEmbedding(nn.Module):
         return self.mlp(emb)
 
 
+class ConditionProfileEmbedding(nn.Module):
+    """Embedding for quarter-window conditioning profiles.
+    
+    Takes a (batch, n_quarters) profile vector and projects it
+    to (batch, embed_dim) via a two-layer MLP.
+    """
+    
+    def __init__(self, embed_dim, n_quarters=4):
+        super().__init__()
+        self.mlp = nn.Sequential(
+            nn.Linear(n_quarters, embed_dim),
+            nn.SiLU(),
+            nn.Linear(embed_dim, embed_dim)
+        )
+    
+    def forward(self, profile):
+        """
+        Args:
+            profile: Quarter-window values, shape (batch_size, n_quarters)
+        
+        Returns:
+            Embeddings of shape (batch_size, embed_dim)
+        """
+        return self.mlp(profile.float())
+
+
 class PositionalEncoding(nn.Module):
     """Sinusoidal positional encoding for transformer sequences."""
     

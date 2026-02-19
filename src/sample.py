@@ -21,8 +21,8 @@ def main():
                        help='Experiment name (matches train.py experiment_name)')
     parser.add_argument('--dataset', type=str, default=None,
                        help='Dataset name (overrides config)')
-    parser.add_argument('--num_samples', type=int, default=10000,
-                       help='Number of samples to generate')
+    parser.add_argument('--num_samples', type=int, default=None,
+                       help='Number of samples to generate (default: match real dataset size)')
     parser.add_argument('--sampling_method', type=str, choices=['ddpm', 'ddim'], default=None,
                        help='Sampling method (overrides config)')
     parser.add_argument('--compile_mode', type=str, choices=['none', 'default', 'reduce-overhead', 'max-autotune'], default='none',
@@ -36,6 +36,8 @@ def main():
     parser.add_argument('--num_layers', type=int, default=None, help='Number of layers (override)')
     parser.add_argument('--num_heads', type=int, default=None, help='Number of heads (override)')
     parser.add_argument('--wavelet_levels', type=int, default=None, help='Wavelet levels (override)')
+    parser.add_argument('--guidance_scale', type=float, default=None,
+                       help='CFG guidance scale (1.0=no guidance, >1.0=stronger conditioning)')
     
     args = parser.parse_args()
     
@@ -133,29 +135,60 @@ def main():
     if args.compile_mode != 'none':
         print(f"Compiling model with mode='{args.compile_mode}'...")
         model = torch.compile(model, mode=args.compile_mode)
+        
+        # Warmup: trigger compilation before the sampling loop
+        print("Warming up compiled model...")
+        dummy_x = torch.randn(2, model.input_dim, model.num_features, device=model.device)
+        dummy_t = torch.tensor([0.5, 0.5], device=model.device)
+        with torch.no_grad():
+            _ = model(dummy_x, dummy_t)
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        print("Warmup complete.")
     
     # Create trainer for evaluation
     trainer_util = DiffusionTrainer(model)
     
     # Generate samples
-    print(f"Generating {args.num_samples} samples...")
+    # Default to generating the same number as real dataset for 1-to-1 eval
+    num_real = len(data_module.raw_data_tensor)
+    num_samples = args.num_samples if args.num_samples is not None else num_real
+    print(f"Generating {num_samples} samples (real dataset has {num_real})...")
     
     # Generate using specified method
     sampling_method = config['sampling']['method']
     use_ddim = (sampling_method == "ddim")
     
-    # Prepare optional scale conditioning (ATR pcts from real data)
+    # Prepare conditioning: use sequential indices for 1-to-1 mapping with real data
     scale_conditioning = None
     sample_indices = None
     if getattr(data_module, 'has_conditioning', False):
-        print("Model has conditioning enabled. Sampling real ATRs for conditioning...")
         num_avail = len(data_module.norm_stats['atr_pcts'])
-        sample_indices = np.random.choice(num_avail, size=args.num_samples, replace=True)
+        if num_samples <= num_avail:
+            sample_indices = np.arange(num_samples)
+        else:
+            sample_indices = np.random.choice(num_avail, size=num_samples, replace=True)
         scale_pcts = data_module.norm_stats['atr_pcts'][sample_indices]
         scale_conditioning = torch.FloatTensor(scale_pcts).to(model.device)
+        print(f"Scale conditioning: {num_samples} ATR values (1-to-1={num_samples <= num_avail})")
+    
+    # Prepare quarter-profile conditions
+    conditions = None
+    guidance_scale = args.guidance_scale or config.get('conditioning', {}).get('guidance_scale', 1.0)
+    if getattr(data_module, 'has_quarter_conditioning', False) and sample_indices is not None:
+        qp = data_module.norm_stats['quarter_profiles']
+        profile_names = data_module.quarter_profile_names
+        conditions = []
+        for name in profile_names:
+            profile_vals = qp[name][sample_indices]
+            conditions.append(torch.FloatTensor(profile_vals).to(model.device))
+        print(f"Quarter conditioning: {profile_names}, guidance_scale={guidance_scale}")
     
     print(f"Generating {sampling_method.upper()} samples...")
-    samples = trainer_util.generate_samples(args.num_samples, use_ddim=use_ddim, scale=scale_conditioning)
+    samples = trainer_util.generate_samples(
+        num_samples, use_ddim=use_ddim, scale=scale_conditioning,
+        conditions=conditions, guidance_scale=guidance_scale
+    )
     
     # Convert to time series
     print("Converting to time series...")
@@ -171,29 +204,31 @@ def main():
     samples_norm = samples_ts.cpu().numpy()
     real_data_norm = data_module.raw_data_tensor.numpy()
     
+    # Use matching subset of real data when generating fewer than full dataset
+    if num_samples < num_real:
+        real_data_norm_subset = real_data_norm[sample_indices] if sample_indices is not None else real_data_norm[:num_samples]
+    else:
+        real_data_norm_subset = real_data_norm
+    
     # Inverse normalize to get Dollar values (Original Scale)
-    # We use a fixed anchor of 100.0 to eliminate price scale noise from evaluation
     FIXED_ANCHOR = 100.0
-    print(f"Inverse normalizing generated samples to Dollar space (Index-{FIXED_ANCHOR})...")
-    # Use the same sample_indices for denormalization to ensure consistency
+    print(f"Inverse normalizing to Dollar space (Index-{FIXED_ANCHOR})...")
     samples_dollar = data_module.inverse_normalize(samples_norm.copy(), sample_indices=sample_indices, fixed_anchor=FIXED_ANCHOR)
     
-    print(f"Inverse normalizing Real samples to Dollar space (Index-{FIXED_ANCHOR})...")
-    real_indices = np.arange(len(real_data_norm))
-    real_samples_dollar = data_module.inverse_normalize(real_data_norm.copy(), sample_indices=real_indices, fixed_anchor=FIXED_ANCHOR)
+    real_indices = sample_indices if sample_indices is not None else np.arange(len(real_data_norm_subset))
+    real_samples_dollar = data_module.inverse_normalize(real_data_norm_subset.copy(), sample_indices=real_indices, fixed_anchor=FIXED_ANCHOR)
     
     # Save Dollar Space
     np.save(real_samples_path, real_samples_dollar)
     np.save(output_file_path, samples_dollar)
     
     # Save Reparameterized Space
-    np.save(real_samples_norm_path, real_data_norm)
+    np.save(real_samples_norm_path, real_data_norm_subset)
     np.save(output_norm_path, samples_norm)
     
-    print(f"Real samples saved to {real_samples_path}")
-    print(f"Generated samples saved to {output_file_path}")
-    print(f"Real samples (norm) saved to {real_samples_norm_path}")
-    print(f"Generated samples (norm) saved to {output_norm_path}")
+    print(f"Saved {len(real_samples_dollar)} real + {len(samples_dollar)} generated (matched 1-to-1)")
+    print(f"Real: {real_samples_path}")
+    print(f"Generated: {output_file_path}")
 
 
 if __name__ == "__main__":

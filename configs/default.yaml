@@ -39,6 +39,12 @@ sampling:
   ddim_eta: 0.0  # Stochasticity parameter for DDIM (0.0 = fully deterministic, 1.0 = DDPM-like)
   ddim_steps: null  # Number of DDIM steps (null = use all 1000 steps, e.g., 50 = accelerated DDIM)
 
+# Quarter-window conditioning & Classifier-Free Guidance
+conditioning:
+  cfg_dropout_prob: 0.15  # Probability of dropping all conditions during training
+  guidance_scale: 1.0     # CFG guidance scale at inference (1.0=no guidance, >1.0=stronger)
+  quarter_conditions: true
+
 # Data configuration
 data:
   normalize_data: true

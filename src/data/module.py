@@ -64,17 +64,36 @@ class WaveletTimeSeriesDataModule(pl.LightningDataModule):
             self.atr_tensor = None
             self.has_conditioning = False
         
+        # Create quarter-profile tensors for conditioning
+        self.has_quarter_conditioning = False
+        self.quarter_profile_tensors = {}
+        if (self.norm_stats is not None
+                and self.norm_stats.get('quarter_profiles') is not None):
+            qp = self.norm_stats['quarter_profiles']
+            self.quarter_profile_names = list(qp.keys())
+            for name, arr in qp.items():
+                self.quarter_profile_tensors[name] = torch.FloatTensor(arr)
+            self.has_quarter_conditioning = True
+            n = len(next(iter(qp.values())))
+            print(f"Quarter conditioning enabled: {len(self.quarter_profile_names)} profiles × {n} samples")
+        
         # Move dataset to GPU RAM if available (eliminates PCIe transfer overhead)
         self.data_on_gpu = torch.cuda.is_available()
         if self.data_on_gpu:
             self.data_tensor = self.data_tensor.cuda()
             if self.atr_tensor is not None:
                 self.atr_tensor = self.atr_tensor.cuda()
+            for name in self.quarter_profile_tensors:
+                self.quarter_profile_tensors[name] = self.quarter_profile_tensors[name].cuda()
             print("Dataset moved to GPU RAM for faster training")
         
         # Create dataset with conditioning if available
         if self.has_conditioning:
-            self.dataset = TensorDataset(self.data_tensor, self.atr_tensor)
+            dataset_tensors = [self.data_tensor, self.atr_tensor]
+            if self.has_quarter_conditioning:
+                for name in self.quarter_profile_names:
+                    dataset_tensors.append(self.quarter_profile_tensors[name])
+            self.dataset = TensorDataset(*dataset_tensors)
         else:
             self.dataset = TensorDataset(self.data_tensor)
         

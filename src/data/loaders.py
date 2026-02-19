@@ -8,6 +8,7 @@ import pandas as pd
 import numpy as np
 import torch
 import os
+from scipy.stats import skew as scipy_skew
 from typing import Dict, Any, Tuple
 
 ATR_PERIOD = 14
@@ -105,6 +106,164 @@ def compute_mfi(high: np.ndarray, low: np.ndarray, close: np.ndarray,
     
     return mfi
 
+
+
+# ─── Quarter-Window Conditioning Helpers ───────────────────────────────────────
+
+def compute_quarter_yang_zhang_vol(open_q: np.ndarray, high_q: np.ndarray,
+                                   low_q: np.ndarray, close_q: np.ndarray) -> float:
+    """
+    Yang-Zhang volatility estimator for a single quarter-window.
+
+    Decomposes into overnight (open-to-close) and Rogers-Satchell components,
+    correcting for drift and overnight gaps. Returns log-transformed value
+    for embedding stability.
+    """
+    n = len(close_q)
+    if n < 2:
+        return 0.0
+
+    log_oc = np.log(open_q[1:] / close_q[:-1])  # Overnight returns
+    log_co = np.log(close_q / open_q)             # Close-to-open returns
+    log_ho = np.log(high_q / open_q)
+    log_lo = np.log(low_q / open_q)
+    log_hc = np.log(high_q / close_q)
+    log_lc = np.log(low_q / close_q)
+
+    # Overnight variance
+    sigma_o = np.var(log_oc, ddof=1) if len(log_oc) > 1 else 0.0
+
+    # Close-to-open variance
+    sigma_c = np.var(log_co, ddof=1) if n > 1 else 0.0
+
+    # Rogers-Satchell variance
+    rs = log_ho * log_hc + log_lo * log_lc
+    sigma_rs = np.mean(rs) if len(rs) > 0 else 0.0
+
+    # Yang-Zhang combination (k chosen for minimum variance)
+    k = 0.34 / (1.34 + (n + 1) / (n - 1)) if n > 1 else 0.34
+    sigma_yz_sq = sigma_o + k * sigma_c + (1 - k) * sigma_rs
+
+    sigma_yz = np.sqrt(max(sigma_yz_sq, 0.0))
+    return float(np.log1p(sigma_yz * 100.0))  # Log-transform for embedding
+
+
+def compute_quarter_log_return(close_q: np.ndarray) -> float:
+    """Cumulative log-return over a quarter-window."""
+    if len(close_q) < 2:
+        return 0.0
+    return float(np.log(close_q[-1] / close_q[0]))
+
+
+def compute_quarter_adx(high_q: np.ndarray, low_q: np.ndarray,
+                        close_q: np.ndarray) -> float:
+    """
+    Simplified ADX for a quarter-window.
+
+    Uses the directional movement ratio averaged over the quarter,
+    normalized to [0, 1]. Adapted for short windows where standard
+    14-period Wilder smoothing is not applicable.
+    """
+    n = len(close_q)
+    if n < 2:
+        return 0.0
+
+    up_move = np.diff(high_q)
+    down_move = -np.diff(low_q)
+
+    plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0.0)
+    minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0.0)
+
+    prev_close = close_q[:-1]
+    tr = np.maximum(
+        high_q[1:] - low_q[1:],
+        np.maximum(
+            np.abs(high_q[1:] - prev_close),
+            np.abs(low_q[1:] - prev_close)
+        )
+    )
+    tr_sum = np.sum(tr) + 1e-10
+
+    plus_di = np.sum(plus_dm) / tr_sum
+    minus_di = np.sum(minus_dm) / tr_sum
+
+    di_sum = plus_di + minus_di
+    if di_sum < 1e-10:
+        return 0.0
+
+    dx = abs(plus_di - minus_di) / di_sum
+    return float(np.clip(dx, 0.0, 1.0))
+
+
+def compute_quarter_vwap_dev(high_q: np.ndarray, low_q: np.ndarray,
+                             close_q: np.ndarray, volume_q: np.ndarray,
+                             atr_mean: float) -> float:
+    """
+    VWAP deviation for a quarter-window, ATR-normalized.
+
+    Measures how far the closing price sits from the volume-weighted
+    average price, capturing institutional flow direction.
+    """
+    typical_price = (high_q + low_q + close_q) / 3.0
+    vol_sum = np.sum(volume_q) + 1e-10
+    vwap = np.sum(typical_price * volume_q) / vol_sum
+
+    deviation = (close_q[-1] - vwap) / (atr_mean + 1e-10)
+    return float(deviation)
+
+
+def compute_quarter_skew(close_q: np.ndarray) -> float:
+    """
+    Fisher skewness of log-returns within a quarter-window.
+
+    Captures the asymmetry of the return distribution — negative skew
+    indicates crash-prone dynamics, positive skew indicates squeeze-prone.
+    """
+    if len(close_q) < 3:
+        return 0.0
+    log_returns = np.diff(np.log(close_q))
+    if np.std(log_returns) < 1e-10:
+        return 0.0
+    return float(scipy_skew(log_returns, bias=False))
+
+
+def compute_quarter_profiles(open_w: np.ndarray, high_w: np.ndarray,
+                             low_w: np.ndarray, close_w: np.ndarray,
+                             volume_w: np.ndarray, atr_mean: float,
+                             n_quarters: int = 4) -> dict:
+    """
+    Compute all 5 conditioning profiles for a single window.
+
+    Splits the window into n_quarters equal segments and computes
+    each metric per segment.
+
+    Returns:
+        dict with keys: 'yz', 'ret', 'adx', 'vwap', 'skew'
+        Each value is a numpy array of shape (n_quarters,).
+    """
+    seq_len = len(close_w)
+    q_size = seq_len // n_quarters
+
+    profiles = {k: np.zeros(n_quarters, dtype=np.float32)
+                for k in ('yz', 'ret', 'adx', 'vwap', 'skew')}
+
+    for q in range(n_quarters):
+        s = q * q_size
+        e = s + q_size if q < n_quarters - 1 else seq_len
+
+        oq = open_w[s:e]
+        hq = high_w[s:e]
+        lq = low_w[s:e]
+        cq = close_w[s:e]
+        vq = volume_w[s:e]
+
+        profiles['yz'][q] = compute_quarter_yang_zhang_vol(oq, hq, lq, cq)
+        profiles['ret'][q] = compute_quarter_log_return(cq)
+        profiles['adx'][q] = compute_quarter_adx(hq, lq, cq)
+        profiles['vwap'][q] = compute_quarter_vwap_dev(hq, lq, cq, vq, atr_mean)
+        profiles['skew'][q] = compute_quarter_skew(cq)
+
+    return profiles
 
 
 def reparameterize_ohlc_window(ohlc: np.ndarray, atr_values: np.ndarray) -> Tuple[np.ndarray, float, float]:
@@ -383,7 +542,8 @@ def load_stocks_data(data_dir: str, seq_len: int = 24, normalize_data: bool = Tr
     windows = []
     anchors = []
     atr_pcts = []
-    vol_smas_window = [] # Store SMA reference for reconstruction
+    vol_smas_window = []
+    quarter_profiles = {k: [] for k in ('yz', 'ret', 'adx', 'vwap', 'skew')}
     
     eps = 1e-6
     
@@ -472,11 +632,28 @@ def load_stocks_data(data_dir: str, seq_len: int = 24, normalize_data: bool = Tr
         anchors.append(anchor)
         atr_pcts.append(atr_pct)
         vol_smas_window.append(curr_sma)
+        
+        # Quarter-window conditioning profiles
+        mean_atr = np.mean(atr_window)
+        profiles = compute_quarter_profiles(
+            open_prices[start_idx:end_idx],
+            high_prices[start_idx:end_idx],
+            low_prices[start_idx:end_idx],
+            close_prices[start_idx:end_idx],
+            volume[start_idx:end_idx],
+            atr_mean=mean_atr
+        )
+        for k in quarter_profiles:
+            quarter_profiles[k].append(profiles[k])
     
     windows = np.array(windows, dtype=np.float32)
     anchors = np.array(anchors, dtype=np.float32)
     atr_pcts = np.array(atr_pcts, dtype=np.float32)
     vol_smas_window = np.array(vol_smas_window, dtype=np.float32)
+    
+    # Stack quarter profiles: each (N, 4)
+    quarter_profile_arrays = {k: np.array(v, dtype=np.float32)
+                              for k, v in quarter_profiles.items()}
     
     norm_stats = {
         'reparameterized': True,
@@ -489,13 +666,16 @@ def load_stocks_data(data_dir: str, seq_len: int = 24, normalize_data: bool = Tr
             'day_sin', 'day_cos', 'cum_ret_norm', 'bar_range_norm',
             'sma_200_dev', 'sma_100_dev', 'sma_50_dev', 'sma_20_dev',
             'atr_ratio', 'rsi_norm', 'mfi_norm'
-        ]
+        ],
+        'quarter_profiles': quarter_profile_arrays,
     }
     
     print(f"Loaded {n_samples} windows with 16-channel feature pipeline")
     print(f"  ATR_pct range: [{atr_pcts.min():.2f}%, {atr_pcts.max():.2f}%]")
     print(f"  Volume Norm mean: {windows[:, :, 4].mean():.4f} (should be ~0)")
     print(f"  RSI Norm mean: {windows[:, :, 14].mean():.4f} (should be ~0)")
+    for pname, parr in quarter_profile_arrays.items():
+        print(f"  {pname}_profile: mean={parr.mean():.4f}, std={parr.std():.4f}")
     
     return torch.FloatTensor(windows), norm_stats
 
