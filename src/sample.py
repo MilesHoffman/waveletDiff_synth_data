@@ -136,17 +136,6 @@ def main():
         print(f"Compiling model with mode='{args.compile_mode}'...")
         model = torch.compile(model, mode=args.compile_mode)
         
-        # Compile the branchless step kernels for CUDAGraph compatibility
-        from training.diffusion_process import (
-            _ddpm_noise_step, _ddpm_coeff_step,
-            _ddim_noise_step, _ddim_coeff_step,
-        )
-        import training.diffusion_process as dp
-        dp._ddpm_noise_step = torch.compile(_ddpm_noise_step, mode=args.compile_mode)
-        dp._ddpm_coeff_step = torch.compile(_ddpm_coeff_step, mode=args.compile_mode)
-        dp._ddim_noise_step = torch.compile(_ddim_noise_step, mode=args.compile_mode)
-        dp._ddim_coeff_step = torch.compile(_ddim_coeff_step, mode=args.compile_mode)
-        
         # Warmup: trigger compilation before the sampling loop
         print("Warming up compiled model...")
         dummy_x = torch.randn(2, model.input_dim, model.num_features, device=model.device)
