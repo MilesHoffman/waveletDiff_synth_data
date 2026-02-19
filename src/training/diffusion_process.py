@@ -10,6 +10,7 @@ Optimized for torch.compile with reduce-overhead (CUDAGraphs):
 import torch
 from abc import ABC, abstractmethod
 from typing import Optional, Dict, List, Union
+from utils.noise_generators import generate_noise
 
 
 class DiffusionSampler(ABC):
@@ -45,7 +46,13 @@ class DiffusionSampler(ABC):
                  guidance_scale: Optional[float] = None,
                  show_progress: bool = True, **kwargs) -> Union[torch.Tensor, Dict[int, torch.Tensor]]:
         """Generate new samples from random noise."""
-        x_t_initial = torch.randn(n_samples, input_dim, num_features, device=self.device)
+        shape = (n_samples, input_dim, num_features)
+        x_t_initial = generate_noise(
+            shape, 
+            device=self.device, 
+            prior=self.model.noise_prior, 
+            nu=self.model.nu
+        )
         return self.sample(x_t_initial, scale=scale, conditions=conditions,
                            guidance_scale=guidance_scale, show_progress=show_progress, **kwargs)
     
@@ -62,38 +69,34 @@ class DiffusionSampler(ABC):
 
 # ── Branchless denoising kernels (CUDAGraph-safe) ──────────────────────────
 
-def _ddpm_noise_step(x_t, prediction, alpha_t, alpha_bar_t, alpha_bar_prev, beta_t, noise_mask):
+def _ddpm_noise_step(x_t, prediction, alpha_t, alpha_bar_t, alpha_bar_prev, beta_t, noise_mask, noise):
     """Branchless DDPM step for noise-prediction models."""
     coeff1 = 1.0 / torch.sqrt(alpha_t)
     coeff2 = beta_t / torch.sqrt(1.0 - alpha_bar_t)
     x_mean = coeff1 * (x_t - coeff2 * prediction)
-    noise = torch.randn_like(x_t)
     return x_mean + noise_mask * torch.sqrt(beta_t) * noise
 
 
-def _ddpm_coeff_step(x_t, prediction, alpha_t, alpha_bar_t, alpha_bar_prev, beta_t, noise_mask):
+def _ddpm_coeff_step(x_t, prediction, alpha_t, alpha_bar_t, alpha_bar_prev, beta_t, noise_mask, noise):
     """Branchless DDPM step for coefficient-prediction models."""
     coeff1 = (torch.sqrt(alpha_bar_prev) * beta_t) / (1.0 - alpha_bar_t)
     coeff2 = (torch.sqrt(alpha_t) * (1.0 - alpha_bar_prev)) / (1.0 - alpha_bar_t)
     x_mean = coeff1 * prediction + coeff2 * x_t
-    noise = torch.randn_like(x_t)
     return x_mean + noise_mask * torch.sqrt(beta_t) * noise
 
 
-def _ddim_noise_step(x_t, prediction, alpha_bar_t, alpha_bar_prev, beta_t, sigma):
+def _ddim_noise_step(x_t, prediction, alpha_bar_t, alpha_bar_prev, beta_t, sigma, noise):
     """Branchless DDIM step for noise-prediction models."""
     x_0_pred = (x_t - torch.sqrt(1.0 - alpha_bar_t) * prediction) / torch.sqrt(alpha_bar_t)
     x_next = torch.sqrt(alpha_bar_prev) * x_0_pred + torch.sqrt(1.0 - alpha_bar_prev) * prediction
-    noise = torch.randn_like(x_t)
     return x_next + sigma * noise
 
 
-def _ddim_coeff_step(x_t, prediction, alpha_bar_t, alpha_bar_prev, beta_t, sigma):
+def _ddim_coeff_step(x_t, prediction, alpha_bar_t, alpha_bar_prev, beta_t, sigma, noise):
     """Branchless DDIM step for coefficient-prediction models."""
     x_0_pred = prediction
     noise_pred = (x_t - torch.sqrt(alpha_bar_t) * x_0_pred) / torch.sqrt(1.0 - alpha_bar_t)
     x_next = torch.sqrt(alpha_bar_prev) * x_0_pred + torch.sqrt(1.0 - alpha_bar_prev) * noise_pred
-    noise = torch.randn_like(x_t)
     return x_next + sigma * noise
 
 
@@ -165,6 +168,13 @@ class DDPMSampler(DiffusionSampler):
                 t_norm = sched['t_norms'][i].expand(batch_size)
                 prediction = self._get_prediction(x_t, t_norm, scale, conditions, guidance_scale).clone()
                 
+                noise = generate_noise(
+                    shape=x_t.shape, 
+                    device=self.device, 
+                    prior=self.model.noise_prior, 
+                    nu=self.model.nu
+                )
+                
                 x_t = step_fn(
                     x_t, prediction,
                     sched['alpha_t'][i],
@@ -172,6 +182,7 @@ class DDPMSampler(DiffusionSampler):
                     sched['alpha_bar_prev'][i],
                     sched['beta_t'][i],
                     sched['noise_mask'][i],
+                    noise
                 )
                 
                 # Progress reporting
@@ -285,12 +296,20 @@ class DDIMSampler(DiffusionSampler):
                 t_norm = sched['t_norms'][i].expand(batch_size)
                 prediction = self._get_prediction(x_t, t_norm, scale, conditions, guidance_scale).clone()
                 
+                noise = generate_noise(
+                    shape=x_t.shape, 
+                    device=self.device, 
+                    prior=self.model.noise_prior, 
+                    nu=self.model.nu
+                )
+                
                 x_t = step_fn(
                     x_t, prediction,
                     sched['alpha_bar_t'][i],
                     sched['alpha_bar_prev'][i],
                     sched['beta_t'][i],
                     sched['sigma'][i],
+                    noise
                 )
                 
                 if show_progress and milestone_idx < len(progress_milestones):

@@ -16,6 +16,7 @@ from .layers import TimeEmbedding, WaveletLevelTransformer, ScaleEmbedding, Cond
 from .attention import CrossLevelAttention
 from torch.optim.lr_scheduler import CosineAnnealingLR, ReduceLROnPlateau, LambdaLR, OneCycleLR
 from utils.noise_schedules import get_noise_schedule
+from utils.noise_generators import generate_noise
 from utils.timestep_sampler import HybridTimestepSampler
 
 
@@ -44,6 +45,8 @@ class WaveletDiffusionTransformer(pl.LightningModule):
         use_cross_level_attention = config['attention']['use_cross_level_attention']
         ddim_eta = config['sampling']['ddim_eta']
         ddim_steps = config['sampling']['ddim_steps']
+        exploration_ratio = config.get('sampling', {}).get('exploration_ratio', 0.3)
+        adaptive_start_pct = config.get('sampling', {}).get('adaptive_start_pct', 0.8)
         energy_weight = config['energy']['weight']
         max_epochs = config['training']['epochs']
         noise_schedule = config['noise']['schedule']
@@ -88,6 +91,8 @@ class WaveletDiffusionTransformer(pl.LightningModule):
         
         self.ddim_eta = ddim_eta
         self.ddim_steps = ddim_steps
+        self.exploration_ratio = exploration_ratio
+        self.adaptive_start_pct = adaptive_start_pct
         
         # Get wavelet coefficient structure from data module
         if data_module is not None:
@@ -106,6 +111,12 @@ class WaveletDiffusionTransformer(pl.LightningModule):
         # Initialize wavelet loss function
         self.energy_weight = energy_weight
         self.use_energy_term = (energy_weight > 0)
+        self.noise_prior = config.get('noise', {}).get('prior', 'gaussian')
+        self.nu = config.get('noise', {}).get('nu', 3.0)
+        
+        loss_type = config.get('loss', {}).get('type', 'mse')
+        huber_delta = config.get('loss', {}).get('huber_delta', 1.0)
+        
         from .wavelet_losses import get_wavelet_loss_fn
         self.wavelet_loss_fn = get_wavelet_loss_fn(
             level_dims=self.level_dims,
@@ -113,14 +124,14 @@ class WaveletDiffusionTransformer(pl.LightningModule):
             strategy="coefficient_weighted",
             approximation_weight=2.0,
             use_energy_term=(energy_weight > 0),
-            energy_weight=energy_weight
+            energy_weight=energy_weight,
+            loss_type=loss_type,
+            huber_delta=huber_delta
         )
 
+        print(f"Using {loss_type} loss strategy with {self.noise_prior} prior (nu={self.nu})")
         if energy_weight > 0:
-            print(f"Using coefficient_weighted loss strategy with energy term:")
             print(f"  Energy weight: {energy_weight}")
-        else:
-            print(f"Using coefficient_weighted loss strategy (no energy term)")
 
         # Create separate transformers for each wavelet level
         self.level_transformers = nn.ModuleList()
@@ -216,12 +227,12 @@ class WaveletDiffusionTransformer(pl.LightningModule):
         self.timestep_sampler = HybridTimestepSampler(
             alpha_bar_all=self.alpha_bar_all,
             T=self.T,
-            warmup_pct=self.pct_start * 0.5,  # End warmup BEFORE LR peak to allow adaptation
-            gamma=5.0,                        # Min-SNR clamping (paper default)
-            exploration_ratio=0.3,            # 70% Min-SNR, 30% adaptive
-            floor_prob=0.001,                 # Minimum sampling probability
-            ema_decay=0.997,                  # Smooth loss history updates
-            update_frequency=10               # Update history every 10 batches
+            warmup_pct=self.pct_start * self.adaptive_start_pct,  # Start adaptive sampling relative to peak LR
+            gamma=5.0,                                            # Min-SNR clamping (paper default)
+            exploration_ratio=self.exploration_ratio,             # E.g. 70% Min-SNR, 30% adaptive
+            floor_prob=0.001,                                     # Minimum sampling probability
+            ema_decay=0.997,                                      # Smooth loss history updates
+            update_frequency=10                                   # Update history every 10 batches
         )
         
         # Loss tracking
@@ -349,7 +360,13 @@ class WaveletDiffusionTransformer(pl.LightningModule):
 
     def compute_forward_process(self, x_0, t):
         """Compute forward diffusion process (add noise)."""
-        noise = torch.randn_like(x_0)
+        noise = generate_noise(
+            shape=x_0.shape, 
+            device=x_0.device, 
+            dtype=x_0.dtype, 
+            prior=self.noise_prior, 
+            nu=self.nu
+        )
         alpha_bar_t = self.alpha_bar_all[t].view(-1, 1, 1)
         x_t = torch.sqrt(alpha_bar_t) * x_0 + torch.sqrt(1 - alpha_bar_t) * noise
         return x_t, noise
@@ -395,7 +412,7 @@ class WaveletDiffusionTransformer(pl.LightningModule):
             raise ValueError(f"Unknown prediction target: {self.prediction_target}")
         
         total_loss = self.wavelet_loss_fn(target, prediction)
-        per_sample_losses = F.mse_loss(target, prediction, reduction='none').mean(dim=(1, 2))
+        per_sample_losses = self.wavelet_loss_fn.compute_per_sample_loss(target, prediction)
         
         return total_loss, per_sample_losses
 
