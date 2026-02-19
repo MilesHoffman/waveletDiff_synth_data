@@ -3,6 +3,7 @@ compiled_32_high.ckpt
 
 # Python
 __pycache__/
+*.cpython-313.pyc
 *.py[cod]
 *$py.class
 *.so
@@ -24,6 +25,7 @@ share/python-wheels/
 .installed.cfg
 *.egg
 MANIFEST
+
 
 
 # Virtual Environment

@@ -18,9 +18,19 @@ class DiffusionSampler(ABC):
         self.T = T
         self.device = next(model.parameters()).device
     
+    def _get_prediction(self, x_t, t_norm, scale, conditions, guidance_scale):
+        """Get model prediction with optional CFG guidance."""
+        if guidance_scale is not None and guidance_scale != 1.0 and conditions is not None:
+            uncond_pred = self.model(x_t, t_norm, scale=scale, conditions=None)
+            cond_pred = self.model(x_t, t_norm, scale=scale, conditions=conditions)
+            return uncond_pred + guidance_scale * (cond_pred - uncond_pred)
+        return self.model(x_t, t_norm, scale=scale, conditions=conditions)
+    
     @abstractmethod
     def sample(self, x_t_initial: torch.Tensor, 
                scale: Optional[torch.Tensor] = None,
+               conditions: Optional[List[torch.Tensor]] = None,
+               guidance_scale: Optional[float] = None,
                store_intermediates: bool = False,
                store_specific_timesteps: Optional[List[int]] = None,
                show_progress: bool = True) -> Union[torch.Tensor, Dict[int, torch.Tensor]]:
@@ -29,10 +39,13 @@ class DiffusionSampler(ABC):
     
     def generate(self, n_samples: int, input_dim: int, num_features: int, 
                  scale: Optional[torch.Tensor] = None,
+                 conditions: Optional[List[torch.Tensor]] = None,
+                 guidance_scale: Optional[float] = None,
                  show_progress: bool = True, **kwargs) -> Union[torch.Tensor, Dict[int, torch.Tensor]]:
         """Generate new samples from random noise."""
         x_t_initial = torch.randn(n_samples, input_dim, num_features, device=self.device)
-        return self.sample(x_t_initial, scale=scale, show_progress=show_progress, **kwargs)
+        return self.sample(x_t_initial, scale=scale, conditions=conditions,
+                           guidance_scale=guidance_scale, show_progress=show_progress, **kwargs)
     
     def reconstruct(self, x_0_original: torch.Tensor, show_progress: bool = True, **kwargs) -> torch.Tensor:
         """Reconstruct samples by adding noise then denoising."""
@@ -83,6 +96,8 @@ class DDPMSampler(DiffusionSampler):
     
     def sample(self, x_t_initial: torch.Tensor, 
                scale: Optional[torch.Tensor] = None,
+               conditions: Optional[List[torch.Tensor]] = None,
+               guidance_scale: Optional[float] = None,
                store_intermediates: bool = False,
                store_specific_timesteps: Optional[List[int]] = None,
                show_progress: bool = True) -> Union[torch.Tensor, Dict[int, torch.Tensor]]:
@@ -114,7 +129,7 @@ class DDPMSampler(DiffusionSampler):
             t_norm = t_tensor.float() / self.T
             
             with torch.no_grad():
-                prediction = self.model(x_t, t_norm, scale=scale)
+                prediction = self._get_prediction(x_t, t_norm, scale, conditions, guidance_scale)
 
             # Perform denoising step
             x_t = self._ddpm_step(x_t, prediction, t, t_prev)
@@ -206,6 +221,8 @@ class DDIMSampler(DiffusionSampler):
     
     def sample(self, x_t_initial: torch.Tensor, 
                scale: Optional[torch.Tensor] = None,
+               conditions: Optional[List[torch.Tensor]] = None,
+               guidance_scale: Optional[float] = None,
                store_intermediates: bool = False,
                store_specific_timesteps: Optional[List[int]] = None,
                show_progress: bool = True) -> Union[torch.Tensor, Dict[int, torch.Tensor]]:
@@ -238,7 +255,7 @@ class DDIMSampler(DiffusionSampler):
             t_norm = t_tensor.float() / self.T
             
             with torch.no_grad():
-                prediction = self.model(x_t, t_norm, scale=scale)
+                prediction = self._get_prediction(x_t, t_norm, scale, conditions, guidance_scale)
             
             # Perform denoising step
             x_t = self._ddim_step(x_t, prediction, t, t_prev)

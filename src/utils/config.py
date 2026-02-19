@@ -67,6 +67,11 @@ INTERNAL_DEFAULTS = {
     "performance": {
         "precision": "32",
         "matmul_precision": "medium"
+    },
+    "conditioning": {
+        "cfg_dropout_prob": 0.15,
+        "guidance_scale": 1.0,
+        "quarter_conditions": True
     }
 }
 
