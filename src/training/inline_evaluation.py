@@ -9,7 +9,7 @@ import numpy as np
 import torch
 import pytorch_lightning as pl
 from sklearn.neighbors import NearestNeighbors
-from scipy.stats import wasserstein_distance
+from scipy.stats import wasserstein_distance, skew, kurtosis
 from statsmodels.tsa.stattools import acf
 import time
 
@@ -24,13 +24,15 @@ class InlineEvaluationCallback(pl.Callback):
     - Tail Fidelity: VaR (99th percentile of returns) comparison
     - Temporal Fidelity: ACF MSE on returns
     - Distribution: Wasserstein distance on marginals
+    - Correlation: Frobenius norm of correlation matrix difference
+    - Moments: Skewness/Kurtosis drift
     """
     
     def __init__(
         self,
         data_module,
         eval_every_n_epochs: int = 200,
-        n_samples: int = 500,
+        n_samples: int = 128,
         ohlcv_indices: dict = None
     ):
         """
@@ -52,9 +54,7 @@ class InlineEvaluationCallback(pl.Callback):
         if epoch % self.eval_every != 0:
             return
             
-        print(f"\n{'='*60}")
-        print(f"INLINE EVALUATION - Epoch {epoch}")
-        print(f"{'='*60}")
+        print(f"\n> Inline Evaluation Metrics (Every {self.eval_every} epochs)")
         
         # Prepare scale conditioning if available
         scale = None
@@ -76,30 +76,49 @@ class InlineEvaluationCallback(pl.Callback):
         if self.ohlcv_indices is not None:
             ohlc_valid = self._check_ohlc_invariants(synth_ts_norm)
             results['OHLC_Valid_Pct'] = ohlc_valid * 100
-            print(f"  OHLC Valid (Price): {ohlc_valid*100:.1f}%")
         
         # 2. Memorization (Geometric Fidelity in Norm Space)
         mem_stats = self._compute_memorization_stats(real_ts_norm, synth_ts_norm)
         results.update(mem_stats)
-        print(f"  NN Dist Min (Norm): {mem_stats['NN_Dist_Min']:.4f}")
-        print(f"  NN Dist Avg (Norm): {mem_stats['NN_Dist_Avg']:.4f}")
         
         # 3. Tail Fidelity (VaR of Body Normalized features as return proxy)
         var_diff = self._compute_var_difference(real_ts_norm, synth_ts_norm)
         results['VaR_Norm_Diff'] = var_diff
-        print(f"  VaR Norm Diff:    {var_diff:.4f}")
         
         # 4. Temporal Fidelity (ACF MSE in Norm Space)
         acf_mse = self._compute_acf_mse(real_ts_norm, synth_ts_norm)
         results['ACF_MSE_Norm'] = acf_mse
-        print(f"  ACF MSE (Norm):   {acf_mse:.6f}")
         
         # 5. Distribution (Wasserstein in Norm Space)
         w_dist = self._compute_wasserstein(real_ts_norm, synth_ts_norm)
         results['Wasserstein_Norm'] = w_dist
-        print(f"  Wasserstein (Norm): {w_dist:.4f}")
         
-        print(f"{'='*60}\n")
+        # 6. Correlation Matrix Norm (Structure Check)
+        corr_diff = self._compute_correlation_matrix_diff(real_ts_norm, synth_ts_norm)
+        results['Corr_Norm_Diff'] = corr_diff
+        
+        # 7. Moment Drift (Gaussianity Check)
+        moments = self._compute_moment_drift(real_ts_norm, synth_ts_norm)
+        results.update(moments)
+        
+        # --- Structured Output ---
+        print(f"  • Structural Fidelity")
+        if self.ohlcv_indices is not None:
+             print(f"    OHLC Valid:      {results['OHLC_Valid_Pct']:.1f}%")
+        print(f"    Corr Norm Diff:  {results['Corr_Norm_Diff']:.4f}")
+        print(f"    Wasserstein:     {results['Wasserstein_Norm']:.4f}")
+
+        print(f"\n  • Stylized Facts / Moments")
+        print(f"    Skew Drift:      {moments['Skew_Drift']:.4f}")
+        print(f"    Kurtosis Drift:  {moments['Kurt_Drift']:.4f}")
+        print(f"    VaR Diff:        {results['VaR_Norm_Diff']:.4f}")
+        print(f"    ACF MSE:         {results['ACF_MSE_Norm']:.4f}")
+
+        print(f"\n  • Memorization / Privacy")
+        print(f"    NN Dist Min:     {results['NN_Dist_Min']:.4f}")
+        print(f"    NN Dist Avg:     {results['NN_Dist_Avg']:.4f}")
+        
+        print("-" * 80)
         
         # Log to trainer
         for k, v in results.items():
@@ -125,8 +144,8 @@ class InlineEvaluationCallback(pl.Callback):
             betas = pl_module.beta_all
             alphas_cumprod = pl_module.alpha_bar_all
             
-            # DDIM-style skip (use 50 steps instead of 1000)
-            step_size = max(1, T // 50)
+            # DDIM-style skip (use 20 steps for speed)
+            step_size = max(1, T // 20)
             timesteps = list(range(T - 1, -1, -step_size))
             total_steps = len(timesteps)
             
@@ -176,13 +195,11 @@ class InlineEvaluationCallback(pl.Callback):
     def _sanitize_data(self, data: np.ndarray) -> np.ndarray:
         """Replace Infs/NaNs with finite values to prevent sklearn errors."""
         if not np.all(np.isfinite(data)):
-            # Replace NaNs with 0 and Infs with large finite values
             data = np.nan_to_num(data, nan=0.0, posinf=1e9, neginf=-1e9)
         return np.clip(data, -1e9, 1e9)
 
     def _compute_memorization_stats(self, real_ts: np.ndarray, synth_ts: np.ndarray) -> dict:
         """Compute nearest neighbor distance statistics."""
-        # Sanitize inputs to prevent crashes
         real_ts = self._sanitize_data(real_ts)
         synth_ts = self._sanitize_data(synth_ts)
         
@@ -223,21 +240,26 @@ class InlineEvaluationCallback(pl.Callback):
         
         n_features = real_ts_norm.shape[2]
         
+        max_acf_samples = 64
+        
         def avg_acf(data, nlags):
-            """Average ACF across all samples for a single feature."""
+            """Average ACF across subsampled data for a single feature."""
+            if len(data) > max_acf_samples:
+                idx = np.random.choice(len(data), max_acf_samples, replace=False)
+                data = data[idx]
             acfs = []
             for sample in data:
                 try:
-                    # Check for zero variance (constant signal)
                     if np.var(sample) < 1e-9:
                         acfs.append(np.zeros(nlags + 1))
                         continue
-                        
-                    acfs.append(acf(sample, nlags=nlags, fft=True))
+                    a = acf(sample, nlags=nlags, fft=True)
+                    if len(a) < nlags + 1:
+                        a = np.pad(a, (0, nlags + 1 - len(a)))
+                    acfs.append(a[:nlags + 1])
                 except Exception:
-                    # Fallback for any other errors
                     acfs.append(np.zeros(nlags + 1))
-            return np.mean(acfs, axis=0) if acfs else np.zeros(nlags + 1)
+            return np.nan_to_num(np.mean(acfs, axis=0)) if acfs else np.zeros(nlags + 1)
         
         total_mse = 0
         for feat_idx in range(n_features):
@@ -264,3 +286,46 @@ class InlineEvaluationCallback(pl.Callback):
             w_dists.append(w_dist)
         
         return float(np.mean(w_dists))
+    
+    def _compute_correlation_matrix_diff(self, real_ts: np.ndarray, synth_ts: np.ndarray) -> float:
+        """Compute Frobenius norm of difference between correlation matrices."""
+        real_ts = self._sanitize_data(real_ts)
+        synth_ts = self._sanitize_data(synth_ts)
+        
+        # Flatten pairs: (N*T, D)
+        real_flat = real_ts.reshape(-1, real_ts.shape[2])
+        synth_flat = synth_ts.reshape(-1, synth_ts.shape[2])
+        
+        with np.errstate(divide='ignore', invalid='ignore'):
+            corr_real = np.corrcoef(real_flat, rowvar=False)
+            corr_synth = np.corrcoef(synth_flat, rowvar=False)
+        
+        corr_real = np.nan_to_num(corr_real)
+        corr_synth = np.nan_to_num(corr_synth)
+        
+        if not np.all(np.isfinite(corr_real)): corr_real[:] = 0
+        if not np.all(np.isfinite(corr_synth)): corr_synth[:] = 0
+        
+        return np.linalg.norm(corr_real - corr_synth)
+
+    def _compute_moment_drift(self, real_ts: np.ndarray, synth_ts: np.ndarray) -> dict:
+        """Compute average drift in Skewness and Kurtosis."""
+        real_ts = self._sanitize_data(real_ts)
+        synth_ts = self._sanitize_data(synth_ts)
+        
+        real_flat = real_ts.reshape(-1, real_ts.shape[2])
+        synth_flat = synth_ts.reshape(-1, real_ts.shape[2])
+        
+        real_skew = skew(real_flat, axis=0)
+        synth_skew = skew(synth_flat, axis=0)
+        
+        real_kurt = kurtosis(real_flat, axis=0)
+        synth_kurt = kurtosis(synth_flat, axis=0)
+        
+        skew_diff = np.nan_to_num(np.abs(real_skew - synth_skew))
+        kurt_diff = np.nan_to_num(np.abs(real_kurt - synth_kurt))
+        
+        return {
+            'Skew_Drift': float(np.mean(skew_diff)),
+            'Kurt_Drift': float(np.mean(kurt_diff))
+        }

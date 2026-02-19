@@ -18,7 +18,8 @@ class EvaluationConfig:
     n_iterations: int = 1
     exclude_volume: bool = True
     compute_advanced: bool = True
-    compute_legacy: bool = True  # New flag
+    compute_legacy: bool = True
+    generate_plots: bool = False
     
     # Core metric parameters
     discriminative_iterations: int = 2000
@@ -134,8 +135,26 @@ class EvaluationRunner:
         if self.config.compute_legacy:
             print("\n--- Legacy Metrics (Source Implementation) ---")
             result.core_metrics.update(self._run_legacy_metrics(data))
+            
+        # === Visualizations ===
+        if self.config.generate_plots:
+            print("\n--- Generating Visualizations ---")
+            self._run_visualizations(data)
         
         return result
+    
+    def _run_visualizations(self, data: dict):
+        """Generate plots."""
+        from .visualizations import plot_financial_stylized_facts
+        
+        # We use the 'raw' (price-like) data for this plot as it computes its own returns
+        try:
+            plot_financial_stylized_facts(
+                data['real']['raw'],
+                data['synth']['raw']
+            )
+        except Exception as e:
+            print(f"Visualization failed: {e}")
     
     def _run_core_metrics(self, data: dict) -> dict:
         """Run Tier 1 metrics."""
@@ -234,6 +253,12 @@ class EvaluationRunner:
             kurtosis_score,
             volatility_clustering_score
         )
+        from .advanced_metrics.financial_metrics import (
+            calculate_tail_dependence,
+            calculate_hurst_metrics,
+            calculate_leverage_effect,
+            calculate_drawdown_stats
+        )
         
         metrics = {}
         
@@ -268,6 +293,50 @@ class EvaluationRunner:
         print(f"  → Kurtosis Diff: {metrics['stylized_facts']['kurtosis']:.4f}")
         print(f"  → Volatility Clustering MAE: {metrics['stylized_facts']['volatility_clustering']:.4f}")
 
+        # Quantitative Finance (New Tier)
+        print("Computing Quantitative Finance metrics...")
+        # Use log-returns for financial metrics
+        real_ret = data['real']['log_returns'] # (N, T, D)
+        synth_ret = data['synth']['log_returns']
+        
+        # Tail Dependence
+        metrics['quant_finance'] = {}
+        try:
+            td_res = calculate_tail_dependence(real_ret, synth_ret, q=0.05)
+            metrics['quant_finance'].update(td_res)
+            print(f"  → Tail Dep Diff (Low): {td_res['Tail_Dep_Lower_Diff']:.4f}")
+        except Exception as e:
+            print(f"  → Tail Dep failed: {e}")
+
+        # Hurst Exponent
+        try:
+            hurst_res = calculate_hurst_metrics(real_ret, synth_ret)
+            metrics['quant_finance'].update(hurst_res)
+            print(f"  → Hurst Diff: {hurst_res['Hurst_Diff']:.4f}")
+        except Exception as e:
+            print(f"  → Hurst failed: {e}")
+
+        # Leverage Effect
+        try:
+            lev_res = calculate_leverage_effect(real_ret, synth_ret)
+            metrics['quant_finance'].update(lev_res)
+            print(f"  → Leverage Diff: {lev_res['Leverage_Diff']:.4f}")
+        except Exception as e:
+            print(f"  → Leverage failed: {e}")
+            
+        # Drawdown Dynamics
+        try:
+            # Drawdowns calculated on Price paths (standardized -> re-cumprod or use raw if available?)
+            # Ideally use Raw Price paths if they exist, but 'data' dict might not have them readily in 'raw' if scaled.
+            # prepare_evaluation_data 'raw' is usually the original input.
+            # Let's use data['real']['raw'] which is presumably prices.
+            dd_res = calculate_drawdown_stats(data['real']['raw'], data['synth']['raw'])
+            metrics['quant_finance'].update(dd_res)
+            print(f"  → Drawdown KS Stat: {dd_res['MaxDD_KS_Stat']:.4f}")
+        except Exception as e:
+            print(f"  → Drawdown failed: {e}")
+
+
         # Statistician
         print("Computing Statistician metrics...")
         # OPTIMIZATION: Use standardized for Euclidean distance in manifold
@@ -293,11 +362,17 @@ class EvaluationRunner:
             data['real']['flattened_standardized'],
             data['synth']['flattened_standardized']
         )
+        metrics['integrity'] = {'dcr': dcr_stats}
+
         mem_ratio = memorization_ratio(
             data['real']['flattened_standardized'],
             data['synth']['flattened_standardized'],
             k=self.config.memorization_k
         )
+        metrics['integrity']['memorization_ratio'] = mem_ratio
+        print(f"  → DCR: {dcr_stats:.4f}" if isinstance(dcr_stats, float) else f"  → DCR: {dcr_stats}")
+        print(f"  → Memorization Ratio: {mem_ratio:.4f}")
+
         return metrics
 
     def _run_legacy_metrics(self, data: dict) -> dict:

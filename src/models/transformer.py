@@ -198,12 +198,12 @@ class WaveletDiffusionTransformer(pl.LightningModule):
         self.timestep_sampler = HybridTimestepSampler(
             alpha_bar_all=self.alpha_bar_all,
             T=self.T,
-            warmup_steps=5000,       # Use Min-SNR for first 5000 steps
-            gamma=5.0,               # Min-SNR clamping (paper default)
-            exploration_ratio=0.3,   # 70% Min-SNR, 30% adaptive
-            floor_prob=0.001,        # Minimum sampling probability
-            ema_decay=0.995,         # Smooth loss history updates
-            update_frequency=10      # Update history every 10 batches
+            warmup_pct=self.pct_start * 0.5,  # End warmup BEFORE LR peak to allow adaptation
+            gamma=5.0,                        # Min-SNR clamping (paper default)
+            exploration_ratio=0.3,            # 70% Min-SNR, 30% adaptive
+            floor_prob=0.001,                 # Minimum sampling probability
+            ema_decay=0.997,                  # Smooth loss history updates
+            update_frequency=10               # Update history every 10 batches
         )
         
         # Loss tracking
@@ -374,6 +374,10 @@ class WaveletDiffusionTransformer(pl.LightningModule):
         # This is critical for CUDAGraph compatibility - no .to() calls during training
         self.timestep_sampler.ensure_device(self.device)
         
+        # Resolve percentage-based warmup now that total_training_steps is known
+        if self.total_training_steps is not None:
+            self.timestep_sampler.set_total_steps(self.total_training_steps)
+        
         # Pre-initialize wavelet loss weights tensor on the correct device
         # This avoids lazy tensor creation during the first training step
         if hasattr(self.wavelet_loss_fn, 'loss_computer'):
@@ -483,9 +487,13 @@ class WaveletDiffusionTransformer(pl.LightningModule):
                 weights = self.wavelet_loss_fn.get_weights()
                 
                 # Print level loss summary
-                print(f"Epoch {self.current_epoch + 1} Level Losses:")
+                print(f"\n[DETAILED REPORT - Epoch {self.current_epoch + 1}]")
+                print("-" * 80)
+                print(f"> Wavelet Loss Breakdown")
+                
                 for i, (loss, weight) in enumerate(zip(level_losses, weights)):
-                    print(f"  Level {i}: {loss.item():.6f} (weight: {weight:.4f})")
+                    level_type = "Approx" if i == 0 else "Detail"
+                    print(f"  Level {i} ({level_type}):  {loss.item():.4f}  (w={weight:.4f})")
                 
                 # Print energy statistics if available
                 if self.use_energy_term and hasattr(self.wavelet_loss_fn, 'get_energy_loss'):
@@ -496,12 +504,11 @@ class WaveletDiffusionTransformer(pl.LightningModule):
                     total_loss_with_energy = reconstruction_loss + self.energy_weight * energy_loss
                     energy_contribution_pct = (self.energy_weight * energy_loss / total_loss_with_energy * 100).item()
                     
-                    print(f"  Energy Loss: {energy_loss.item():.6f}")
-                    print(f"  Energy Target Mean: {energy_stats['energy_target_mean']:.6f}")
-                    print(f"  Energy Pred Mean: {energy_stats['energy_pred_mean']:.6f}")
-                    print(f"  Energy Relative Error: {energy_stats['energy_relative_error']:.6f}")
-                    print(f"  Energy Absolute Error: {energy_stats['energy_absolute_error']:.6f}")
-                    print(f"  Energy Contribution: {energy_contribution_pct:.1f}% of total loss")
+                    energy_contribution_pct = (self.energy_weight * energy_loss / total_loss_with_energy * 100).item()
+                    
+                    print(f"  Energy Term:       {energy_loss.item():.4f}  (w={self.energy_weight:.4f})")
+                    print(f"    Target Mean: {energy_stats['energy_target_mean']:.4f}, Pred Mean: {energy_stats['energy_pred_mean']:.4f}")
+                    print(f"    Contribution: {energy_contribution_pct:.1f}% of total loss")
         
         except Exception as e:
             print(f"Could not log level losses: {e}")

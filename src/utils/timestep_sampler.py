@@ -28,7 +28,7 @@ class HybridTimestepSampler:
         self,
         alpha_bar_all: torch.Tensor,
         T: int = 1000,
-        warmup_steps: int = 5000,
+        warmup_pct: float = 0.1,
         gamma: float = 5.0,
         exploration_ratio: float = 0.3,
         floor_prob: float = 0.001,
@@ -42,7 +42,8 @@ class HybridTimestepSampler:
             print(f"[HybridTimestepSampler] Warning: T={T} doesn't match alpha_bar_all length {actual_T}, using {actual_T}")
         
         self.T = actual_T
-        self.warmup_steps = warmup_steps
+        self.warmup_pct = warmup_pct
+        self.warmup_steps = None  # Resolved lazily by set_total_steps()
         self.gamma = gamma
         self.exploration_ratio = exploration_ratio
         self.floor_prob = floor_prob
@@ -67,6 +68,15 @@ class HybridTimestepSampler:
         
         self._in_warmup = True
         self._needs_refresh = False
+    
+    def set_total_steps(self, total_steps: int) -> None:
+        """Resolve warmup_steps from warmup_pct and total training steps.
+        
+        Must be called before training starts (e.g. in on_train_start).
+        """
+        self.warmup_steps = int(self.warmup_pct * total_steps)
+        print(f"[HybridTimestepSampler] warmup_pct={self.warmup_pct:.1%} × "
+              f"{total_steps} total steps = {self.warmup_steps} warmup steps")
     
     def _compute_adaptive_probs(self) -> torch.Tensor:
         """Compute blended probabilities from Min-SNR and loss history."""
@@ -128,7 +138,8 @@ class HybridTimestepSampler:
         self.step_count += 1
         
         # Check warmup transition (Python conditional - safe here, outside compile)
-        if self._in_warmup and self.step_count >= self.warmup_steps:
+        # If warmup_steps is not yet resolved, stay in warmup
+        if self._in_warmup and self.warmup_steps is not None and self.step_count >= self.warmup_steps:
             self._in_warmup = False
             self._needs_refresh = True
         

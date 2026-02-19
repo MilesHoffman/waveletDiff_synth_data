@@ -183,3 +183,149 @@ def plot_candlesticks(real, generated, n_samples=5):
     plt.suptitle("OHLC Candlestick Comparison (Real vs Generated)", fontsize=16, y=1.02)
     plt.tight_layout()
     plt.show()
+
+def plot_financial_stylized_facts(real, generated, feature_names=None):
+    """
+    Plot standardized financial stylized facts:
+    1. Log-Return Distribution (Linear & Log scale)
+    2. Q-Q Plot (Normality check)
+    3. Volatility Clustering (ACF of squared returns)
+    4. Correlation Heatmaps
+    """
+    import scipy.stats as stats
+    from statsmodels.graphics.tsaplots import plot_acf
+    from statsmodels.tsa.stattools import acf
+    
+    n_features = real.shape[2]
+    if feature_names is None:
+        feature_names = [f'Feat {i}' for i in range(n_features)]
+        
+    # Calculate returns
+    real_ret = np.diff(real, axis=1) / (real[:, :-1, :] + 1e-8)
+    synth_ret = np.diff(generated, axis=1) / (generated[:, :-1, :] + 1e-8)
+    
+    # Flatten for distribution plots
+    real_flat = real_ret.flatten()
+    synth_flat = synth_ret.flatten()
+    
+    # 1. Fat Tail Analysis: Clipped KDE + Empirical CCDF
+    fig, axes = plt.subplots(1, 2, figsize=(18, 6))
+    
+    # --- Left Panel: KDE with log y-axis to expose tail differences ---
+    combined = np.concatenate([real_flat, synth_flat])
+    lo, hi = np.percentile(combined, [0.5, 99.5])
+    clip_real = real_flat[(real_flat >= lo) & (real_flat <= hi)]
+    clip_synth = synth_flat[(synth_flat >= lo) & (synth_flat <= hi)]
+
+    sns.kdeplot(clip_real, ax=axes[0], color=COLORS["Real"], label="Real", alpha=0.8, linewidth=2, fill=False)
+    sns.kdeplot(clip_synth, ax=axes[0], color=COLORS["Generated"], label="Generated", alpha=0.8, linewidth=2, fill=False)
+    axes[0].set_xlim(lo, hi)
+    axes[0].set_yscale('log')
+    axes[0].set_ylim(bottom=1e-3)
+    axes[0].set_title("Return Distribution (Log Density)")
+    axes[0].set_xlabel("Return")
+    axes[0].set_ylabel("Log Density")
+    axes[0].legend(fontsize=11)
+    axes[0].grid(True, which='both', alpha=0.2)
+    
+    # --- Right Panel: Empirical CCDF on log-log scale P(|r| > x) ---
+    def empirical_ccdf(data):
+        """Compute complementary CDF of absolute values."""
+        abs_data = np.sort(np.abs(data))
+        n = len(abs_data)
+        ccdf = 1.0 - np.arange(1, n + 1) / n
+        return abs_data, ccdf
+
+    r_x, r_ccdf = empirical_ccdf(real_flat)
+    s_x, s_ccdf = empirical_ccdf(synth_flat)
+    
+    # Subsample for plotting performance
+    step_r = max(1, len(r_x) // 2000)
+    step_s = max(1, len(s_x) // 2000)
+    
+    axes[1].plot(r_x[::step_r], r_ccdf[::step_r], color=COLORS["Real"], label="Real", alpha=0.8, linewidth=1.5)
+    axes[1].plot(s_x[::step_s], s_ccdf[::step_s], color=COLORS["Generated"], label="Generated", alpha=0.8, linewidth=1.5)
+    axes[1].set_xscale('log')
+    axes[1].set_yscale('log')
+    axes[1].set_title("Tail Weight: P(|r| > x)  [Log-Log]")
+    axes[1].set_xlabel("|Return|")
+    axes[1].set_ylabel("P(|r| > x)")
+    axes[1].axhline(y=0.05, color='gray', linestyle='--', alpha=0.5, label='5% VaR')
+    axes[1].axhline(y=0.01, color='gray', linestyle=':', alpha=0.5, label='1% VaR')
+    axes[1].legend(fontsize=10)
+    axes[1].grid(True, which='both', alpha=0.2)
+    
+    plt.suptitle("Fat Tail Analysis", fontsize=14, fontweight='bold')
+    plt.tight_layout()
+    plt.show()
+    
+    # 2. Q-Q Plots (vs Normal)
+    # We plot Real vs Normal and Synth vs Normal side-by-side
+    fig, axes = plt.subplots(1, 2, figsize=(16, 6))
+    
+    stats.probplot(real_flat, dist="norm", plot=axes[0])
+    axes[0].set_title("Q-Q Plot: Real vs Normal")
+    axes[0].get_lines()[0].set_color(COLORS["Real"])
+    axes[0].get_lines()[0].set_alpha(0.5)
+    
+    stats.probplot(synth_flat, dist="norm", plot=axes[1])
+    axes[1].set_title("Q-Q Plot: Synthetic vs Normal")
+    axes[1].get_lines()[0].set_color(COLORS["Generated"])
+    axes[1].get_lines()[0].set_alpha(0.5)
+    
+    plt.suptitle("Normality Check (Q-Q Plots)")
+    plt.tight_layout()
+    plt.show()
+    
+    # 3. Volatility Clustering (ACF of Squared Returns)
+    # Average ACF across features
+    def get_avg_acf(data, lags=20):
+        acfs = []
+        for i in range(data.shape[2]):
+            feat_data = data[..., i]
+            feat_sq = feat_data ** 2
+            for j in range(len(feat_sq)):
+                if np.var(feat_sq[j]) < 1e-9:
+                    acfs.append(np.zeros(lags + 1))
+                    continue
+                try:
+                    a = acf(feat_sq[j], nlags=lags, fft=False)
+                    if len(a) < lags + 1:
+                        a = np.pad(a, (0, lags + 1 - len(a)))
+                    acfs.append(a[:lags + 1])
+                except Exception:
+                    acfs.append(np.zeros(lags + 1))
+        return np.nan_to_num(np.mean(acfs, axis=0))
+
+    lags = 30
+    real_vol_acf = get_avg_acf(real_ret, lags)
+    synth_vol_acf = get_avg_acf(synth_ret, lags)
+    
+    plt.figure(figsize=(12, 6))
+    plt.plot(range(lags+1), real_vol_acf, marker='o', label="Real", color=COLORS["Real"])
+    plt.plot(range(lags+1), synth_vol_acf, marker='x', linestyle='--', label="Generated", color=COLORS["Generated"])
+    plt.title("Volatility Clustering (ACF of Squared Returns)")
+    plt.xlabel("Lag")
+    plt.ylabel("Autocorrelation")
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    plt.show()
+    
+    # 4. Correlation Matrices
+    # Flatten (N*T, D)
+    real_corr = np.corrcoef(real_ret.reshape(-1, n_features), rowvar=False)
+    synth_corr = np.corrcoef(synth_ret.reshape(-1, n_features), rowvar=False)
+    
+    fig, axes = plt.subplots(1, 2, figsize=(16, 7))
+    
+    sns.heatmap(real_corr, ax=axes[0], cmap="coolwarm", center=0, annot=True, fmt=".2f",
+                xticklabels=feature_names, yticklabels=feature_names)
+    axes[0].set_title("Real Correlation Matrix")
+    
+    sns.heatmap(synth_corr, ax=axes[1], cmap="coolwarm", center=0, annot=True, fmt=".2f",
+                xticklabels=feature_names, yticklabels=feature_names)
+    axes[1].set_title("Synthetic Correlation Matrix")
+    
+    plt.suptitle("Cross-Asset Correlation Structure")
+    plt.tight_layout()
+    plt.show()
