@@ -161,6 +161,7 @@ class DDPMSampler(DiffusionSampler):
         
         with torch.no_grad():
             for i in range(total_steps):
+                torch.compiler.cudagraph_mark_step_begin()
                 t_norm = sched['t_norms'][i].expand(batch_size)
                 prediction = self._get_prediction(x_t, t_norm, scale, conditions, guidance_scale)
                 
@@ -280,6 +281,7 @@ class DDIMSampler(DiffusionSampler):
         
         with torch.no_grad():
             for i in range(total_steps):
+                torch.compiler.cudagraph_mark_step_begin()
                 t_norm = sched['t_norms'][i].expand(batch_size)
                 prediction = self._get_prediction(x_t, t_norm, scale, conditions, guidance_scale)
                 
