@@ -20,9 +20,39 @@ class DiffusionSampler(ABC):
         self.model = model
         self.T = T
         self.device = next(model.parameters()).device
+        self.onnx_session = getattr(model, 'onnx_session', None)
     
     def _get_prediction(self, x_t, t_norm, scale, conditions, guidance_scale):
-        """Get model prediction with optional CFG guidance."""
+        """Get model prediction with optional CFG guidance, routing to ONNX if enabled."""
+        if self.onnx_session is not None:
+            # 1. Prepare ONNX Input dictionary mapping
+            inputs = {
+                'x': x_t.cpu().numpy(),
+                't': t_norm.cpu().numpy()
+            }
+            if scale is not None:
+                inputs['scale'] = scale.cpu().numpy()
+            if conditions is not None:
+                for i, cond in enumerate(conditions):
+                    inputs[f'cond{i}'] = cond.cpu().numpy()
+
+            # 2. Execute Graph
+            ort_outs = self.onnx_session.run(None, inputs)
+            
+            # 3. Pull output back to PyTorch scope
+            pred = torch.from_numpy(ort_outs[0]).to(self.device)
+            if guidance_scale is not None and guidance_scale != 1.0 and conditions is not None:
+                # To do CFG via ONNX, we must run the uncond pass
+                uncond_inputs = inputs.copy()
+                # Create a blank list of conditions equivalent to None for the model wrapper
+                for i in range(len(conditions)):
+                    uncond_inputs[f'cond{i}'] = torch.zeros_like(conditions[i]).cpu().numpy()
+                uncond_outs = self.onnx_session.run(None, uncond_inputs)
+                uncond_pred = torch.from_numpy(uncond_outs[0]).to(self.device)
+                return uncond_pred + guidance_scale * (pred - uncond_pred)
+            return pred
+
+        # Native PyTorch routing
         if guidance_scale is not None and guidance_scale != 1.0 and conditions is not None:
             uncond_pred = self.model(x_t, t_norm, scale=scale, conditions=None)
             cond_pred = self.model(x_t, t_norm, scale=scale, conditions=conditions)

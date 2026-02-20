@@ -25,8 +25,8 @@ def main():
                        help='Number of samples to generate (default: match real dataset size)')
     parser.add_argument('--sampling_method', type=str, choices=['ddpm', 'ddim'], default=None,
                        help='Sampling method (overrides config)')
-    parser.add_argument('--compile_mode', type=str, choices=['none', 'default', 'reduce-overhead', 'max-autotune'], default='none',
-                       help='torch.compile mode')
+    parser.add_argument('--inference_engine', type=str, choices=['onnx', 'tensorrt'], default='onnx',
+                       help='Execution provider to run the exported ONNX graph (default: onnx)')
     parser.add_argument('--data_dir', type=str, default=None,
                        help='Override data directory/path')
     
@@ -38,10 +38,6 @@ def main():
     parser.add_argument('--wavelet_levels', type=int, default=None, help='Wavelet levels (override)')
     parser.add_argument('--guidance_scale', type=float, default=None,
                        help='CFG guidance scale (1.0=no guidance, >1.0=stronger conditioning)')
-    parser.add_argument('--precision', type=str, choices=['32', 'bf16-mixed', '16-mixed'], default=None,
-                       help='Inference precision')
-    parser.add_argument('--matmul_precision', type=str, choices=['highest', 'high', 'medium'], default=None,
-                       help='Matmul precision')
     
     args = parser.parse_args()
     
@@ -73,12 +69,6 @@ def main():
     # 5. Apply CLI overrides (Highest Priority)
     if args.dataset: config['dataset']['name'] = args.dataset
     if args.sampling_method: config['sampling']['method'] = args.sampling_method
-    if args.precision: 
-        if 'performance' not in config: config['performance'] = {}
-        config['performance']['precision'] = args.precision
-    if args.matmul_precision: 
-        if 'performance' not in config: config['performance'] = {}
-        config['performance']['matmul_precision'] = args.matmul_precision
     if args.data_dir: config['data']['data_dir'] = args.data_dir
     
     # Architecture overrides
@@ -88,66 +78,79 @@ def main():
     if args.num_heads: config['model']['num_heads'] = args.num_heads
     if args.wavelet_levels: config['wavelet']['levels'] = args.wavelet_levels
 
-    # Construct model path
-    model_path = experiment_dir / 'checkpoint.ckpt'
+    # Construct model paths
+    checkpoint_path = experiment_dir / 'checkpoint.ckpt'
+    onnx_path = experiment_dir / 'model.onnx'
     
-    if not model_path.exists():
-        # Fallback: look for any .ckpt file
+    if not onnx_path.exists():
+        print(f"Error: No ONNX definition found at {onnx_path}")
+        print(f"This script now requires ONNX models.")
+        print(f"Please re-run `train.py` with `--export_onnx true` to generate the required execution graph.")
+        sys.exit(1)
+        
+    if not checkpoint_path.exists():
+        # Fallback just to find the config embedded in the dummy checkpoint wrapper
         ckpts = list(experiment_dir.glob("*.ckpt"))
         if ckpts:
-            model_path = ckpts[0]
-            print(f"Using found checkpoint: {model_path.name}")
-        else:
-            print(f"Error: No checkpoint found in {experiment_dir}")
-            print(f"Make sure you've trained a model or fully unpacked the archive.")
-            sys.exit(1)
-    
-    print(f"Generating Samples from WaveletDiff Model")
+            checkpoint_path = ckpts[0]
+            
+    print(f"Generating Samples via ONNX Runtime Engine")
     print(f"Experiment: {args.experiment_name}")
     print(f"Dataset: {config['dataset']['name']}")
-    print(f"Model: {model_path}")
+    print(f"Model: {onnx_path}")
+    print(f"Engine: {args.inference_engine.upper()}")
     print(f"Samples: {args.num_samples}")
     print(f"Sampling Method: {config['sampling']['method'].upper()}")
-    
-    # Set matmul precision
-    matmul_prec = config.get('performance', {}).get('matmul_precision', 'medium')
-    try:
-        torch.set_float32_matmul_precision(matmul_prec)
-        print(f"Set matmul precision to: {matmul_prec}")
-    except Exception as e:
-        print(f"Could not set matmul precision: {e}")
         
     # Set up data module
     data_module = WaveletTimeSeriesDataModule(config=config)
     
-    # Load model
-    print("Loading model...")
+    # Load light wrapper model for architectural hyperparams and properties (diffusion tracker requires this)
+    print("Loading PyTorch blueprint...")
     try:
         model = WaveletDiffusionTransformer.load_from_checkpoint(
-            model_path,
+            checkpoint_path,
             data_module=data_module,
             config=config,
+            strict=False # Only loading the architecture wrapper/properties, weights come from ONNX
         )
     except RuntimeError as e:
-        print(f"\nFATAL ERROR: Failed to load model checkpoint.")
+        print(f"\nFATAL ERROR: Failed to load model blueprint.")
         print(f"Error details: {e}")
-        print("-" * 60)
-        print("This is likely due to a CONFIGURATION MISMATCH between the default config and your checkpoint.")
-        print("Common causes:")
-        print("  1. The checkpoint was trained with a different Sequence Length (default: 24).")
-        print("  2. The checkpoint was trained with different Model Dimensions (embed_dim, layers).")
-        print("-" * 60)
-        print("SOLUTION: Specify the correct architecture parameters via CLI.")
-        print("Example: python sample.py ... --seq_len 64 --embed_dim 256")
-        print("-" * 60)
         sys.exit(1)
         
     model.eval()
     
-    # Move to GPU if available
+    # Initialize ONNX Runtime Session
+    import onnxruntime as ort
+    print("Initializing ONNX Runtime Session...")
+    
+    providers = []
+    if args.inference_engine == 'tensorrt':
+        gpu_name = torch.cuda.get_device_name(0).replace(" ", "_")
+        trt_cache_dir = experiment_dir / f"trt_cache_{gpu_name}"
+        trt_cache_dir.mkdir(exist_ok=True, parents=True)
+        print(f"Building TensorRT Engine Context. Expected hardware: {gpu_name}")
+        print(f"TensorRT Engine Cache: {trt_cache_dir}")
+        providers.append(
+            ('TensorrtExecutionProvider', {
+                'trt_engine_cache_enable': True,
+                'trt_engine_cache_path': str(trt_cache_dir)
+            })
+        )
+    
+    # Fallback to standard optimized CUDA execution
+    providers.append('CUDAExecutionProvider')
+    providers.append('CPUExecutionProvider')
+    
+    sess_opt = ort.SessionOptions()
+    sess_opt.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+    model.onnx_session = ort.InferenceSession(str(onnx_path), sess_opt, providers=providers)
+    
+    # Map device for native data structures (model shell needs to know its abstract device)
     if torch.cuda.is_available():
         model = model.cuda()
-        print("Model moved to GPU")
+        print("Blueprints set to GPU context.")
 
     # Generate using specified method
     sampling_method = config['sampling']['method']
@@ -178,45 +181,15 @@ def main():
             conditions.append(torch.FloatTensor(profile_vals).to(model.device))
         print(f"Quarter conditioning: {profile_names}, guidance_scale={guidance_scale}")
 
-    # Apply torch.compile if requested
-    if args.compile_mode != 'none':
-        print(f"Compiling model with mode='{args.compile_mode}'...")
-        model = torch.compile(model, mode=args.compile_mode)
-        
-        # Warmup: trigger compilation EXACTLY mapping the batch structures
-        print("Warming up compiled model...")
-        dummy_x = torch.randn(num_samples, model.input_dim, model.num_features, device=model.device)
-        dummy_t = torch.full((num_samples,), 0.5, device=model.device)
-        with torch.no_grad():
-            _ = model(dummy_x, dummy_t, scale=scale_conditioning, conditions=conditions)
-        if torch.cuda.is_available():
-            torch.cuda.synchronize()
-        print("Warmup complete.")
-    
-    # Create trainer for evaluation
+    # Create trainer for evaluation (equipped with mounted ONNX session)
     trainer_util = DiffusionTrainer(model)
     
-    print(f"Generating {sampling_method.upper()} samples...")
-    precision = config.get('performance', {}).get('precision', '32')
+    print(f"Generating {sampling_method.upper()} samples (Execution mapped to ONNX Runtime)...")
     
-    # Determine autocast dtype
-    autocast_dtype = None
-    if precision == 'bf16-mixed':
-        autocast_dtype = torch.bfloat16
-    elif precision == '16-mixed':
-        autocast_dtype = torch.float16
-        
-    if autocast_dtype is not None and torch.cuda.is_available():
-        with torch.autocast("cuda", dtype=autocast_dtype):
-            samples = trainer_util.generate_samples(
-                num_samples, use_ddim=use_ddim, scale=scale_conditioning,
-                conditions=conditions, guidance_scale=guidance_scale
-            )
-    else:
-        samples = trainer_util.generate_samples(
-            num_samples, use_ddim=use_ddim, scale=scale_conditioning,
-            conditions=conditions, guidance_scale=guidance_scale
-        )
+    samples = trainer_util.generate_samples(
+        num_samples, use_ddim=use_ddim, scale=scale_conditioning,
+        conditions=conditions, guidance_scale=guidance_scale
+    )
     
     # Convert to time series
     print("Converting to time series...")
