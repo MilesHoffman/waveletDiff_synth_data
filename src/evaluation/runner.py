@@ -250,7 +250,10 @@ class EvaluationRunner:
             memorization_ratio
         )
         from .core_metrics import (
-            kurtosis_score,
+            tail_index_error,
+            empirical_var_es_error,
+            price_volume_asymmetry_error,
+            volume_acf_error,
             volatility_clustering_score
         )
         from .advanced_metrics.financial_metrics import (
@@ -279,9 +282,13 @@ class EvaluationRunner:
         print(f"  → ACF Similarity: {metrics['visual_scout']['acf_similarity']:.4f}")
         
         # Financial Realism (Stylized Facts)
-        print("Computing Financial Realism metrics...")
+        print("Computing Financial Realism & Tail Risk metrics...")
         metrics['stylized_facts'] = {
-            'kurtosis': kurtosis_score(
+            'tail_index_error': tail_index_error(
+                data['real']['log_returns'],
+                data['synth']['log_returns']
+            ),
+            'var_es_error': empirical_var_es_error(
                 data['real']['log_returns'],
                 data['synth']['log_returns']
             ),
@@ -290,7 +297,26 @@ class EvaluationRunner:
                 data['synth']['log_returns']
             )
         }
-        print(f"  → Kurtosis Diff: {metrics['stylized_facts']['kurtosis']:.4f}")
+        
+        # Volume features need raw (un-differenced) OHLCV data
+        if 'raw' in data['real'] and not self.config.exclude_volume:
+            print("Computing Volume Micro-structure metrics...")
+            try:
+                metrics['stylized_facts']['price_vol_asym'] = price_volume_asymmetry_error(
+                    data['real']['raw'],
+                    data['synth']['raw']
+                )
+                metrics['stylized_facts']['volume_acf'] = volume_acf_error(
+                    data['real']['raw'],
+                    data['synth']['raw']
+                )
+                print(f"  → Price-Vol Asymmetry Error: {metrics['stylized_facts']['price_vol_asym']:.4f}")
+                print(f"  → Volume ACF Error: {metrics['stylized_facts']['volume_acf']:.4f}")
+            except Exception as e:
+                print(f"  → Volume metrics failed: {e}")
+
+        print(f"  → Tail Index Error: {metrics['stylized_facts']['tail_index_error']:.4f}")
+        print(f"  → Risk (VaR/ES) Error: {metrics['stylized_facts']['var_es_error']:.4f}")
         print(f"  → Volatility Clustering MAE: {metrics['stylized_facts']['volatility_clustering']:.4f}")
 
         # Quantitative Finance (New Tier)

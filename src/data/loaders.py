@@ -510,8 +510,25 @@ def load_stocks_data(data_dir: str, seq_len: int = 24, normalize_data: bool = Tr
     rsi = compute_rsi(close_prices, period=14)
     mfi = compute_mfi(high_prices, low_prices, close_prices, volume, period=14)
     
+    # --- Structural Volume Features ---
+    # 1. Money Flow Multiplier (MFM)
+    mfm = ((close_prices - low_prices) - (high_prices - close_prices)) / (high_prices - low_prices + 1e-10)
+    
+    # 2. VWAP 20 Deviation Anchor
+    typical_price = (high_prices + low_prices + close_prices) / 3.0
+    vol_sum_20 = compute_sma(volume, period=20) * 20.0
+    tp_vol_sum_20 = compute_sma(typical_price * volume, period=20) * 20.0
+    vwap_20 = tp_vol_sum_20 / (vol_sum_20 + 1e-10)
+    
     # Start after ALL indicators are valid (200-day SMA is the limiter)
     valid_start = 200
+    
+    eps = 1e-6
+    # Compute global volume standardization stats on valid data
+    valid_volume = volume[valid_start:]
+    log_vol = np.log(valid_volume + eps)
+    vol_mean = np.mean(log_vol)
+    vol_std = np.std(log_vol) + eps
     
     open_prices = open_prices[valid_start:]
     high_prices = high_prices[valid_start:]
@@ -530,6 +547,8 @@ def load_stocks_data(data_dir: str, seq_len: int = 24, normalize_data: bool = Tr
     atr_sma_20 = atr_sma_20[valid_start:]
     rsi = rsi[valid_start:]
     mfi = mfi[valid_start:]
+    mfm = mfm[valid_start:]
+    vwap_20 = vwap_20[valid_start:]
 
     
     total_timesteps = len(open_prices)
@@ -542,10 +561,7 @@ def load_stocks_data(data_dir: str, seq_len: int = 24, normalize_data: bool = Tr
     windows = []
     anchors = []
     atr_pcts = []
-    vol_smas_window = []
     quarter_profiles = {k: [] for k in ('yz', 'ret', 'adx', 'vwap', 'skew')}
-    
-    eps = 1e-6
     
     for i in range(n_samples):
         start_idx = i
@@ -562,12 +578,9 @@ def load_stocks_data(data_dir: str, seq_len: int = 24, normalize_data: bool = Tr
         
         reparam, anchor, atr_pct = reparameterize_ohlc_window(ohlc_window, atr_window)
         
-        # Volume Normalization: Log-Ratio relative to SMA
-        # V_norm = log( (Volume + eps) / (SMA_20 + eps) )
+        # Volume Normalization: Z-Score of Log Volume
         curr_vol = volume[start_idx:end_idx]
-        curr_sma = vol_sma[start_idx:end_idx]
-        
-        vol_norm = np.log((curr_vol + eps) / (curr_sma + eps))
+        vol_norm = (np.log(curr_vol + eps) - vol_mean) / vol_std
         
         # --- NEW FEATURES: Day and Gap ---
         # 1. Day of Week Encoding (Cyclic 7-day)
@@ -607,7 +620,12 @@ def load_stocks_data(data_dir: str, seq_len: int = 24, normalize_data: bool = Tr
         rsi_norm = (rsi[start_idx:end_idx] - 50.0) / 50.0
         mfi_norm = (mfi[start_idx:end_idx] - 50.0) / 50.0
         
-        # Concatenate all 17 features
+        # Extract structural volume features
+        curr_mfm = mfm[start_idx:end_idx]
+        curr_vwap_20 = vwap_20[start_idx:end_idx]
+        vwap_20_dev = np.log((curr_close + eps) / (curr_vwap_20 + eps))
+        
+        # Concatenate all 18 features
         window_features = np.concatenate([
             gap_norm.reshape(-1, 1),
             reparam[:, 0:1],  # body_norm
@@ -618,14 +636,17 @@ def load_stocks_data(data_dir: str, seq_len: int = 24, normalize_data: bool = Tr
             day_cos.reshape(-1, 1),
             reparam[:, 4:5],  # cum_ret_norm
             reparam[:, 3:4],  # bar_range_norm
-            # --- NEW ---
+            # --- Technicals ---
             sma_200_dev.reshape(-1, 1),
             sma_100_dev.reshape(-1, 1),
             sma_50_dev.reshape(-1, 1),
             sma_20_dev.reshape(-1, 1),
             atr_ratio.reshape(-1, 1),
             rsi_norm.reshape(-1, 1),
-            mfi_norm.reshape(-1, 1)
+            mfi_norm.reshape(-1, 1),
+            # --- Structural Volume ---
+            curr_mfm.reshape(-1, 1),
+            vwap_20_dev.reshape(-1, 1)
         ], axis=1)
         
         windows.append(window_features)
@@ -659,13 +680,14 @@ def load_stocks_data(data_dir: str, seq_len: int = 24, normalize_data: bool = Tr
         'reparameterized': True,
         'anchors': anchors,
         'atr_pcts': atr_pcts,
-        'vol_smas': vol_smas_window,
-        'volume_type': 'log_ratio_sma',
+        'volume_type': 'zscore_log',
+        'volume_mean': float(vol_mean),
+        'volume_std': float(vol_std),
         'feature_names': [
             'gap_norm', 'body_norm', 'wick_high_ratio', 'wick_low_ratio', 'volume_norm',
             'day_sin', 'day_cos', 'cum_ret_norm', 'bar_range_norm',
             'sma_200_dev', 'sma_100_dev', 'sma_50_dev', 'sma_20_dev',
-            'atr_ratio', 'rsi_norm', 'mfi_norm'
+            'atr_ratio', 'rsi_norm', 'mfi_norm', 'mfm', 'vwap_20_dev'
         ],
         'quarter_profiles': quarter_profile_arrays,
     }
