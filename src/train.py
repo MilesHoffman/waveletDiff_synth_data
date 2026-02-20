@@ -556,86 +556,64 @@ def main():
             dummy_x = torch.randn(batch_size, model.input_dim, model.num_features, device=device)
             dummy_t = torch.full((batch_size,), 0.5, device=device)
             
-            # dynamic_axes removed to ensure ONNX export compatibility without dynamo dynamic_shapes errors
+            # Setup dynamic axes for variable batch sizes
+            dynamic_axes = {
+                'x': {0: 'batch_size'},
+                't': {0: 'batch_size'},
+                'output': {0: 'batch_size'}
+            }
             
             input_names = ['x', 't']
-            dummy_inputs = (dummy_x, dummy_t)
+            dummy_inputs = [dummy_x, dummy_t]
             
             # Add conditioning if expected by model
             has_scale = getattr(data_module, 'has_conditioning', False)
             has_quarter = getattr(data_module, 'has_quarter_conditioning', False)
-            kwargs = {}
+            num_conds = 0
             
             if has_scale:
                 dummy_scale = torch.tensor([0.05], device=device)
-                kwargs['scale'] = dummy_scale
+                dummy_inputs.append(dummy_scale)
                 input_names.append('scale')
+                dynamic_axes['scale'] = {0: 'batch_size'}
                 
             if has_quarter and getattr(model, 'condition_embeddings', None) is not None:
                 # Get the number of expected conditioning quarters
                 num_conds = len(model.condition_embeddings)
-                dummy_conds = [torch.tensor([[0.5, 0.5, 0.5, 0.5]], device=device) for _ in range(num_conds)]
-                kwargs['conditions'] = dummy_conds
-                input_names.append('conditions')
-                # For ONNX, lists of tensors are traced cleanly as discrete inputs
+                for i in range(num_conds):
+                    cond_name = f'cond{i}'
+                    dummy_inputs.append(torch.tensor([[0.5, 0.5, 0.5, 0.5]], device=device))
+                    input_names.append(cond_name)
+                    dynamic_axes[cond_name] = {0: 'batch_size'}
             
             try:
-                # Handle varying signatures (with/without kwargs)
-                if kwargs:
-                    # ONNX export technically requires a strict tuple, so we trace a wrapper
-                    class Wrapper(torch.nn.Module):
-                        def __init__(self, m, hs, hq):
-                            super().__init__()
-                            self.m = m
-                            self.hs = hs
-                            self.hq = hq
-                        def forward(self, x, t, scale=None, cond0=None, cond1=None, cond2=None, cond3=None):
-                            # Reconstruct the list for the model exactly as it likes
-                            conditions = None
-                            if self.hq:
-                                conditions = []
-                                if cond0 is not None: conditions.append(cond0)
-                                if cond1 is not None: conditions.append(cond1)
-                                if cond2 is not None: conditions.append(cond2)
-                                if cond3 is not None: conditions.append(cond3)
-                            return self.m(x, t, scale=scale, conditions=conditions)
-                    
-                    wrapper = Wrapper(model, has_scale, has_quarter)
-                    wrapper.eval()
-                    # Flattop the args
-                    flat_args = [dummy_x, dummy_t]
-                    if has_scale: flat_args.append(dummy_scale)
-                    else: flat_args.append(None)
-                    
-                    # Flatten quarter conditions up to max expected (usually 4)
-                    for i in range(4):
-                        if has_quarter and i < num_conds:
-                            flat_args.append(dummy_conds[i])
-                            input_names.append(f'cond{i}')
-                        else:
-                            flat_args.append(None)
-                            
-                    torch.onnx.export(
-                        wrapper,
-                        tuple(flat_args),
-                        str(onnx_path),
-                        export_params=True,
-                        opset_version=18,
-                        do_constant_folding=True,
-                        input_names=input_names,
-                        output_names=['output']
-                    )
-                else:
-                    torch.onnx.export(
-                        model,
-                        dummy_inputs,
-                        str(onnx_path),
-                        export_params=True,
-                        opset_version=18,
-                        do_constant_folding=True,
-                        input_names=input_names,
-                        output_names=['output']
-                    )
+                # Use a cleaner wrapper that only takes active arguments
+                class ExportWrapper(torch.nn.Module):
+                    def __init__(self, m, hs, nc):
+                        super().__init__()
+                        self.m = m
+                        self.hs = hs
+                        self.nc = nc
+                    def forward(self, x, t, *args):
+                        scale = args[0] if self.hs else None
+                        cond_start = 1 if self.hs else 0
+                        conditions = list(args[cond_start : cond_start + self.nc]) if self.nc > 0 else None
+                        return self.m(x, t, scale=scale, conditions=conditions)
+                
+                wrapper = ExportWrapper(model, has_scale, num_conds)
+                wrapper.eval()
+                
+                torch.onnx.export(
+                    wrapper,
+                    tuple(dummy_inputs),
+                    str(onnx_path),
+                    export_params=True,
+                    opset_version=18,
+                    do_constant_folding=True,
+                    input_names=input_names,
+                    output_names=['output'],
+                    dynamic_axes=dynamic_axes
+                )
                     
                 print(f"ONNX export successful: {onnx_path}")
             except Exception as e:
