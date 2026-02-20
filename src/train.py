@@ -556,12 +556,7 @@ def main():
             dummy_x = torch.randn(batch_size, model.input_dim, model.num_features, device=device)
             dummy_t = torch.full((batch_size,), 0.5, device=device)
             
-            # Setup dynamic axes for variable batch sizes
-            dynamic_axes = {
-                'x': {0: 'batch_size'},
-                't': {0: 'batch_size'},
-                'output': {0: 'batch_size'}
-            }
+            # dynamic_axes removed to ensure ONNX export compatibility without dynamo dynamic_shapes errors
             
             input_names = ['x', 't']
             dummy_inputs = (dummy_x, dummy_t)
@@ -575,7 +570,6 @@ def main():
                 dummy_scale = torch.tensor([0.05], device=device)
                 kwargs['scale'] = dummy_scale
                 input_names.append('scale')
-                dynamic_axes['scale'] = {0: 'batch_size'}
                 
             if has_quarter and getattr(model, 'condition_embeddings', None) is not None:
                 # Get the number of expected conditioning quarters
@@ -607,6 +601,7 @@ def main():
                             return self.m(x, t, scale=scale, conditions=conditions)
                     
                     wrapper = Wrapper(model, has_scale, has_quarter)
+                    wrapper.eval()
                     # Flattop the args
                     flat_args = [dummy_x, dummy_t]
                     if has_scale: flat_args.append(dummy_scale)
@@ -617,7 +612,6 @@ def main():
                         if has_quarter and i < num_conds:
                             flat_args.append(dummy_conds[i])
                             input_names.append(f'cond{i}')
-                            dynamic_axes[f'cond{i}'] = {0: 'batch_size'}
                         else:
                             flat_args.append(None)
                             
@@ -629,8 +623,7 @@ def main():
                         opset_version=17,
                         do_constant_folding=True,
                         input_names=input_names,
-                        output_names=['output'],
-                        dynamic_axes=dynamic_axes
+                        output_names=['output']
                     )
                 else:
                     torch.onnx.export(
@@ -641,8 +634,7 @@ def main():
                         opset_version=17,
                         do_constant_folding=True,
                         input_names=input_names,
-                        output_names=['output'],
-                        dynamic_axes=dynamic_axes
+                        output_names=['output']
                     )
                     
                 print(f"ONNX export successful: {onnx_path}")
