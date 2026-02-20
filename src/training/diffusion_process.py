@@ -33,9 +33,12 @@ class DiffusionSampler(ABC):
             if scale is not None:
                 inputs['scale'] = scale.cpu().numpy()
             if conditions is not None:
+                # Use profile names if available from the data_module, otherwise default to cond{i}
+                profile_names = getattr(self.model.data_module, 'quarter_profile_names', [])
                 for i, cond in enumerate(conditions):
-                    inputs[f'cond{i}'] = cond.cpu().numpy()
-
+                    name = profile_names[i] if i < len(profile_names) else f'cond{i}'
+                    inputs[name] = cond.cpu().numpy()
+                    
             # 2. Execute Graph
             ort_outs = self.onnx_session.run(None, inputs)
             
@@ -46,7 +49,8 @@ class DiffusionSampler(ABC):
                 uncond_inputs = inputs.copy()
                 # Create a blank list of conditions equivalent to None for the model wrapper
                 for i in range(len(conditions)):
-                    uncond_inputs[f'cond{i}'] = torch.zeros_like(conditions[i]).cpu().numpy()
+                    name = profile_names[i] if 'profile_names' in locals() and i < len(profile_names) else f'cond{i}'
+                    uncond_inputs[name] = torch.zeros_like(conditions[i]).cpu().numpy()
                 uncond_outs = self.onnx_session.run(None, uncond_inputs)
                 uncond_pred = torch.from_numpy(uncond_outs[0]).to(self.device)
                 return uncond_pred + guidance_scale * (pred - uncond_pred)

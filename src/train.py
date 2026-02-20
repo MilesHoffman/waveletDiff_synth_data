@@ -579,9 +579,11 @@ def main():
                 
             if has_quarter and getattr(model, 'condition_embeddings', None) is not None:
                 # Get the number of expected conditioning quarters
+                profile_names = getattr(data_module, 'quarter_profile_names', [f'cond{i}' for i in range(len(model.condition_embeddings))])
                 num_conds = len(model.condition_embeddings)
                 for i in range(num_conds):
-                    cond_name = f'cond{i}'
+                    # Default to cond{i} only if profile_names list is shorter than expected (safety check)
+                    cond_name = profile_names[i] if i < len(profile_names) else f'cond{i}'
                     dummy_inputs.append(torch.tensor([[0.5, 0.5, 0.5, 0.5]], device=device))
                     input_names.append(cond_name)
                     dynamic_axes[cond_name] = {0: 'batch_size'}
