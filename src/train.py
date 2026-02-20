@@ -620,7 +620,7 @@ def main():
                         tuple(flat_args),
                         str(onnx_path),
                         export_params=True,
-                        opset_version=17,
+                        opset_version=18,
                         do_constant_folding=True,
                         input_names=input_names,
                         output_names=['output']
@@ -631,7 +631,7 @@ def main():
                         dummy_inputs,
                         str(onnx_path),
                         export_params=True,
-                        opset_version=17,
+                        opset_version=18,
                         do_constant_folding=True,
                         input_names=input_names,
                         output_names=['output']
