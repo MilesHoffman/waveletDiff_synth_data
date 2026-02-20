@@ -327,9 +327,9 @@ The evaluation suite includes:
 
 WaveletDiff implements a **Hybrid Timestep Sampler** that transitions from broad stability (Min-SNR-γ) to targeted "hard" example sampling. This ensures the model spends more capacity on the most difficult diffusion stages once the base manifold is established.
 
-- **Warmup Phase**: The sampler stays in high-stability Min-SNR-γ mode for the first **50%** of the `OneCycleLR` warmup (`pct_start * 0.5`).
-- **Adaptive Phase**: Automatically increases the sampling probability of timesteps with higher relative loss.
-- **Stability**: Uses a high EMA decay (**0.997**) to prevent the sampling distribution from "shaking" and a **30%** exploration ratio to ensure the entire diffusion path is still covered.
+- **Warmup Phase**: The sampler stays in high-stability Min-SNR-γ mode for a customizable percentage of the total steps (e.g., `adaptive_start_pct = 0.8`), ensuring robust initial manifold learning.
+- **Adaptive Phase**: Automatically increases the sampling probability of timesteps with higher relative loss for the remainder of training.
+- **Stability**: Uses a high EMA decay (e.g. `0.997`) to prevent the sampling distribution from "shaking", alongside a customizable `exploration_ratio` (e.g., `0.3`) to guarantee the entire diffusion path remains covered.
 
 ---
 
@@ -385,7 +385,9 @@ python train.py \
 
 ### Heavy-Tailed Generation (Student-T Prior)
 
-WaveletDiff supports specialized statistical priors for deep financial modeling. By replacing standard Gaussian denoising with a **Student-T noise prior**, the architecture natively supports the generation of extreme black-swan events ($5\sigma$ spikes) and fat-tailed distribution structures common in real-world assets.
+WaveletDiff supports specialized statistical priors for deep financial modeling. By replacing standard Gaussian denoising with a **Student-T noise prior** (`--noise_prior student-t --nu 3.0`), the architecture natively supports the generation of extreme black-swan events ($5\sigma$ spikes) and fat-tailed distribution structures common in real-world assets. 
+
+We highly recommend pairing this with the **Huber Loss** (`--loss_type huber --huber_delta 1.0`) to prevent the enormous gradients of the Student-T extreme samples from destabilizing the optimizer.
 
 ### Custom Noise Schedule
 
