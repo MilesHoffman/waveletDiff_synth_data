@@ -222,6 +222,10 @@ class WaveletDiffusionTransformer(pl.LightningModule):
         self.register_buffer('alpha_all', self.schedule_params["alpha_all"].clone())
         self.register_buffer('alpha_bar_all', self.schedule_params["alpha_bar_all"].clone())
         
+        # Precompute square roots for diffusion process to avoid repetitive CUDA operations
+        self.register_buffer('sqrt_alpha_bar_all', torch.sqrt(self.schedule_params["alpha_bar_all"]).clone())
+        self.register_buffer('sqrt_one_minus_alpha_bar_all', torch.sqrt(1.0 - self.schedule_params["alpha_bar_all"]).clone())
+        
         # Initialize hybrid timestep sampler for importance-weighted sampling
         # Combines Min-SNR-γ stability with adaptive loss-history optimization
         self.timestep_sampler = HybridTimestepSampler(
@@ -367,14 +371,15 @@ class WaveletDiffusionTransformer(pl.LightningModule):
             prior=self.noise_prior, 
             nu=self.nu
         )
-        alpha_bar_t = self.alpha_bar_all[t].view(-1, 1, 1)
-        x_t = torch.sqrt(alpha_bar_t) * x_0 + torch.sqrt(1 - alpha_bar_t) * noise
+        sqrt_alpha_bar_t = self.sqrt_alpha_bar_all[t].view(-1, 1, 1)
+        sqrt_one_minus_alpha_bar_t = self.sqrt_one_minus_alpha_bar_all[t].view(-1, 1, 1)
+        x_t = sqrt_alpha_bar_t * x_0 + sqrt_one_minus_alpha_bar_t * noise
         return x_t, noise
 
     def compute_loss(self, x_0, t, scale=None, conditions=None):
         """Compute training loss."""
         x_t, noise = self.compute_forward_process(x_0, t)
-        t_norm = (t.float() / self.T).clone()
+        t_norm = t.float() / self.T
         prediction = self(x_t, t_norm, scale=scale, conditions=conditions)
         
         if self.prediction_target == "noise":
@@ -401,7 +406,7 @@ class WaveletDiffusionTransformer(pl.LightningModule):
             per_sample_losses: [batch_size] tensor of per-sample losses
         """
         x_t, noise = self.compute_forward_process(x_0, t)
-        t_norm = (t.float() / self.T).clone()
+        t_norm = t.float() / self.T
         prediction = self(x_t, t_norm, scale=scale, conditions=conditions)
         
         if self.prediction_target == "noise":

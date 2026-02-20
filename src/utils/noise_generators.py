@@ -30,12 +30,8 @@ def generate_noise(shape, device, dtype=torch.float32, prior="gaussian", nu=3.0)
         # PyTorch's torch._standard_gamma generates from Gamma(alpha, 1).
         # So we use standard_gamma with alpha = nu/2, and then multiply by 2.
         
-        alpha = torch.tensor(nu / 2.0, device=device, dtype=dtype)
-        
-        # CUDAGraph safe wrapper to generate gamma
-        # Expand alpha to target shape so _standard_gamma produces full tensor
-        # NOTE: standard_gamma expects a tensor, so we expand the 0D tensor
-        alpha_expanded = alpha.expand(shape)
+        # torch.full avoids CPU->GPU scalar transfer during CUDAGraph replay
+        alpha_expanded = torch.full(shape, nu / 2.0, device=device, dtype=dtype)
         v = 2.0 * torch._standard_gamma(alpha_expanded)
         
         # Student-t is T = Z * sqrt(nu / V)
@@ -45,8 +41,8 @@ def generate_noise(shape, device, dtype=torch.float32, prior="gaussian", nu=3.0)
         # Var(T) = nu / (nu - 2) for nu > 2
         # We multiply by sqrt((nu - 2) / nu)
         if nu > 2.0:
-            scale = torch.sqrt(torch.tensor((nu - 2.0) / nu, device=device, dtype=dtype))
-            return t_noise * scale
+            scale_val = ((nu - 2.0) / nu) ** 0.5
+            return t_noise * scale_val
         else:
             return t_noise
     else:

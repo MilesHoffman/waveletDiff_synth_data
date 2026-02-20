@@ -30,7 +30,7 @@ class MockModel(torch.nn.Module):
         self.register_buffer('alpha_bar_all', torch.cumprod(1 - self.beta_all, dim=0))
         self.device = torch.device('cpu')
     
-    def forward(self, x, t):
+    def forward(self, x, t, scale=None, conditions=None):
         # Simulate some processing time for first few steps
         time.sleep(0.01)
         return torch.randn_like(x)

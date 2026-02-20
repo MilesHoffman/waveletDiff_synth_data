@@ -30,8 +30,8 @@ class RMSNorm(nn.Module):
         self.scale = nn.Parameter(torch.ones(dim))
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        rms = torch.sqrt(torch.mean(x ** 2, dim=-1, keepdim=True) + self.eps)
-        return (x / rms) * self.scale
+        rms_inv = torch.rsqrt(torch.mean(x ** 2, dim=-1, keepdim=True) + self.eps)
+        return x * rms_inv * self.scale
 
 
 class QKNormAttention(nn.Module):
