@@ -652,7 +652,6 @@ def load_stocks_data(data_dir: str, seq_len: int = 24, normalize_data: bool = Tr
         windows.append(window_features)
         anchors.append(anchor)
         atr_pcts.append(atr_pct)
-        vol_smas_window.append(curr_sma)
         
         # Quarter-window conditioning profiles
         mean_atr = np.mean(atr_window)
@@ -670,7 +669,6 @@ def load_stocks_data(data_dir: str, seq_len: int = 24, normalize_data: bool = Tr
     windows = np.array(windows, dtype=np.float32)
     anchors = np.array(anchors, dtype=np.float32)
     atr_pcts = np.array(atr_pcts, dtype=np.float32)
-    vol_smas_window = np.array(vol_smas_window, dtype=np.float32)
     
     # Stack quarter profiles: each (N, 4)
     quarter_profile_arrays = {k: np.array(v, dtype=np.float32)
