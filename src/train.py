@@ -592,20 +592,32 @@ def main():
                     dynamic_shapes.append({0: batch_dim})
             
             try:
-                # Use a cleaner wrapper that only takes active arguments
-                class ExportWrapper(torch.nn.Module):
-                    def __init__(self, m, hs, nc):
-                        super().__init__()
-                        self.m = m
-                        self.hs = hs
-                        self.nc = nc
-                    def forward(self, x, t, *args):
-                        scale = args[0] if self.hs else None
-                        cond_start = 1 if self.hs else 0
-                        conditions = list(args[cond_start : cond_start + self.nc]) if self.nc > 0 else None
-                        return self.m(x, t, scale=scale, conditions=conditions)
+                # PyTorch Dynamo (backend for torch.export in 2.x) strictly requires the 
+                # structure of dynamic_shapes to match the function's AST signature exactly.
+                # *args or missing kwargs cause structure mismatch crashes. 
+                # We dynamically build the wrapper with the EXACT signature of active inputs.
+                sig_args = ["x", "t"]
+                if has_scale: sig_args.append("scale")
+                for i in range(num_conds): sig_args.append(f"cond{i}")
+                    
+                cond_list_str = "[" + ", ".join([f"cond{i}" for i in range(num_conds)]) + "]" if num_conds > 0 else "None"
+                scale_str = "scale" if has_scale else "None"
                 
-                wrapper = ExportWrapper(model, has_scale, num_conds)
+                wrapper_code = f"""
+import torch
+import torch.nn as nn
+class ExportWrapper(nn.Module):
+    def __init__(self, m):
+        super().__init__()
+        self.m = m
+    def forward(self, {', '.join(sig_args)}):
+        return self.m(x, t, scale={scale_str}, conditions={cond_list_str})
+"""
+                local_vars = {'torch': torch, 'nn': torch.nn}
+                exec(wrapper_code, globals(), local_vars)
+                ExportWrapper = local_vars['ExportWrapper']
+                
+                wrapper = ExportWrapper(model)
                 wrapper.eval()
                 
                 # We retain dynamic_axes for legacy backwards-compat on standard exporter,
