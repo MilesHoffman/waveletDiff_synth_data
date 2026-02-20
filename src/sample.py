@@ -38,6 +38,10 @@ def main():
     parser.add_argument('--wavelet_levels', type=int, default=None, help='Wavelet levels (override)')
     parser.add_argument('--guidance_scale', type=float, default=None,
                        help='CFG guidance scale (1.0=no guidance, >1.0=stronger conditioning)')
+    parser.add_argument('--precision', type=str, choices=['32', 'bf16-mixed', '16-mixed'], default=None,
+                       help='Inference precision')
+    parser.add_argument('--matmul_precision', type=str, choices=['highest', 'high', 'medium'], default=None,
+                       help='Matmul precision')
     
     args = parser.parse_args()
     
@@ -69,6 +73,12 @@ def main():
     # 5. Apply CLI overrides (Highest Priority)
     if args.dataset: config['dataset']['name'] = args.dataset
     if args.sampling_method: config['sampling']['method'] = args.sampling_method
+    if args.precision: 
+        if 'performance' not in config: config['performance'] = {}
+        config['performance']['precision'] = args.precision
+    if args.matmul_precision: 
+        if 'performance' not in config: config['performance'] = {}
+        config['performance']['matmul_precision'] = args.matmul_precision
     if args.data_dir: config['data']['data_dir'] = args.data_dir
     
     # Architecture overrides
@@ -99,6 +109,14 @@ def main():
     print(f"Samples: {args.num_samples}")
     print(f"Sampling Method: {config['sampling']['method'].upper()}")
     
+    # Set matmul precision
+    matmul_prec = config.get('performance', {}).get('matmul_precision', 'medium')
+    try:
+        torch.set_float32_matmul_precision(matmul_prec)
+        print(f"Set matmul precision to: {matmul_prec}")
+    except Exception as e:
+        print(f"Could not set matmul precision: {e}")
+        
     # Set up data module
     data_module = WaveletTimeSeriesDataModule(config=config)
     
@@ -179,10 +197,26 @@ def main():
     trainer_util = DiffusionTrainer(model)
     
     print(f"Generating {sampling_method.upper()} samples...")
-    samples = trainer_util.generate_samples(
-        num_samples, use_ddim=use_ddim, scale=scale_conditioning,
-        conditions=conditions, guidance_scale=guidance_scale
-    )
+    precision = config.get('performance', {}).get('precision', '32')
+    
+    # Determine autocast dtype
+    autocast_dtype = None
+    if precision == 'bf16-mixed':
+        autocast_dtype = torch.bfloat16
+    elif precision == '16-mixed':
+        autocast_dtype = torch.float16
+        
+    if autocast_dtype is not None and torch.cuda.is_available():
+        with torch.autocast("cuda", dtype=autocast_dtype):
+            samples = trainer_util.generate_samples(
+                num_samples, use_ddim=use_ddim, scale=scale_conditioning,
+                conditions=conditions, guidance_scale=guidance_scale
+            )
+    else:
+        samples = trainer_util.generate_samples(
+            num_samples, use_ddim=use_ddim, scale=scale_conditioning,
+            conditions=conditions, guidance_scale=guidance_scale
+        )
     
     # Convert to time series
     print("Converting to time series...")
