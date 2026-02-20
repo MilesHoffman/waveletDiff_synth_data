@@ -24,7 +24,9 @@ class WaveletBalancedLoss:
                  strategy: str = "coefficient_weighted",
                  approximation_weight: float = 2.0,
                  use_energy_term: bool = False,
-                 energy_weight: float = 0.0):
+                 energy_weight: float = 0.0,
+                 loss_type: str = "mse",
+                 huber_delta: float = 1.0):
         """
         Initialize the balanced loss function with energy term.
         
@@ -59,6 +61,10 @@ class WaveletBalancedLoss:
         # Energy term parameters
         self.use_energy_term = use_energy_term
         self.energy_weight = energy_weight
+        
+        # Robust loss parameters
+        self.loss_type = loss_type
+        self.huber_delta = huber_delta
         
         # Pre-compute level boundaries for vectorized operations
         self.level_end_indices = [
@@ -182,7 +188,7 @@ class WaveletBalancedLoss:
         self._validate_tensor_shape(prediction, "prediction")
 
         if self.strategy == "standard":
-            reconstruction_loss = F.mse_loss(target, prediction)
+            reconstruction_loss = self._get_base_loss_scalar(target, prediction)
         else:
             reconstruction_loss = self._compute_weighted_loss(target, prediction)
         
@@ -219,9 +225,12 @@ class WaveletBalancedLoss:
                 device=target.device, dtype=target.dtype
             )
         
-        # Compute MSE for each level in a single pass
+        # Get appropriate base loss function
+        loss_fn = self._get_base_loss_fn()
+        
+        # Compute loss for each level in a single pass
         level_losses = torch.stack([
-            F.mse_loss(
+            loss_fn(
                 target[:, start:end, :].contiguous(),
                 prediction[:, start:end, :].contiguous()
             )
@@ -233,6 +242,31 @@ class WaveletBalancedLoss:
         
         return weighted_loss
     
+    def _get_base_loss_fn(self) -> Callable:
+        """Get the base loss function (MSE, Huber, Log-Cosh) returning scalar."""
+        if self.loss_type == "huber":
+            return lambda t, p: F.huber_loss(t, p, delta=self.huber_delta)
+        elif self.loss_type == "logcosh":
+            return lambda t, p: torch.mean(torch.log(torch.cosh(t - p)))
+        else:
+            return F.mse_loss
+
+    def _get_base_loss_scalar(self, target: torch.Tensor, prediction: torch.Tensor) -> torch.Tensor:
+        """Compute the unweighted base scalar loss."""
+        loss_fn = self._get_base_loss_fn()
+        return loss_fn(target, prediction)
+
+    def compute_per_sample_loss(self, target: torch.Tensor, prediction: torch.Tensor) -> torch.Tensor:
+        """Compute the unweighted loss per-sample (reduction='none'). Useful for importance sampling."""
+        if self.loss_type == "huber":
+            raw_loss = F.huber_loss(target, prediction, reduction='none', delta=self.huber_delta)
+        elif self.loss_type == "logcosh":
+            raw_loss = torch.log(torch.cosh(target - prediction))
+        else:
+            raw_loss = F.mse_loss(target, prediction, reduction='none')
+        # Average over sequence and feature dimensions to get per-sample scalar
+        return raw_loss.mean(dim=(1, 2))
+    
     
     def get_level_losses(self, target: torch.Tensor, prediction: torch.Tensor) -> List[torch.Tensor]:
         """
@@ -243,9 +277,10 @@ class WaveletBalancedLoss:
         self._validate_tensor_shape(target, "target")
         self._validate_tensor_shape(prediction, "prediction")
         
-        # Compute MSE for each level using vectorized slicing
+        # Compute loss for each level using vectorized slicing
+        loss_fn = self._get_base_loss_fn()
         level_losses = [
-            F.mse_loss(
+            loss_fn(
                 target[:, start:end, :].contiguous(),
                 prediction[:, start:end, :].contiguous()
             )
@@ -309,6 +344,7 @@ def get_wavelet_loss_fn(level_dims: List[int],
     loss_fn.get_weights = loss_computer.get_weights
     loss_fn.get_energy_loss = loss_computer.get_energy_loss
     loss_fn.get_energy_stats = loss_computer.get_energy_stats
+    loss_fn.compute_per_sample_loss = loss_computer.compute_per_sample_loss
     loss_fn.loss_computer = loss_computer
     
     return loss_fn

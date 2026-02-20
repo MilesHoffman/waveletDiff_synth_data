@@ -14,7 +14,7 @@ A specialized diffusion model for generating high-fidelity synthetic OHLCV (Open
 
 - **Wavelet-Based Architecture**: Multi-resolution decomposition captures both trends and fine-grained patterns
 - **Level-Specific Transformers**: Dedicated networks for each frequency band with cross-level attention
-  - **9-Channel Feature Pipeline**: Integrated price interval (gap, body, range), volume, and cyclic time
+  - **18-Channel Feature Pipeline**: Deep structural decomposition of OHLC, cyclic time, Order Flow Imbalance (MFM), algorithm anchors (VWAP), and technical momentum.
   - **Ratio-Based Wicks**: Wicks modeled as ratios of the bar range [0, 1] for guaranteed valid OHLC construction
   - **Contextual Encoding**: 'Day of Week' (sin/cos) and 'Gap' (ATR-normalized) for realistic market microsctructure
   - **OHLC Constraint Preservation**: Mathematical guarantees that High ≥ Open/Close ≥ Low
@@ -247,9 +247,9 @@ def load_custom_data(data_dir, seq_len=24, normalize_data=True):
 
 ## 🔬 Technical Details
 
-### 16-Channel Feature Pipeline
+### 18-Channel Feature Pipeline
 
-WaveletDiff uses a **Ratio-Based** structural decomposition with integrated technical indicators:
+WaveletDiff uses a **Ratio-Based** structural decomposition with integrated technical indicators and advanced Order Flow proxies:
 
 ```
 # --- Core OHLC (9 Channels) ---
@@ -257,16 +257,18 @@ WaveletDiff uses a **Ratio-Based** structural decomposition with integrated tech
 [1] body_norm = (Close_t - Open_t) / ATR_pct
 [2] wick_high_ratio = (High - max(O,C)) / (High - Low)  # [0, 1]
 [3] wick_low_ratio = (min(O,C) - Low) / (High - Low)    # [0, 1]
-[4] volume_norm = log(Volume / SMA_20(Volume))
+[4] volume_norm = (log(Volume + \epsilon) - \mu) / \sigma # Global Z-Score Standardization
 [5] day_sin, [6] day_cos = Cyclic Day Encoding
 [7] cum_ret_norm = (Close - Open_0) / ATR_pct
 [8] bar_range_norm = (High - Low) / ATR_pct
 
-# --- Technical Indicators (7 Channels) ---
+# --- Market Microstructure & Technicals (9 Channels) ---
 [9-12] sma_*_dev = (Close - SMA_N) / ATR_pct   # N = 200, 100, 50, 20
 [13] atr_ratio = log(ATR / SMA_20(ATR))
 [14] rsi_norm = (RSI - 50) / 50                 # [-1, 1]
 [15] mfi_norm = (MFI - 50) / 50                 # [-1, 1]
+[16] mfm = Money Flow Multiplier                # Proxy Order Flow Imbalance [-1, 1]
+[17] vwap_20_dev = log(Close / VWAP_20)         # Algorithmic mean-reversion tension
 ```
 
 **OHLC Constraints** are mathematically guaranteed by the ratio-based wick representation:
@@ -315,7 +317,8 @@ The evaluation suite includes:
 | **Predictive** | Hardened (5-step) & Legacy (1-step) | Utility of synthetic data for downstream forecasting |
 | **Contextual** | **Context-FID** (via TS2Vec) | Deep temporal alignment of patterns and context |
 | **Temporal** | DTW-JS Divergence, Correlation | Statistical preservation of cross-correlations and time-warps |
-| **Financial** | ACF similarity, Volatility clustering | Stylized facts preservation (Fat tails, ARCH effects) |
+| **Extreme Value Theory (EVT)** | Tail Index Error (Hill Estimator), Empirical VaR/ES MAE | Precision of power-law fat-tail decay and structural extreme risk |
+| **Volume Microstructure** | Price-Volume Asymmetry, Volume ACF MAE | Algorithmic trading persistence and directional leverage effects |
 | **Quality** | DCR, Memorization Ratio, Precision/Recall | Manifold coverage vs. training data leakage |
 
 ---
@@ -379,6 +382,10 @@ python train.py \
     --compile_enabled true \
     --compile_mode reduce-overhead  # or: default, max-autotune
 ```
+
+### Heavy-Tailed Generation (Student-T Prior)
+
+WaveletDiff supports specialized statistical priors for deep financial modeling. By replacing standard Gaussian denoising with a **Student-T noise prior**, the architecture natively supports the generation of extreme black-swan events ($5\sigma$ spikes) and fat-tailed distribution structures common in real-world assets.
 
 ### Custom Noise Schedule
 

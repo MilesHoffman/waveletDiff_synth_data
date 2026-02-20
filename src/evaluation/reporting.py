@@ -169,13 +169,43 @@ def display_scorecard(result) -> pd.DataFrame:
         sf = adv['stylized_facts']
         summary_data.append({
             "Tier": "Advanced (Tier 2)",
-            "Category": "Stylized Facts",
-            "Metric": "Kurtosis Diff",
-            "Value": sf['kurtosis'],
+            "Category": "Tail Risk (EVT)",
+            "Metric": "Tail Index Error",
+            "Value": sf['tail_index_error'],
             "Goal": "lower",
             "Ideal": "→ 0",
-            "Description": "Fat-tail distribution match"
+            "Description": "Power-law decay deviation (Hill Estimator)"
         })
+        summary_data.append({
+            "Tier": "Advanced (Tier 2)",
+            "Category": "Tail Risk (EVT)",
+            "Metric": "Risk (VaR/ES) Error",
+            "Value": sf['var_es_error'],
+            "Goal": "lower",
+            "Ideal": "→ 0",
+            "Description": "Empirical VaR & Expected Shortfall MAE"
+        })
+        
+        if 'price_vol_asym' in sf:
+            summary_data.append({
+                "Tier": "Advanced (Tier 2)",
+                "Category": "Market Micro-Structure",
+                "Metric": "Price-Vol Asymmetry",
+                "Value": sf['price_vol_asym'],
+                "Goal": "lower",
+                "Ideal": "→ 0",
+                "Description": "Replication of Volume Leverage Effect"
+            })
+        if 'volume_acf' in sf:
+            summary_data.append({
+                "Tier": "Advanced (Tier 2)",
+                "Category": "Market Micro-Structure",
+                "Metric": "Volume ACF Error",
+                "Value": sf['volume_acf'],
+                "Goal": "lower",
+                "Ideal": "→ 0",
+                "Description": "Temporal persistence of trading volume"
+            })
         summary_data.append({
             "Tier": "Advanced (Tier 2)",
             "Category": "Stylized Facts",

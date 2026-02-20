@@ -378,22 +378,31 @@ class WaveletTimeSeriesDataModule(pl.LightningDataModule):
             high_prices[:, t] = max_oc + h_ratio * total_range
             low_prices[:, t] = min_oc - l_ratio * total_range
 
-        # Volume reconstruction: exp(V_norm) * SMA_20
-        vol_smas = None
-        if 'vol_smas' in self.norm_stats:
-            if sample_indices is not None:
-                vol_smas = self.norm_stats['vol_smas'][sample_indices]
-            else:
-                vol_smas = self.norm_stats['vol_smas'][indices]
+        # Volume reconstruction: Z-Score of Log Volume
+        volume_norm_clipped = np.clip(volume_norm, -10.0, 10.0) # Restrict extreme hallucinations
         
-        if self.norm_stats.get('volume_type') == 'log_ratio_sma' and vol_smas is not None:
-            volume_norm_clipped = np.clip(volume_norm, -20.0, 20.0)
-            volume = np.exp(volume_norm_clipped) * vol_smas
+        if self.norm_stats.get('volume_type') == 'zscore_log':
+            vol_mean = self.norm_stats.get('volume_mean', 0.0)
+            vol_std = self.norm_stats.get('volume_std', 1.0)
+            volume_log = (volume_norm_clipped * vol_std) + vol_mean
+            # Revert log(V + 1e-6)
+            volume = np.exp(volume_log) - 1e-6
             volume = np.maximum(0, volume)
+        elif self.norm_stats.get('volume_type') == 'log_ratio_sma':
+            # Legacy fallback
+            vol_smas = None
+            if 'vol_smas' in self.norm_stats:
+                vol_smas = self.norm_stats['vol_smas'][sample_indices] if sample_indices is not None else self.norm_stats['vol_smas'][indices]
+            
+            if vol_smas is not None:
+                volume = np.exp(volume_norm_clipped) * vol_smas
+                volume = np.maximum(0, volume)
+            else:
+                volume = np.zeros_like(volume_norm_clipped)
         else:
             vol_mean = self.norm_stats.get('volume_mean', 0)
             vol_std = self.norm_stats.get('volume_std', 1)
-            volume_log = volume_norm * vol_std + vol_mean
+            volume_log = volume_norm_clipped * vol_std + vol_mean
             volume = np.maximum(0, np.expm1(volume_log))
         
         ohlcv = np.stack([

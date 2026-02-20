@@ -27,7 +27,13 @@ INTERNAL_DEFAULTS = {
         "weight": 0.0
     },
     "noise": {
-        "schedule": "exponential"
+        "schedule": "exponential",
+        "prior": "student-t",
+        "nu": 3.0
+    },
+    "loss": {
+        "type": "huber",
+        "huber_delta": 1.0
     },
     "wavelet": {
         "type": "db2",
@@ -36,7 +42,9 @@ INTERNAL_DEFAULTS = {
     "sampling": {
         "method": "ddpm",
         "ddim_eta": 0.0,
-        "ddim_steps": None
+        "ddim_steps": None,
+        "exploration_ratio": 0.3,
+        "adaptive_start_pct": 0.8
     },
     "data": {
         "normalize_data": True,

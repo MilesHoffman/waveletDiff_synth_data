@@ -54,6 +54,12 @@ def main():
     parser.add_argument('--use_cross_level_attention', type=str, default=None, help='true or false')
     parser.add_argument('--energy_weight', type=float, default=None)
     parser.add_argument('--noise_schedule', type=str, default=None)
+    parser.add_argument('--noise_prior', type=str, default=None, help='gaussian or student-t')
+    parser.add_argument('--nu', type=float, default=None, help='Degrees of freedom for Student-T prior')
+    parser.add_argument('--loss_type', type=str, default=None, help='mse, huber, or logcosh')
+    parser.add_argument('--huber_delta', type=float, default=None, help='Delta for Huber loss')
+    parser.add_argument('--exploration_ratio', type=float, default=None, help='Adaptive vs Min-SNR probability')
+    parser.add_argument('--adaptive_start_pct', type=float, default=None, help='Fraction of pct_start where adaptive kicks in')
     parser.add_argument('--log_every_n_epochs', type=int, default=None)
     parser.add_argument('--enable_progress_bar', type=str, default='true', help='true or false')
     
@@ -144,6 +150,22 @@ def main():
     
     if args.energy_weight is not None: config['energy']['weight'] = args.energy_weight
     if args.noise_schedule: config['noise']['schedule'] = args.noise_schedule
+    if args.noise_prior: config['noise']['prior'] = args.noise_prior
+    if args.nu is not None: config['noise']['nu'] = args.nu
+    if args.loss_type:
+        if 'loss' not in config: config['loss'] = {}
+        config['loss']['type'] = args.loss_type
+    if args.huber_delta is not None:
+        if 'loss' not in config: config['loss'] = {}
+        config['loss']['huber_delta'] = args.huber_delta
+        
+    if args.exploration_ratio is not None:
+        if 'sampling' not in config: config['sampling'] = {}
+        config['sampling']['exploration_ratio'] = args.exploration_ratio
+    if args.adaptive_start_pct is not None:
+        if 'sampling' not in config: config['sampling'] = {}
+        config['sampling']['adaptive_start_pct'] = args.adaptive_start_pct
+        
     if args.log_every_n_epochs: config['training']['log_every_n_epochs'] = args.log_every_n_epochs
     
     enable_progress_bar = args.enable_progress_bar.lower() == 'true'
@@ -157,7 +179,9 @@ def main():
     print(f"Cross-level Attention: {'Enabled' if config['attention']['use_cross_level_attention'] else 'Disabled'} (cross_only)")
     print(f"Loss Strategy: coefficient_weighted (approximation_weight=2)")
     print(f"Energy Term: {'Enabled' if config['energy']['weight'] > 0 else 'Disabled'} (level_feature, absolute)")
+    print(f"Noise Prior: {config.get('noise', {}).get('prior', 'gaussian')}")
     print(f"Noise Schedule: {config['noise']['schedule']}")
+    print(f"Loss Type: {config.get('loss', {}).get('type', 'mse')}")
     print(f"Logging Frequency: every {config['training']['log_every_n_epochs']} epoch(s)")
     
     # Apply compile overrides
