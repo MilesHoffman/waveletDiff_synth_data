@@ -139,7 +139,7 @@ class InlineEvaluationCallback(pl.Callback):
         device = pl_module.device
         
         # Get shape from data module
-        sample_shape = self.data_module.data_tensor.shape[1:]  # (n_coeffs, n_features)
+        sample_shape = self.data_module.raw_data_tensor.shape[1:]  # (n_coeffs, n_features)
         
         with torch.no_grad():
             # Start from pure noise

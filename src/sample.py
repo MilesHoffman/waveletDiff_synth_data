@@ -131,30 +131,6 @@ def main():
         model = model.cuda()
         print("Model moved to GPU")
 
-    # Apply torch.compile if requested
-    if args.compile_mode != 'none':
-        print(f"Compiling model with mode='{args.compile_mode}'...")
-        model = torch.compile(model, mode=args.compile_mode)
-        
-        # Warmup: trigger compilation before the sampling loop
-        print("Warming up compiled model...")
-        dummy_x = torch.randn(2, model.input_dim, model.num_features, device=model.device)
-        dummy_t = torch.tensor([0.5, 0.5], device=model.device)
-        with torch.no_grad():
-            _ = model(dummy_x, dummy_t)
-        if torch.cuda.is_available():
-            torch.cuda.synchronize()
-        print("Warmup complete.")
-    
-    # Create trainer for evaluation
-    trainer_util = DiffusionTrainer(model)
-    
-    # Generate samples
-    # Default to generating the same number as real dataset for 1-to-1 eval
-    num_real = len(data_module.raw_data_tensor)
-    num_samples = args.num_samples if args.num_samples is not None else num_real
-    print(f"Generating {num_samples} samples (real dataset has {num_real})...")
-    
     # Generate using specified method
     sampling_method = config['sampling']['method']
     use_ddim = (sampling_method == "ddim")
@@ -183,6 +159,24 @@ def main():
             profile_vals = qp[name][sample_indices]
             conditions.append(torch.FloatTensor(profile_vals).to(model.device))
         print(f"Quarter conditioning: {profile_names}, guidance_scale={guidance_scale}")
+
+    # Apply torch.compile if requested
+    if args.compile_mode != 'none':
+        print(f"Compiling model with mode='{args.compile_mode}'...")
+        model = torch.compile(model, mode=args.compile_mode)
+        
+        # Warmup: trigger compilation EXACTLY mapping the batch structures
+        print("Warming up compiled model...")
+        dummy_x = torch.randn(num_samples, model.input_dim, model.num_features, device=model.device)
+        dummy_t = torch.full((num_samples,), 0.5, device=model.device)
+        with torch.no_grad():
+            _ = model(dummy_x, dummy_t, scale=scale_conditioning, conditions=conditions)
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        print("Warmup complete.")
+    
+    # Create trainer for evaluation
+    trainer_util = DiffusionTrainer(model)
     
     print(f"Generating {sampling_method.upper()} samples...")
     samples = trainer_util.generate_samples(

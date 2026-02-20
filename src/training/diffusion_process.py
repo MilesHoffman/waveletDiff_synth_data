@@ -166,7 +166,7 @@ class DDPMSampler(DiffusionSampler):
             for i in range(total_steps):
                 torch.compiler.cudagraph_mark_step_begin()
                 t_norm = sched['t_norms'][i].expand(batch_size)
-                prediction = self._get_prediction(x_t, t_norm, scale, conditions, guidance_scale).clone()
+                prediction = self._get_prediction(x_t, t_norm, scale, conditions, guidance_scale)
                 
                 noise = generate_noise(
                     shape=x_t.shape, 
@@ -281,6 +281,9 @@ class DDIMSampler(DiffusionSampler):
         stored_samples = {}
         if store_intermediates or store_specific_timesteps is not None:
             stored_samples[self.T] = x_t.clone()
+            
+        if self.eta == 0.0:
+            zero_noise = torch.zeros_like(x_t)
         
         if show_progress:
             ddim_type = "accelerated" if self.ddim_steps and self.ddim_steps < self.T else "full"

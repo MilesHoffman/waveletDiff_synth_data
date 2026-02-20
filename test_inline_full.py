@@ -14,7 +14,7 @@ from training.inline_evaluation import InlineEvaluationCallback
 class MockDataModule:
     def __init__(self):
         # 5 features: [open_norm, body_norm, wick_high_norm, wick_low_norm, volume_norm]
-        self.data_tensor = torch.randn(10, 24, 5)
+        self.raw_data_tensor = torch.randn(10, 24, 5)
     
     def convert_wavelet_to_timeseries(self, wavelet):
         return wavelet
