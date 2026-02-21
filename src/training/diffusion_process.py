@@ -31,16 +31,15 @@ class DiffusionSampler(ABC):
                 't': t_norm.cpu().numpy()
             }
             if scale is not None:
-                # Ensure batch dimension (num_samples, 1) instead of (num_samples,)
-                inputs['scale'] = scale.unsqueeze(1).cpu().numpy() if scale.dim() == 1 else scale.cpu().numpy()
+                # Keep scale 1D for dynamic axes matching
+                inputs['scale'] = scale.cpu().numpy()
             if conditions is not None:
                 # Use profile names if available from the data_module, otherwise default to cond{i}
                 profile_names = getattr(self.model.data_module, 'quarter_profile_names', [])
                 for i, cond in enumerate(conditions):
                     name = profile_names[i] if i < len(profile_names) else f'cond{i}'
-                    # Ensure batch dimension (num_samples, 1) instead of (num_samples,)
-                    cond_np = cond.unsqueeze(1).cpu().numpy() if cond.dim() == 1 else cond.cpu().numpy()
-                    inputs[name] = cond_np
+                    # Keep conditions 1D for dynamic axes matching
+                    inputs[name] = cond.cpu().numpy()
                     
             # 2. Execute Graph
             ort_outs = self.onnx_session.run(None, inputs)

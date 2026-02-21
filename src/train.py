@@ -556,15 +556,12 @@ def main():
             dummy_x = torch.randn(batch_size, model.input_dim, model.num_features, device=device)
             dummy_t = torch.full((batch_size,), 0.5, device=device)
             
-            # Setup PyTorch 2.0 Dynamo dynamic shapes for variable batch sizes
-            from torch.export import Dim
-            batch_dim = Dim("batch_size")
-            
-            # For Dynamo, dynamic shapes map positional arguments
-            dynamic_shapes = [
-                {0: batch_dim},  # x
-                {0: batch_dim}   # t
-            ]
+            # Setup dynamic axes for variable batch sizes
+            dynamic_axes = {
+                'x': {0: 'batch_size'},
+                't': {0: 'batch_size'},
+                'output': {0: 'batch_size'}
+            }
             
             input_names = ['x', 't']
             dummy_inputs = [dummy_x, dummy_t]
@@ -578,7 +575,7 @@ def main():
                 dummy_scale = torch.tensor([0.05], device=device)
                 dummy_inputs.append(dummy_scale)
                 input_names.append('scale')
-                dynamic_shapes.append({0: batch_dim})
+                dynamic_axes['scale'] = {0: 'batch_size'}
                 
             if has_quarter and getattr(model, 'condition_embeddings', None) is not None:
                 # Get the number of expected conditioning quarters
@@ -589,7 +586,7 @@ def main():
                     cond_name = profile_names[i] if i < len(profile_names) else f'cond{i}'
                     dummy_inputs.append(torch.tensor([[0.5, 0.5, 0.5, 0.5]], device=device))
                     input_names.append(cond_name)
-                    dynamic_shapes.append({0: batch_dim})
+                    dynamic_axes[cond_name] = {0: 'batch_size'}
             
             try:
                 # PyTorch Dynamo (backend for torch.export in 2.x) strictly requires the 
@@ -620,8 +617,7 @@ class ExportWrapper(nn.Module):
                 wrapper = ExportWrapper(model)
                 wrapper.eval()
                 
-                # We retain dynamic_axes for legacy backwards-compat on standard exporter,
-                # but ALSO provide dynamic_shapes dict for the new Dynamo backend.
+                # Use dynamic_axes for ONNX exporter compatibility so batching is unconstrained
                 torch.onnx.export(
                     wrapper,
                     tuple(dummy_inputs),
@@ -631,7 +627,7 @@ class ExportWrapper(nn.Module):
                     do_constant_folding=True,
                     input_names=input_names,
                     output_names=['output'],
-                    dynamic_shapes=tuple(dynamic_shapes)
+                    dynamic_axes=dynamic_axes
                 )
                     
                 print(f"ONNX export successful: {onnx_path}")
