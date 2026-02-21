@@ -45,11 +45,29 @@ def main():
     print(f"Loading PyTorch Model from Checkout: {checkpoint_path}")
     
     data_module = WaveletTimeSeriesDataModule(config=config)
-    model = WaveletDiffusionTransformer.load_from_checkpoint(
-        checkpoint_path,
-        data_module=data_module,
-        config=config,
-    )
+    
+    # Explicitly check for EMA state dict
+    ckpt = torch.load(checkpoint_path, map_location="cpu")
+    if "ema_state_dict" in ckpt:
+        print("Found 'ema_state_dict'. Using EMA weights for ONNX export.")
+        # Temporarily swap the main state_dict so Lightning loads the EMA weights
+        ckpt["state_dict"] = ckpt["ema_state_dict"]
+        temp_ckpt_path = checkpoint_path.parent / "temp_ema_checkpoint.ckpt"
+        torch.save(ckpt, temp_ckpt_path)
+        
+        model = WaveletDiffusionTransformer.load_from_checkpoint(
+            temp_ckpt_path,
+            data_module=data_module,
+            config=config,
+        )
+        os.remove(temp_ckpt_path)
+    else:
+        print("No 'ema_state_dict' found. Falling back to raw training weights.")
+        model = WaveletDiffusionTransformer.load_from_checkpoint(
+            checkpoint_path,
+            data_module=data_module,
+            config=config,
+        )
     
     print(f"Exporting model to ONNX format at {onnx_path}...")
     model.eval()

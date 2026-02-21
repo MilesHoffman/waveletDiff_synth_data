@@ -12,6 +12,7 @@ import numpy as np
 
 from models import WaveletDiffusionTransformer
 from training import DiffusionTrainer, InlineEvaluationCallback
+from training.callbacks import EMACallback
 from data import WaveletTimeSeriesDataModule
 from utils import ConfigManager
 
@@ -68,6 +69,10 @@ def main():
     parser.add_argument('--compile_mode', type=str, default='default', 
                        help='Compile mode: default, reduce-overhead, max-autotune')
     parser.add_argument('--compile_fullgraph', type=str, default='false', help='true or false')
+    
+    # EMA Options
+    parser.add_argument('--use_ema', type=str, default='true', help='Use Exponential Moving Average for weights (true/false)')
+    parser.add_argument('--ema_decay', type=float, default=0.9999, help='Decay rate for EMA')
     
     # Checkpoint Options
     parser.add_argument('--save_weights_only', type=str, default='true', help='true or false - if true, optimizer states are excluded (smaller file)')
@@ -334,6 +339,11 @@ def main():
     callbacks = [Timer()]
     if enable_progress_bar:
         callbacks.append(EpochProgressBar(log_every_n_epochs=config['training']['log_every_n_epochs']))
+        
+    # EMA callback
+    if args.use_ema.lower() == 'true':
+        callbacks.append(EMACallback(decay=args.ema_decay, use_ema_for_validation=True))
+        print(f"EMA Tracking enabled with decay {args.ema_decay}")
     
     # Inline evaluation callback
     eval_every = config['evaluation'].get('inline_eval_every_n_epochs', 200)

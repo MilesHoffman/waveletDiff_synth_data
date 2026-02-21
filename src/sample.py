@@ -107,17 +107,39 @@ def main():
     
     # Load light wrapper model for architectural hyperparams and properties (diffusion tracker requires this)
     print("Loading PyTorch blueprint...")
-    try:
-        model = WaveletDiffusionTransformer.load_from_checkpoint(
-            checkpoint_path,
-            data_module=data_module,
-            config=config,
-            strict=False # Only loading the architecture wrapper/properties, weights come from ONNX
-        )
-    except RuntimeError as e:
-        print(f"\nFATAL ERROR: Failed to load model blueprint.")
-        print(f"Error details: {e}")
-        sys.exit(1)
+    # explicitly check for EMA state dict, similar to export_onnx
+    import os
+    ckpt = torch.load(checkpoint_path, map_location="cpu")
+    if "ema_state_dict" in ckpt:
+        print("Found 'ema_state_dict'. Using EMA weights for PyTorch blueprint.")
+        ckpt["state_dict"] = ckpt["ema_state_dict"]
+        temp_ckpt_path = checkpoint_path.parent / "temp_ema_checkpoint_sample.ckpt"
+        torch.save(ckpt, temp_ckpt_path)
+        
+        try:
+            model = WaveletDiffusionTransformer.load_from_checkpoint(
+                temp_ckpt_path,
+                data_module=data_module,
+                config=config,
+                strict=False # Only loading the architecture wrapper/properties, weights come from ONNX
+            )
+            os.remove(temp_ckpt_path)
+        except RuntimeError as e:
+            print(f"\nFATAL ERROR: Failed to load model blueprint.")
+            print(f"Error details: {e}")
+            sys.exit(1)
+    else:
+        try:
+            model = WaveletDiffusionTransformer.load_from_checkpoint(
+                checkpoint_path,
+                data_module=data_module,
+                config=config,
+                strict=False # Only loading the architecture wrapper/properties, weights come from ONNX
+            )
+        except RuntimeError as e:
+            print(f"\nFATAL ERROR: Failed to load model blueprint.")
+            print(f"Error details: {e}")
+            sys.exit(1)
         
     model.eval()
     
