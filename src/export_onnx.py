@@ -79,7 +79,7 @@ def main():
     num_conds = 0
     
     if has_scale:
-        dummy_scale = torch.tensor([0.05], device=device)
+        dummy_scale = torch.tensor([0.05] * batch_size, device=device).unsqueeze(1) if getattr(data_module, 'scale_is_2d', False) else torch.tensor([0.05] * batch_size, device=device)
         dummy_inputs.append(dummy_scale)
         input_names.append('scale')
         dynamic_shapes.append({0: batch_dim})
@@ -89,7 +89,9 @@ def main():
         num_conds = len(model.condition_embeddings)
         for i in range(num_conds):
             cond_name = profile_names[i] if i < len(profile_names) else f'cond{i}'
-            dummy_inputs.append(torch.tensor([[0.5, 0.5, 0.5, 0.5]], device=device))
+            # Expand to matching batch size
+            cond_tensor = torch.tensor([[0.5, 0.5, 0.5, 0.5]], device=device).expand(batch_size, -1).clone()
+            dummy_inputs.append(cond_tensor)
             input_names.append(cond_name)
             dynamic_shapes.append({0: batch_dim})
     
