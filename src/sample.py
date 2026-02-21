@@ -156,6 +156,13 @@ def main():
     sampling_method = config['sampling']['method']
     use_ddim = (sampling_method == "ddim")
     
+    # Set number of samples based on CLI or dataset size
+    num_real = len(data_module.raw_data_tensor)
+    if args.num_samples is None:
+        num_samples = num_real
+    else:
+        num_samples = args.num_samples
+
     # Prepare conditioning: use sequential indices for 1-to-1 mapping with real data
     scale_conditioning = None
     sample_indices = None
