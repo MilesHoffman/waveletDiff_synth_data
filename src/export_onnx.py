@@ -55,17 +55,21 @@ def main():
     model.eval()
     model.to("cpu")
     
-    batch_size = 1
+    batch_size = 2
     device = torch.device('cpu')
     
     dummy_x = torch.randn(batch_size, model.input_dim, model.num_features, device=device)
     dummy_t = torch.full((batch_size,), 0.5, device=device)
     
-    dynamic_axes = {
-        'x': {0: 'batch_size'},
-        't': {0: 'batch_size'},
-        'output': {0: 'batch_size'}
-    }
+    # Setup PyTorch 2.0 Dynamo dynamic shapes for variable batch sizes
+    from torch.export import Dim
+    batch_dim = Dim("batch_size")
+    
+    # For Dynamo, dynamic shapes map positional arguments
+    dynamic_shapes = [
+        {0: batch_dim},  # x
+        {0: batch_dim}   # t
+    ]
     
     input_names = ['x', 't']
     dummy_inputs = [dummy_x, dummy_t]
@@ -78,7 +82,7 @@ def main():
         dummy_scale = torch.tensor([0.05], device=device)
         dummy_inputs.append(dummy_scale)
         input_names.append('scale')
-        dynamic_axes['scale'] = {0: 'batch_size'}
+        dynamic_shapes.append({0: batch_dim})
         
     if has_quarter and getattr(model, 'condition_embeddings', None) is not None:
         profile_names = getattr(data_module, 'quarter_profile_names', [f'cond{i}' for i in range(len(model.condition_embeddings))])
@@ -87,7 +91,7 @@ def main():
             cond_name = profile_names[i] if i < len(profile_names) else f'cond{i}'
             dummy_inputs.append(torch.tensor([[0.5, 0.5, 0.5, 0.5]], device=device))
             input_names.append(cond_name)
-            dynamic_axes[cond_name] = {0: 'batch_size'}
+            dynamic_shapes.append({0: batch_dim})
     
     try:
         sig_args = ["x", "t"]
@@ -123,7 +127,8 @@ class ExportWrapper(nn.Module):
             do_constant_folding=True,
             input_names=input_names,
             output_names=['output'],
-            dynamic_axes=dynamic_axes
+            dynamic_shapes=tuple(dynamic_shapes),
+            dynamo=True
         )
             
         print(f"ONNX export successful: {onnx_path}")
