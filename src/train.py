@@ -542,101 +542,21 @@ def main():
         print(f"Model saved!")
 
         if args.export_onnx.lower() == 'true':
-            onnx_path = experiment_dir / 'model.onnx'
-            print(f"Exporting model to ONNX format at {onnx_path}...")
+            print(f"Triggering ONNX export script...")
             
-            # Put model in eval mode for tracing
-            model.eval()
-            model.to("cpu")
-            
-            # Generate dummy inputs mapped perfectly to model capabilities
-            batch_size = 2
-            device = torch.device('cpu')
-            
-            dummy_x = torch.randn(batch_size, model.input_dim, model.num_features, device=device)
-            dummy_t = torch.full((batch_size,), 0.5, device=device)
-            
-            # Setup PyTorch 2.0 Dynamo dynamic shapes for variable batch sizes
-            from torch.export import Dim
-            batch_dim = Dim("batch_size")
-            
-            # For Dynamo, dynamic shapes map positional arguments
-            dynamic_shapes = [
-                {0: batch_dim},  # x
-                {0: batch_dim}   # t
+            import subprocess
+            export_cmd = [
+                sys.executable, 
+                "src/export_onnx.py", 
+                "--experiment_name", experiment_name,
+                "--dataset", dataset_name
             ]
             
-            input_names = ['x', 't']
-            dummy_inputs = [dummy_x, dummy_t]
-            
-            # Add conditioning if expected by model
-            has_scale = getattr(data_module, 'has_conditioning', False)
-            has_quarter = getattr(data_module, 'has_quarter_conditioning', False)
-            num_conds = 0
-            
-            if has_scale:
-                dummy_scale = torch.tensor([0.05], device=device)
-                dummy_inputs.append(dummy_scale)
-                input_names.append('scale')
-                dynamic_shapes.append({0: batch_dim})
-                
-            if has_quarter and getattr(model, 'condition_embeddings', None) is not None:
-                # Get the number of expected conditioning quarters
-                profile_names = getattr(data_module, 'quarter_profile_names', [f'cond{i}' for i in range(len(model.condition_embeddings))])
-                num_conds = len(model.condition_embeddings)
-                for i in range(num_conds):
-                    # Default to cond{i} only if profile_names list is shorter than expected (safety check)
-                    cond_name = profile_names[i] if i < len(profile_names) else f'cond{i}'
-                    dummy_inputs.append(torch.tensor([[0.5, 0.5, 0.5, 0.5]], device=device))
-                    input_names.append(cond_name)
-                    dynamic_shapes.append({0: batch_dim})
-            
             try:
-                # PyTorch Dynamo (backend for torch.export in 2.x) strictly requires the 
-                # structure of dynamic_shapes to match the function's AST signature exactly.
-                # *args or missing kwargs cause structure mismatch crashes. 
-                # We dynamically build the wrapper with the EXACT signature of active inputs.
-                sig_args = ["x", "t"]
-                if has_scale: sig_args.append("scale")
-                for i in range(num_conds): sig_args.append(f"cond{i}")
-                    
-                cond_list_str = "[" + ", ".join([f"cond{i}" for i in range(num_conds)]) + "]" if num_conds > 0 else "None"
-                scale_str = "scale" if has_scale else "None"
-                
-                wrapper_code = f"""
-import torch
-import torch.nn as nn
-class ExportWrapper(nn.Module):
-    def __init__(self, m):
-        super().__init__()
-        self.m = m
-    def forward(self, {', '.join(sig_args)}):
-        return self.m(x, t, scale={scale_str}, conditions={cond_list_str})
-"""
-                local_vars = {'torch': torch, 'nn': torch.nn}
-                exec(wrapper_code, globals(), local_vars)
-                ExportWrapper = local_vars['ExportWrapper']
-                
-                wrapper = ExportWrapper(model)
-                wrapper.eval()
-                
-                # Use dynamic_shapes for modern PyTorch 2.x export
-                torch.onnx.export(
-                    wrapper,
-                    tuple(dummy_inputs),
-                    str(onnx_path),
-                    export_params=True,
-                    opset_version=18,
-                    do_constant_folding=True,
-                    input_names=input_names,
-                    output_names=['output'],
-                    dynamic_shapes=tuple(dynamic_shapes),
-                    dynamo=True
-                )
-                    
-                print(f"ONNX export successful: {onnx_path}")
-            except Exception as e:
-                print(f"ONNX Export Failed: {e}")
+                # Call the dedicated export script to avoid duplicated logic
+                subprocess.run(export_cmd, check=True)
+            except subprocess.CalledProcessError as e:
+                print(f"ONNX Export Failed during training hook: {e}")
                 print(f"Wait for ONNX export to complete or correct the issue if execution is required.")
 
 if __name__ == "__main__":
