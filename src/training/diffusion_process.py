@@ -8,6 +8,7 @@ Optimized for torch.compile with reduce-overhead (CUDAGraphs):
 """
 
 import torch
+import numpy as np
 from abc import ABC, abstractmethod
 from typing import Optional, Dict, List, Union
 from utils.noise_generators import generate_noise
@@ -52,7 +53,7 @@ class DiffusionSampler(ABC):
                 # Create a blank list of conditions equivalent to None for the model wrapper
                 for i in range(len(conditions)):
                     name = profile_names[i] if 'profile_names' in locals() and i < len(profile_names) else f'cond{i}'
-                    uncond_inputs[name] = torch.zeros_like(inputs[name])
+                    uncond_inputs[name] = np.zeros_like(inputs[name])
                 uncond_outs = self.onnx_session.run(None, uncond_inputs)
                 uncond_pred = torch.from_numpy(uncond_outs[0]).to(self.device)
                 return uncond_pred + guidance_scale * (pred - uncond_pred)
