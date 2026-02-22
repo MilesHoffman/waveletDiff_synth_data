@@ -1,335 +1,266 @@
 """
 Inline Evaluation Callback for WaveletDiff Training.
 
-Runs periodic inference and computes deterministic metrics to monitor
-synthetic data quality during training.
+Runs periodic zero-split inference and computes deterministic metrics 
+(DCR, NNDR, Fréchet Distance, EVT Tail Index) on reconstructed OHLC prices
+using EMA weights to monitor synthetic data quality and detect memorization.
 """
 
 import numpy as np
 import torch
 import pytorch_lightning as pl
 from sklearn.neighbors import NearestNeighbors
-from scipy.stats import wasserstein_distance, skew, kurtosis
-from statsmodels.tsa.stattools import acf
-import time
-
+import scipy.linalg
 
 class InlineEvaluationCallback(pl.Callback):
-    """
-    Runs inference and evaluates synthetic data quality every N epochs.
-    
-    Metrics computed:
-    - OHLC Invariants: % of valid OHLCV sequences (High >= Low, etc.)
-    - Memorization: Distance to nearest neighbor statistics
-    - Tail Fidelity: VaR (99th percentile of returns) comparison
-    - Temporal Fidelity: ACF MSE on returns
-    - Distribution: Wasserstein distance on marginals
-    - Correlation: Frobenius norm of correlation matrix difference
-    - Moments: Skewness/Kurtosis drift
-    """
-    
     def __init__(
         self,
         data_module,
         eval_every_n_epochs: int = 200,
-        n_samples: int = 128,
+        n_samples: int = 500,
         ohlcv_indices: dict = None
     ):
-        """
-        Args:
-            data_module: The WaveletTimeSeriesDataModule instance
-            eval_every_n_epochs: How often to run evaluation
-            n_samples: Number of synthetic samples to generate
-            ohlcv_indices: Dict mapping OHLCV columns to indices, e.g. {'open': 0, 'high': 1, 'low': 2, 'close': 3}
-                          If None, OHLC invariant check is skipped.
-        """
         super().__init__()
         self.data_module = data_module
         self.eval_every = eval_every_n_epochs
         self.n_samples = n_samples
         self.ohlcv_indices = ohlcv_indices
         
+        # Caches for uniform extraction conditions
+        self.eval_indices = None
+        self.eval_scale = None
+        self.eval_conditions = None
+        
+    def _find_ema_callback(self, trainer):
+        for callback in trainer.callbacks:
+            if callback.__class__.__name__ == 'EMACallback':
+                return callback
+        return None
+
     def on_train_epoch_end(self, trainer, pl_module):
         epoch = trainer.current_epoch + 1
         if epoch % self.eval_every != 0:
             return
             
-        print(f"\n> Inline Evaluation Metrics (Every {self.eval_every} epochs)")
+        print(f"\n> Zero-Split Inline Evaluation (Epoch {epoch})")
         
-        # Prepare scale conditioning if available
+        # 1. EMA Weight Swap
+        ema_callback = self._find_ema_callback(trainer)
+        original_state_dict = None
+        
+        if ema_callback is not None and ema_callback.ema_model is not None:
+            print("  [EMA] Temporarily swapping to EMA weights for evaluation...")
+            # We must be careful to copy since we'll restore
+            original_state_dict = {k: v.cpu().clone() for k, v in pl_module.state_dict().items()}
+            # Extract underlying module state
+            ema_state = ema_callback.ema_model.module.state_dict()
+            pl_module.load_state_dict(ema_state)
+            
+        # 2. Extract Consistent Conditions (Uniformly Spaced)
+        if getattr(self.data_module, 'has_conditioning', False):
+            if self.eval_indices is None:
+                total_samples = len(self.data_module.norm_stats['atr_pcts'])
+                # Get evenly spaced indices across the entire dataset to ensure comparability
+                self.eval_indices = np.linspace(0, total_samples - 1, self.n_samples, dtype=int)
+                
+                atr_pcts = self.data_module.norm_stats['atr_pcts']
+                self.eval_scale = torch.FloatTensor(atr_pcts[self.eval_indices]).to(pl_module.device)
+                
+                if getattr(self.data_module, 'has_quarter_conditioning', False):
+                    qp = self.data_module.norm_stats['quarter_profiles']
+                    self.eval_conditions = []
+                    for name in self.data_module.quarter_profile_names:
+                        self.eval_conditions.append(torch.FloatTensor(qp[name][self.eval_indices]).to(pl_module.device))
+        else:
+            if self.eval_indices is None:
+                self.eval_indices = np.linspace(0, len(self.data_module.raw_data_tensor) - 1, self.n_samples, dtype=int)
+
+        # Ensure conditions are on the correct device if already cached
         scale = None
         conditions = None
-        indices = None
-        if getattr(self.data_module, 'has_conditioning', False):
-            atr_pcts = self.data_module.norm_stats['atr_pcts']
-            indices = np.random.choice(len(atr_pcts), size=self.n_samples, replace=True)
-            scale = torch.FloatTensor(atr_pcts[indices]).to(pl_module.device)
+        if self.eval_scale is not None:
+            scale = self.eval_scale.to(pl_module.device)
+        if self.eval_conditions is not None:
+            conditions = [c.to(pl_module.device) for c in self.eval_conditions]
 
-        # Prepare quarter-profile conditions if available
-        if getattr(self.data_module, 'has_quarter_conditioning', False) and indices is not None:
-            qp = self.data_module.norm_stats['quarter_profiles']
-            conditions = []
-            for name in self.data_module.quarter_profile_names:
-                conditions.append(torch.FloatTensor(qp[name][indices]).to(pl_module.device))
-
-        # Generate synthetic samples
+        # 3. Generate DDIM-50 samples
+        print("  [DDIM] Generating synthetic samples (50 steps) uniformly distributed...")
         synth_wavelet = self._generate_samples(pl_module, scale=scale, conditions=conditions)
         synth_ts_norm = self.data_module.convert_wavelet_to_timeseries(synth_wavelet).cpu().numpy()
         
-        # Get real samples (normalized)
-        real_ts_norm = self.data_module.raw_data_tensor[:self.n_samples].cpu().numpy()
+        # 4. Reconstruct OHLC Space
+        real_ts_norm = self.data_module.raw_data_tensor[self.eval_indices].cpu().numpy()
         
+        # Need to reconstruct to physical OHLCV to compute physical structure distances
+        synth_ohlcv = self.data_module.inverse_normalize(synth_ts_norm, sample_indices=self.eval_indices)
+        real_ohlcv = self.data_module.inverse_normalize(real_ts_norm, sample_indices=self.eval_indices)
+        
+        # Extract strictly OHLC columns
+        if self.ohlcv_indices is not None:
+            o_idx = self.ohlcv_indices.get('open', 0)
+            h_idx = self.ohlcv_indices.get('high', 1)
+            l_idx = self.ohlcv_indices.get('low', 2)
+            c_idx = self.ohlcv_indices.get('close', 3)
+            synth_ohlc = synth_ohlcv[:, :, [o_idx, h_idx, l_idx, c_idx]]
+            real_ohlc = real_ohlcv[:, :, [o_idx, h_idx, l_idx, c_idx]]
+        else:
+            synth_ohlc = synth_ohlcv
+            real_ohlc = real_ohlcv
+            
         results = {}
         
-        # 1. OHLC Invariants (Check validity in Price space)
+        # Metric 1: OHLC Valid Pct
         if self.ohlcv_indices is not None:
-            ohlc_valid = self._check_ohlc_invariants(synth_ts_norm)
-            results['OHLC_Valid_Pct'] = ohlc_valid * 100
-        
-        # 2. Memorization (Geometric Fidelity in Norm Space)
-        mem_stats = self._compute_memorization_stats(real_ts_norm, synth_ts_norm)
+            results['OHLC_Valid_Pct'] = self._check_ohlc_invariants(synth_ohlc) * 100.0
+
+        # Metric 2: DCR & NNDR
+        mem_stats = self._compute_ohlc_memorization_stats(real_ohlc, synth_ohlc)
         results.update(mem_stats)
         
-        # 3. Tail Fidelity (VaR of Body Normalized features as return proxy)
-        var_diff = self._compute_var_difference(real_ts_norm, synth_ts_norm)
-        results['VaR_Norm_Diff'] = var_diff
+        # Metric 3: Context-FID
+        results['Context_FID'] = self._compute_training_frechet_distance(real_ohlc, synth_ohlc)
         
-        # 4. Temporal Fidelity (ACF MSE in Norm Space)
-        acf_mse = self._compute_acf_mse(real_ts_norm, synth_ts_norm)
-        results['ACF_MSE_Norm'] = acf_mse
+        # Metric 4: EVT Tail Index (Hill)
+        evt_stats = self._compute_evt_tail_drift(real_ohlc, synth_ohlc)
+        results.update(evt_stats)
         
-        # 5. Distribution (Wasserstein in Norm Space)
-        w_dist = self._compute_wasserstein(real_ts_norm, synth_ts_norm)
-        results['Wasserstein_Norm'] = w_dist
-        
-        # 6. Correlation Matrix Norm (Structure Check)
-        corr_diff = self._compute_correlation_matrix_diff(real_ts_norm, synth_ts_norm)
-        results['Corr_Norm_Diff'] = corr_diff
-        
-        # 7. Moment Drift (Gaussianity Check)
-        moments = self._compute_moment_drift(real_ts_norm, synth_ts_norm)
-        results.update(moments)
-        
-        # --- Structured Output ---
+        # Restore Weights
+        if original_state_dict is not None:
+            print("  [EMA] Restoring original training weights...")
+            curr_device = pl_module.device
+            restored_state = {k: v.to(curr_device) for k, v in original_state_dict.items()}
+            pl_module.load_state_dict(restored_state)
+            
+        # Logging
         print(f"  • Structural Fidelity")
         if self.ohlcv_indices is not None:
-             print(f"    OHLC Valid:      {results['OHLC_Valid_Pct']:.1f}%")
-        print(f"    Corr Norm Diff:  {results['Corr_Norm_Diff']:.4f}")
-        print(f"    Wasserstein:     {results['Wasserstein_Norm']:.4f}")
-
-        print(f"\n  • Stylized Facts / Moments")
-        print(f"    Skew Drift:      {moments['Skew_Drift']:.4f}")
-        print(f"    Kurtosis Drift:  {moments['Kurt_Drift']:.4f}")
-        print(f"    VaR Diff:        {results['VaR_Norm_Diff']:.4f}")
-        print(f"    ACF MSE:         {results['ACF_MSE_Norm']:.4f}")
-
-        print(f"\n  • Memorization / Privacy")
-        print(f"    NN Dist Min:     {results['NN_Dist_Min']:.4f}")
-        print(f"    NN Dist Avg:     {results['NN_Dist_Avg']:.4f}")
-        
+            print(f"    OHLC Valid Pct:  {results['OHLC_Valid_Pct']:.1f}%")
+        print(f"    Context-FID:     {results['Context_FID']:.4f}")
+        print(f"\n  • Memorization (Privacy)")
+        print(f"    DCR (5th Pct):   {results['DCR_5th_Pct']:.4f}")
+        print(f"    NNDR (Avg):      {results['NNDR_Avg']:.4f}")
+        print(f"\n  • Fat Tail Drift (EVT)")
+        print(f"    Real Tail Index: {results['Real_Tail_Index']:.4f}")
+        print(f"    Synth Tail Index:{results['Synth_Tail_Index']:.4f}")
+        print(f"    Tail Index Diff: {results['Tail_Index_Diff']:.4f}")
         print("-" * 80)
         
-        # Log to trainer
         for k, v in results.items():
             pl_module.log(f"eval/{k}", v, prog_bar=False)
-    
+
     def _generate_samples(self, pl_module, scale=None, conditions=None) -> torch.Tensor:
-        """Generate synthetic wavelet samples using DDIM (fast)."""
         pl_module.eval()
         device = pl_module.device
-        
-        # Get shape from data module
-        sample_shape = self.data_module.raw_data_tensor.shape[1:]  # (n_coeffs, n_features)
+        sample_shape = self.data_module.raw_data_tensor.shape[1:]
         
         with torch.no_grad():
-            # Start from pure noise
             x_t = torch.randn(self.n_samples, *sample_shape, device=device)
-            
             T = pl_module.T
-            betas = pl_module.beta_all
             alphas_cumprod = pl_module.alpha_bar_all
             
-            # DDIM-style skip (use 20 steps for speed)
-            step_size = max(1, T // 20)
+            # DDIM-50 deterministically
+            step_size = max(1, T // 50)
             timesteps = list(range(T - 1, -1, -step_size))
             
             for i, t in enumerate(timesteps):
                 t_tensor = torch.full((self.n_samples,), t, device=device, dtype=torch.long)
                 t_norm = t_tensor.float() / T
                 
-                # Predict noise
                 predicted_noise = pl_module(x_t, t_norm, scale=scale, conditions=conditions)
                 
-                # Compute x_{t-1}
                 alpha_t = alphas_cumprod[t]
                 alpha_prev = alphas_cumprod[max(0, t - step_size)] if t > 0 else torch.tensor(1.0, device=device)
                 
-                # DDIM update (deterministic)
+                # Equation for DDIM
                 x0_pred = (x_t - torch.sqrt(1 - alpha_t) * predicted_noise) / torch.sqrt(alpha_t)
                 x_t = torch.sqrt(alpha_prev) * x0_pred + torch.sqrt(1 - alpha_prev) * predicted_noise
-        
+                
         pl_module.train()
         return x_t.cpu()
-    
-    def _check_ohlc_invariants(self, synth_ts_norm: np.ndarray) -> float:
-        """
-        Check OHLC invariants in reconstructed price space.
-        Verifies High >= Open/Close/Low and Low <= Open/Close/High.
-        """
-        # Reconstruct OHLCV using random anchor/atr context
-        synth_ohlcv = self.data_module.inverse_normalize(synth_ts_norm, sample_indices=None)
-        
-        # Channels: [Open, High, Low, Close, Volume]
-        open_p = synth_ohlcv[..., 0]
-        high_p = synth_ohlcv[..., 1]
-        low_p = synth_ohlcv[..., 2]
-        close_p = synth_ohlcv[..., 3]
-        
-        # Check geometric invariants (with tiny epsilon for float stability)
-        eps = 1e-7
-        h_ge_o = (high_p >= open_p - eps)
-        h_ge_c = (high_p >= close_p - eps)
-        l_le_o = (low_p <= open_p + eps)
-        l_le_c = (low_p <= close_p + eps)
-        h_ge_l = (high_p >= low_p - eps)
-        
-        all_valid = h_ge_o & h_ge_c & l_le_o & l_le_c & h_ge_l
-        return np.mean(all_valid)
-    
-    def _sanitize_data(self, data: np.ndarray) -> np.ndarray:
-        """Replace Infs/NaNs with finite values to prevent sklearn errors."""
+
+    def _sanitize(self, data: np.ndarray) -> np.ndarray:
         if not np.all(np.isfinite(data)):
             data = np.nan_to_num(data, nan=0.0, posinf=1e9, neginf=-1e9)
         return np.clip(data, -1e9, 1e9)
 
-    def _compute_memorization_stats(self, real_ts: np.ndarray, synth_ts: np.ndarray) -> dict:
-        """Compute nearest neighbor distance statistics."""
-        real_ts = self._sanitize_data(real_ts)
-        synth_ts = self._sanitize_data(synth_ts)
-        
-        # Flatten time series: (N, T*D)
-        real_flat = real_ts.reshape(real_ts.shape[0], -1)
-        synth_flat = synth_ts.reshape(synth_ts.shape[0], -1)
-        
-        # Find nearest neighbor in real set for each synthetic sample
-        nbrs = NearestNeighbors(n_neighbors=1, algorithm='ball_tree').fit(real_flat)
-        distances, _ = nbrs.kneighbors(synth_flat)
-        distances = distances.flatten()
-        
-        return {
-            'NN_Dist_Min': float(np.min(distances)),
-            'NN_Dist_Avg': float(np.mean(distances)),
-            'NN_Dist_Median': float(np.median(distances))
-        }
-    
-    def _compute_var_difference(self, real_ts_norm: np.ndarray, synth_ts_norm: np.ndarray) -> float:
-        """Compute VaR (99th percentile) difference of body_norm (price return proxy)."""
-        real_ts_norm = self._sanitize_data(real_ts_norm)
-        synth_ts_norm = self._sanitize_data(synth_ts_norm)
-        
-        # In reparameterized space, body_norm (index 1) is (Close-Open)/Anchor/ATR_pct
-        # which is a very close proxy to returns.
-        real_body = real_ts_norm[:, :, 1].flatten()
-        synth_body = synth_ts_norm[:, :, 1].flatten()
-        
-        real_var = np.percentile(np.abs(real_body), 99)
-        synth_var = np.percentile(np.abs(synth_body), 99)
-        
-        return abs(real_var - synth_var)
-    
-    def _compute_acf_mse(self, real_ts_norm: np.ndarray, synth_ts_norm: np.ndarray, nlags: int = 20) -> float:
-        """Compute MSE between ACF curves in norm space."""
-        real_ts_norm = self._sanitize_data(real_ts_norm)
-        synth_ts_norm = self._sanitize_data(synth_ts_norm)
-        
-        n_features = real_ts_norm.shape[2]
-        
-        max_acf_samples = 64
-        
-        def avg_acf(data, nlags):
-            """Average ACF across subsampled data for a single feature."""
-            if len(data) > max_acf_samples:
-                idx = np.random.choice(len(data), max_acf_samples, replace=False)
-                data = data[idx]
-            acfs = []
-            for sample in data:
-                try:
-                    if np.var(sample) < 1e-9:
-                        acfs.append(np.zeros(nlags + 1))
-                        continue
-                    a = acf(sample, nlags=nlags, fft=True)
-                    if len(a) < nlags + 1:
-                        a = np.pad(a, (0, nlags + 1 - len(a)))
-                    acfs.append(a[:nlags + 1])
-                except Exception:
-                    acfs.append(np.zeros(nlags + 1))
-            return np.nan_to_num(np.mean(acfs, axis=0)) if acfs else np.zeros(nlags + 1)
-        
-        total_mse = 0
-        for feat_idx in range(n_features):
-            real_acf = avg_acf(real_ts_norm[:, :, feat_idx], nlags)
-            synth_acf = avg_acf(synth_ts_norm[:, :, feat_idx], nlags)
-            total_mse += np.mean((real_acf - synth_acf) ** 2)
-        
-        return total_mse / n_features
-    
-    def _compute_wasserstein(self, real_ts: np.ndarray, synth_ts: np.ndarray) -> float:
-        """Compute mean Wasserstein distance across features."""
-        real_ts = self._sanitize_data(real_ts)
-        synth_ts = self._sanitize_data(synth_ts)
-        
-        n_features = real_ts.shape[2]
-        
-        # Flatten time dimension
-        real_flat = real_ts.reshape(-1, n_features)
-        synth_flat = synth_ts.reshape(-1, n_features)
-        
-        w_dists = []
-        for feat_idx in range(n_features):
-            w_dist = wasserstein_distance(real_flat[:, feat_idx], synth_flat[:, feat_idx])
-            w_dists.append(w_dist)
-        
-        return float(np.mean(w_dists))
-    
-    def _compute_correlation_matrix_diff(self, real_ts: np.ndarray, synth_ts: np.ndarray) -> float:
-        """Compute Frobenius norm of difference between correlation matrices."""
-        real_ts = self._sanitize_data(real_ts)
-        synth_ts = self._sanitize_data(synth_ts)
-        
-        # Flatten pairs: (N*T, D)
-        real_flat = real_ts.reshape(-1, real_ts.shape[2])
-        synth_flat = synth_ts.reshape(-1, synth_ts.shape[2])
-        
-        with np.errstate(divide='ignore', invalid='ignore'):
-            corr_real = np.corrcoef(real_flat, rowvar=False)
-            corr_synth = np.corrcoef(synth_flat, rowvar=False)
-        
-        corr_real = np.nan_to_num(corr_real)
-        corr_synth = np.nan_to_num(corr_synth)
-        
-        if not np.all(np.isfinite(corr_real)): corr_real[:] = 0
-        if not np.all(np.isfinite(corr_synth)): corr_synth[:] = 0
-        
-        return np.linalg.norm(corr_real - corr_synth)
+    def _check_ohlc_invariants(self, synth_ohlc: np.ndarray) -> float:
+        # Assumes input is [N, T, 4] with Open, High, Low, Close
+        open_p, high_p, low_p, close_p = synth_ohlc[..., 0], synth_ohlc[..., 1], synth_ohlc[..., 2], synth_ohlc[..., 3]
+        eps = 1e-7
+        valid = (high_p >= open_p - eps) & (high_p >= close_p - eps) & (low_p <= open_p + eps) & (low_p <= close_p + eps) & (high_p >= low_p - eps)
+        return float(np.mean(valid))
 
-    def _compute_moment_drift(self, real_ts: np.ndarray, synth_ts: np.ndarray) -> dict:
-        """Compute average drift in Skewness and Kurtosis."""
-        real_ts = self._sanitize_data(real_ts)
-        synth_ts = self._sanitize_data(synth_ts)
+    def _compute_ohlc_memorization_stats(self, real_ohlc: np.ndarray, synth_ohlc: np.ndarray) -> dict:
+        real_flat = self._sanitize(real_ohlc).reshape(real_ohlc.shape[0], -1)
+        synth_flat = self._sanitize(synth_ohlc).reshape(synth_ohlc.shape[0], -1)
         
-        real_flat = real_ts.reshape(-1, real_ts.shape[2])
-        synth_flat = synth_ts.reshape(-1, real_ts.shape[2])
+        # Calculate exactly the 2 nearest neighbors to get DCR and NNDR
+        nbrs = NearestNeighbors(n_neighbors=2, algorithm='ball_tree').fit(real_flat)
+        distances, _ = nbrs.kneighbors(synth_flat)
         
-        real_skew = skew(real_flat, axis=0)
-        synth_skew = skew(synth_flat, axis=0)
-        
-        real_kurt = kurtosis(real_flat, axis=0)
-        synth_kurt = kurtosis(synth_flat, axis=0)
-        
-        skew_diff = np.nan_to_num(np.abs(real_skew - synth_skew))
-        kurt_diff = np.nan_to_num(np.abs(real_kurt - synth_kurt))
+        # Distance to closest neighbor in the real set
+        dcr = distances[:, 0]
+        # Ratio of closest to second closest
+        nndr = dcr / (distances[:, 1] + 1e-8)
         
         return {
-            'Skew_Drift': float(np.mean(skew_diff)),
-            'Kurt_Drift': float(np.mean(kurt_diff))
+            'DCR_5th_Pct': float(np.percentile(dcr, 5)),
+            'NNDR_Avg': float(np.mean(nndr))
+        }
+
+    def _compute_training_frechet_distance(self, real_ohlc: np.ndarray, synth_ohlc: np.ndarray) -> float:
+        real_flat = self._sanitize(real_ohlc).reshape(real_ohlc.shape[0], -1)
+        synth_flat = self._sanitize(synth_ohlc).reshape(synth_ohlc.shape[0], -1)
+        
+        mu_r = np.mean(real_flat, axis=0)
+        mu_s = np.mean(synth_flat, axis=0)
+        
+        if real_flat.shape[0] < 2:
+            return 0.0
+            
+        sigma_r = np.cov(real_flat, rowvar=False)
+        sigma_s = np.cov(synth_flat, rowvar=False)
+        
+        diff = mu_r - mu_s
+        
+        covmean, _ = scipy.linalg.sqrtm(sigma_r.dot(sigma_s), disp=False)
+        if not np.isfinite(covmean).all():
+            offset = np.eye(sigma_r.shape[0]) * 1e-6
+            covmean = scipy.linalg.sqrtm((sigma_r + offset).dot(sigma_s + offset))
+            
+        if np.iscomplexobj(covmean):
+            covmean = covmean.real
+            
+        tr_covmean = np.trace(covmean)
+        fid = diff.dot(diff) + np.trace(sigma_r) + np.trace(sigma_s) - 2 * tr_covmean
+        return float(max(0.0, fid))
+
+    def _compute_evt_tail_drift(self, real_ohlc: np.ndarray, synth_ohlc: np.ndarray) -> dict:
+        # Assuming OHLC arrays, close is at index 3
+        real_c = real_ohlc[..., 3]
+        synth_c = synth_ohlc[..., 3]
+        
+        eps = 1e-8
+        real_ret = np.log((real_c[:, 1:] + eps) / (real_c[:, :-1] + eps)).flatten()
+        synth_ret = np.log((synth_c[:, 1:] + eps) / (synth_c[:, :-1] + eps)).flatten()
+        
+        def hill_estimator(data, threshold_pct=95):
+            data = np.abs(data)
+            data = data[data > 0]
+            if len(data) < 10: return 0.0
+            threshold = np.percentile(data, threshold_pct)
+            tail_data = data[data > threshold]
+            if len(tail_data) < 2: return 0.0
+            
+            log_data = np.log(tail_data)
+            log_thresh = np.log(threshold)
+            return 1.0 / np.mean(log_data - log_thresh)
+            
+        real_alpha = hill_estimator(real_ret)
+        synth_alpha = hill_estimator(synth_ret)
+        
+        return {
+            'Real_Tail_Index': float(real_alpha),
+            'Synth_Tail_Index': float(synth_alpha),
+            'Tail_Index_Diff': float(abs(real_alpha - synth_alpha))
         }

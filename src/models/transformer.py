@@ -58,6 +58,10 @@ class WaveletDiffusionTransformer(pl.LightningModule):
         pct_start = config['optimizer'].get('pct_start', 0.3)
         plateau_patience = kwargs.get('plateau_patience', 50)
         plateau_factor = kwargs.get('plateau_factor', 0.7)
+        
+        # Augmentation noise parameter
+        self.augmentation_noise = config.get('conditioning', {}).get('augmentation_noise', 0.05)
+        
         super().__init__()
         self.data_module = data_module
         self.embed_dim = embed_dim
@@ -478,6 +482,20 @@ class WaveletDiffusionTransformer(pl.LightningModule):
         
         # Unconditional NaN handling (compile-safe, no control flow)
         x_0 = torch.nan_to_num(x_0, nan=0.0, posinf=1.0, neginf=-1.0)
+        
+        # --- Conditioning Augmentation (Noise Injection) ---
+        # Prevent overfitting to exact float values during training by adding a tiny Gaussian perturbation
+        if self.training:
+            if scale is not None:
+                scale_noise = torch.randn_like(scale) * self.augmentation_noise * scale
+                scale = scale + scale_noise
+                scale = torch.clamp(scale, min=1e-4) # Ensure ATR percentage remains positive
+                
+            if conditions is not None:
+                for i in range(len(conditions)):
+                    cond_noise = torch.randn_like(conditions[i]) * self.augmentation_noise * conditions[i]
+                    conditions[i] = conditions[i] + cond_noise
+        # ---------------------------------------------------
         
         # Use importance-weighted timestep sampling instead of uniform
         t = self.timestep_sampler.sample(x_0.size(0), self.device)
