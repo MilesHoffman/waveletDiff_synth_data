@@ -317,15 +317,21 @@ class WaveletDiffusionTransformer(pl.LightningModule):
             time_embed = time_embed + scale_embed
         
         # Add quarter-profile conditioning with CFG dropout (branchless for torch.compile)
-        if conditions is not None and len(self.condition_embeddings) > 0:
-            cond_embed = sum(emb(c) for emb, c in zip(self.condition_embeddings, conditions))
+        if len(self.condition_embeddings) > 0:
             null_embed = self.null_condition_embed.expand(batch_size, -1)
-
-            if self.training:
-                mask = (torch.rand(batch_size, 1, device=x.device) >= self.cfg_dropout_prob).float()
-                time_embed = time_embed + mask * cond_embed + (1.0 - mask) * null_embed
+            
+            if conditions is not None:
+                cond_embed = sum(emb(c) for emb, c in zip(self.condition_embeddings, conditions))
+                if self.training:
+                    # Apply CFG dropout during training
+                    mask = (torch.rand(batch_size, 1, device=x.device) >= self.cfg_dropout_prob).float()
+                    time_embed = time_embed + mask * cond_embed + (1.0 - mask) * null_embed
+                else:
+                    # Full conditioning at inference
+                    time_embed = time_embed + cond_embed
             else:
-                time_embed = time_embed + cond_embed
+                # Unconditional generation implies using the null profile
+                time_embed = time_embed + null_embed
         
         if self.use_cross_level_attention:
             # Process each level and collect intermediate embeddings for cross-level attention

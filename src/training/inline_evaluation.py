@@ -169,9 +169,13 @@ class InlineEvaluationCallback(pl.Callback):
                 predicted_noise = pl_module(x_t, t_norm, scale=scale, conditions=conditions)
                 
                 alpha_t = alphas_cumprod[t]
-                alpha_prev = alphas_cumprod[max(0, t - step_size)] if t > 0 else torch.tensor(1.0, device=device)
                 
                 # Equation for DDIM
+                if t - step_size >= 0:
+                    alpha_prev = alphas_cumprod[t - step_size]
+                else:
+                    alpha_prev = torch.tensor(1.0, device=device)
+                    
                 x0_pred = (x_t - torch.sqrt(1 - alpha_t) * predicted_noise) / torch.sqrt(alpha_t)
                 x_t = torch.sqrt(alpha_prev) * x0_pred + torch.sqrt(1 - alpha_prev) * predicted_noise
                 
