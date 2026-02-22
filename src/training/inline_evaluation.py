@@ -157,12 +157,12 @@ class InlineEvaluationCallback(pl.Callback):
         pl_module.input_dim = self.data_module.get_input_dim()
         pl_module.num_features = self.data_module.get_wavelet_info()['n_features']
         
-        # Equip the trainer and generate deterministic samples using compiled path
-        trainer_util = DiffusionTrainer(pl_module)
-        
         # Override model's DDIM settings for exactly 50 steps during evaluation
         original_ddim_steps = getattr(pl_module, 'ddim_steps', None)
         pl_module.ddim_steps = 50
+        
+        # Equip the trainer and generate deterministic samples using compiled path
+        trainer_util = DiffusionTrainer(pl_module)
         
         x_t = trainer_util.generate_samples(
             n_samples=self.n_samples, 
