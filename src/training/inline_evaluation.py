@@ -151,7 +151,7 @@ class InlineEvaluationCallback(pl.Callback):
     def _generate_samples(self, pl_module, scale=None, conditions=None) -> torch.Tensor:
         pl_module.eval()
         device = pl_module.device
-        sample_shape = self.data_module.raw_data_tensor.shape[1:]
+        sample_shape = self.data_module.data_tensor.shape[1:]
         
         with torch.no_grad():
             x_t = torch.randn(self.n_samples, *sample_shape, device=device)

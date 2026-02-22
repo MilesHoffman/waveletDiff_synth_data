@@ -400,14 +400,28 @@ noise:
   gamma: 2.0  # Exponential decay rate
 ```
 
-### ATR Conditioning
+### Continuous Conditioning & Augmentation
 
-During training, the model learns to condition on ATR percentage. At inference:
+WaveletDiff supports conditioning on continuous variables to give fine-grained control over the generated market regimes. The primary conditioning inputs include:
+- **Scale (ATR)**: Controls the target volatility.
+- **Quarter Profiles**: Incorporates macro-level seasonality or trend conditioning.
+
+To prevent the model from overfitting to exact conditioning values seen during training and to enable smooth interpolation at inference time, **Condition Augmentation** is applied. Gaussian noise is added to the conditioning variables during training, improving the model's robustness and generalization.
+
+At inference, you can generate samples with specific conditioning:
 
 ```python
-# Generate with specific volatility
-samples = model.generate(n_samples=1000, scale=2.5)  # 2.5% ATR
+# Generate with specific volatility (e.g., 2.5% ATR)
+samples = model.generate(n_samples=1000, scale=2.5)
 ```
+
+### Exponential Moving Average (EMA) Weights
+
+To improve the stability and quality of the generated samples, WaveletDiff supports maintaining an Exponential Moving Average (EMA) of the model weights during training. By evaluating and sampling using the EMA weights rather than the raw active weights, the generated time series exhibit higher fidelity and fewer artifacts.
+
+### Inline Training Evaluation
+
+WaveletDiff features an `InlineEvaluationCallback` that performs evaluation generation and metric computation periodically during the training loop. This allows you to monitor synthesis quality metrics on the fly, transforming standard PyTorch Lightning training into a continuous feedback loop for generative performance.
 
 ---
 
