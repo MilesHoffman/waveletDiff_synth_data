@@ -25,6 +25,8 @@ def main():
                        help='Number of samples to generate (default: match real dataset size)')
     parser.add_argument('--sampling_method', type=str, choices=['ddpm', 'ddim'], default=None,
                        help='Sampling method (overrides config)')
+    parser.add_argument('--ddim_steps', type=int, default=None,
+                       help='Number of steps for DDIM sampling (overrides config)')
     parser.add_argument('--inference_engine', type=str, choices=['onnx', 'tensorrt'], default='onnx',
                        help='Execution provider to run the exported ONNX graph (default: onnx)')
     parser.add_argument('--data_dir', type=str, default=None,
@@ -69,6 +71,7 @@ def main():
     # 5. Apply CLI overrides (Highest Priority)
     if args.dataset: config['dataset']['name'] = args.dataset
     if args.sampling_method: config['sampling']['method'] = args.sampling_method
+    if args.ddim_steps is not None: config['sampling']['ddim_steps'] = args.ddim_steps
     if args.data_dir: config['data']['data_dir'] = args.data_dir
     
     # Architecture overrides
