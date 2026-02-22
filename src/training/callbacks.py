@@ -45,8 +45,8 @@ class EMACallback(Callback):
     def on_validation_start(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
         """Swap to EMA weights before validation."""
         if self.use_ema_for_validation and self.ema_model is not None:
-            # Save original state dict to CPU memory to prevent VRAM spikes during validation
-            self.original_state_dict = {k: v.cpu().clone() for k, v in pl_module.state_dict().items()}
+            # Save original state dict to device memory (faster but requires more VRAM)
+            self.original_state_dict = {k: v.clone() for k, v in pl_module.state_dict().items()}
             
             # Extract underlying module state
             ema_state = self.ema_model.module.state_dict()
@@ -55,9 +55,8 @@ class EMACallback(Callback):
     def on_validation_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
         """Restore original weights after validation."""
         if self.use_ema_for_validation and self.original_state_dict is not None:
-            # Restore state back to device memory
-            restored_state = {k: v.to(pl_module.device) for k, v in self.original_state_dict.items()}
-            pl_module.load_state_dict(restored_state)
+            # Restore state instantly from VRAM
+            pl_module.load_state_dict(self.original_state_dict)
             self.original_state_dict = None
 
     def on_save_checkpoint(

@@ -44,7 +44,7 @@ wavelet:
 sampling:
   method: "ddpm"  # "ddpm" or "ddim"
   ddim_eta: 0.0  # Stochasticity parameter for DDIM (0.0 = fully deterministic, 1.0 = DDPM-like)
-  ddim_steps: null  # Number of DDIM steps (null = use all 1000 steps, e.g., 50 = accelerated DDIM)
+  ddim_steps: 50  # Number of DDIM steps (null = use all 1000 steps, e.g., 50 = accelerated DDIM)
   exploration_ratio: 0.3  # Ratio of adaptive vs Min-SNR probability (for HybridSampler)
   adaptive_start_pct: 0.8 # Fraction of pct_start where adaptive sampling kicks in (e.g. 0.8)
 

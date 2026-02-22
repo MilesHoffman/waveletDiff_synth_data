@@ -553,6 +553,17 @@ class WaveletDiffusionTransformer(pl.LightningModule):
             # Get a sample batch from the training dataloader
             sample_batch = next(iter(self.trainer.train_dataloader))
             x_0 = sample_batch[0][:8].to(self.device)  # Use first 8 samples
+            
+            # Extract scale conditioning if available
+            scale = None
+            if len(sample_batch) > 1:
+                scale = sample_batch[1][:8].to(self.device)
+                
+            # Extract quarter-profile conditions
+            conditions = None
+            if self.use_quarter_conditioning and len(sample_batch) > 2:
+                conditions = [sample_batch[i][:8].to(self.device) for i in range(2, 2 + len(self.quarter_profile_names))]
+
             # Sanitize inputs (match training_step)
             x_0 = torch.nan_to_num(x_0, nan=0.0, posinf=1.0, neginf=-1.0)
             t = torch.randint(0, self.T, (x_0.size(0),), device=self.device)
@@ -560,7 +571,9 @@ class WaveletDiffusionTransformer(pl.LightningModule):
             with torch.no_grad():
                 x_t, noise = self.compute_forward_process(x_0, t)
                 t_norm = t.float() / self.T
-                prediction = self(x_t, t_norm)
+                
+                # Accurately compute conditional loss matching the actual training objective
+                prediction = self(x_t, t_norm, scale=scale, conditions=conditions)
                 
                 target = noise if self.prediction_target == "noise" else x_0
                 
@@ -584,8 +597,6 @@ class WaveletDiffusionTransformer(pl.LightningModule):
                     energy_stats = self.wavelet_loss_fn.get_energy_stats(target, prediction)
                     reconstruction_loss = sum(w * l for w, l in zip(weights, level_losses))
                     total_loss_with_energy = reconstruction_loss + self.energy_weight * energy_loss
-                    energy_contribution_pct = (self.energy_weight * energy_loss / total_loss_with_energy * 100).item()
-                    
                     energy_contribution_pct = (self.energy_weight * energy_loss / total_loss_with_energy * 100).item()
                     
                     print(f"  Energy Term:       {energy_loss.item():.4f}  (w={self.energy_weight:.4f})")

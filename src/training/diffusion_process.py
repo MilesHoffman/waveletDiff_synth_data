@@ -336,12 +336,15 @@ class DDIMSampler(DiffusionSampler):
                 t_norm = sched['t_norms'][i].expand(batch_size)
                 prediction = self._get_prediction(x_t, t_norm, scale, conditions, guidance_scale).clone()
                 
-                noise = generate_noise(
-                    shape=x_t.shape, 
-                    device=self.device, 
-                    prior=self.model.noise_prior, 
-                    nu=self.model.nu
-                )
+                if self.eta == 0.0:
+                    noise = zero_noise
+                else:
+                    noise = generate_noise(
+                        shape=x_t.shape, 
+                        device=self.device, 
+                        prior=self.model.noise_prior, 
+                        nu=self.model.nu
+                    )
                 
                 x_t = step_fn(
                     x_t, prediction,

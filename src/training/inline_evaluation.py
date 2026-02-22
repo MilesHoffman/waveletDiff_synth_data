@@ -150,35 +150,29 @@ class InlineEvaluationCallback(pl.Callback):
 
     def _generate_samples(self, pl_module, scale=None, conditions=None) -> torch.Tensor:
         pl_module.eval()
-        device = pl_module.device
-        sample_shape = self.data_module.data_tensor.shape[1:]
+        from .diffusion_process import DiffusionTrainer
         
-        with torch.no_grad():
-            x_t = torch.randn(self.n_samples, *sample_shape, device=device)
-            T = pl_module.T
-            alphas_cumprod = pl_module.alpha_bar_all
-            
-            # DDIM-50 deterministically
-            step_size = max(1, T // 50)
-            timesteps = list(range(T - 1, -1, -step_size))
-            
-            for i, t in enumerate(timesteps):
-                t_tensor = torch.full((self.n_samples,), t, device=device, dtype=torch.long)
-                t_norm = t_tensor.float() / T
-                
-                predicted_noise = pl_module(x_t, t_norm, scale=scale, conditions=conditions)
-                
-                alpha_t = alphas_cumprod[t]
-                
-                # Equation for DDIM
-                if t - step_size >= 0:
-                    alpha_prev = alphas_cumprod[t - step_size]
-                else:
-                    alpha_prev = torch.tensor(1.0, device=device)
-                    
-                x0_pred = (x_t - torch.sqrt(1 - alpha_t) * predicted_noise) / torch.sqrt(alpha_t)
-                x_t = torch.sqrt(alpha_prev) * x0_pred + torch.sqrt(1 - alpha_prev) * predicted_noise
-                
+        # We temporarily patch the model's abstract properties required by the trainer 
+        # since it normally expects them from the data module during inference.
+        pl_module.input_dim = self.data_module.get_input_dim()
+        pl_module.num_features = self.data_module.get_wavelet_info()['n_features']
+        
+        # Equip the trainer and generate deterministic samples using compiled path
+        trainer_util = DiffusionTrainer(pl_module)
+        
+        # Override model's DDIM settings for exactly 50 steps during evaluation
+        original_ddim_steps = getattr(pl_module, 'ddim_steps', None)
+        pl_module.ddim_steps = 50
+        
+        x_t = trainer_util.generate_samples(
+            n_samples=self.n_samples, 
+            use_ddim=True, 
+            scale=scale,
+            conditions=conditions, 
+            show_progress=False
+        )
+        
+        pl_module.ddim_steps = original_ddim_steps
         pl_module.train()
         return x_t.cpu()
 
