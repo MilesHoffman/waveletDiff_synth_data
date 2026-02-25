@@ -26,6 +26,14 @@ def plot_distribution_reduction(real, generated, n_samples=1000):
     real_flat = real[:n_samples].reshape(n_samples, -1)
     gen_flat = generated[:n_samples].reshape(n_samples, -1)
     
+    # Safely handle NaNs hallucinated by heavy-tailed generation
+    if np.isnan(gen_flat).any() or np.isinf(gen_flat).any():
+        print("Warning: Generated data contains NaNs or Infs. Filtering to prevent t-SNE crash...")
+        gen_flat = np.nan_to_num(gen_flat, nan=0.0, posinf=np.nanmax(gen_flat[np.isfinite(gen_flat)]), neginf=np.nanmin(gen_flat[np.isfinite(gen_flat)]))
+        
+    if np.isnan(real_flat).any() or np.isinf(real_flat).any():
+        real_flat = np.nan_to_num(real_flat, nan=0.0)
+    
     # Concatenate
     data = np.concatenate([real_flat, gen_flat], axis=0)
     
@@ -68,8 +76,15 @@ def plot_pdf(real, generated):
     plt.figure(figsize=(10, 6))
     
     # Flatten all data to compare value distributions
-    sns.kdeplot(real.flatten(), fill=True, color=COLORS["Real"], label="Real", alpha=0.3)
-    sns.kdeplot(generated.flatten(), fill=True, color=COLORS["Generated"], label="Generated", alpha=0.3)
+    r_flat = real.flatten()
+    g_flat = generated.flatten()
+    
+    # Filter out NaNs and Infs for KDE
+    r_valid = r_flat[np.isfinite(r_flat)]
+    g_valid = g_flat[np.isfinite(g_flat)]
+    
+    sns.kdeplot(r_valid, fill=True, color=COLORS["Real"], label="Real", alpha=0.3)
+    sns.kdeplot(g_valid, fill=True, color=COLORS["Generated"], label="Generated", alpha=0.3)
     
     plt.title("Probability Density Function (All Values)")
     plt.xlabel("Data Value")
