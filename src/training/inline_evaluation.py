@@ -158,7 +158,8 @@ class InlineEvaluationCallback(pl.Callback):
         pl_module.num_features = self.data_module.get_wavelet_info()['n_features']
         
         # Check config for sampling method
-        sampling_method = pl_module.config.get('sampling', {}).get('method', 'ddim')
+        config_obj = getattr(pl_module, 'config', getattr(pl_module, 'hparams', {}))
+        sampling_method = config_obj.get('sampling', {}).get('method', 'ddim')
         use_ddim = (sampling_method == 'ddim')
         
         # Override model's DDIM settings for exactly 50 steps during evaluation

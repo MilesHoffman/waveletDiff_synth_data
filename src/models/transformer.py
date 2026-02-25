@@ -63,6 +63,7 @@ class WaveletDiffusionTransformer(pl.LightningModule):
         self.augmentation_noise = config.get('conditioning', {}).get('augmentation_noise', 0.05)
         
         super().__init__()
+        self.config = config
         self.data_module = data_module
         self.embed_dim = embed_dim
         self.time_embed_dim = time_embed_dim
