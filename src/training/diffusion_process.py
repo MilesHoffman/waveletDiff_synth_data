@@ -383,13 +383,38 @@ class DiffusionTrainer:
         self.model = model
         self.ddpm_sampler = DDPMSampler(model, T=model.T)
         self.ddim_sampler = DDIMSampler(model, T=model.T, eta=model.ddim_eta, ddim_steps=model.ddim_steps)
+        
+        # Initialize StudentTSampler if prior is student-t
+        self.student_t_sampler = None
+        if hasattr(model, 'noise_prior') and model.noise_prior == 'student-t':
+            from utils.student_t_sampler import StudentTSampler # Lazy import to avoid circular dependency
+            self.student_t_sampler = StudentTSampler(
+                model=model, 
+                alphas_cumprod=model.alpha_bar_all, 
+                nu=model.nu
+            )
     
-    def generate_samples(self, n_samples: int, use_ddim: bool = False, show_progress: bool = True, **kwargs) -> torch.Tensor:
-        """Generate samples using either DDPM or DDIM."""
-        sampler = self.ddim_sampler if use_ddim else self.ddpm_sampler
+    def generate_samples(self, n_samples: int, use_ddim: bool = False, sampling_method: Optional[str] = None, show_progress: bool = True, **kwargs) -> torch.Tensor:
+        """Generate samples using DDPM, DDIM, or Student-t (t-EDM)."""
         input_dim = self.model.input_dim
         num_features = self.model.num_features
-
+        shape = (n_samples, input_dim, num_features)
+        
+        # Route to Student-t sampler if explicitly requested or if we're not explicitly using DDIM
+        if (sampling_method == "t-edm" or (sampling_method is None and not use_ddim and self.student_t_sampler is not None)):
+            if self.student_t_sampler is None:
+                raise ValueError("t-EDM sampling requested but model prior is not 'student-t'")
+            device = next(self.model.parameters()).device
+            result = self.student_t_sampler.sample_loop(
+                shape=shape, 
+                device=device,
+                show_progress=show_progress,
+                **kwargs
+            )
+            return result
+            
+        # Fall back to standard samplers
+        sampler = self.ddim_sampler if use_ddim else self.ddpm_sampler
         result = sampler.generate(n_samples, input_dim, num_features, show_progress=show_progress, **kwargs)
 
         if isinstance(result, dict):

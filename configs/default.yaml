@@ -24,6 +24,11 @@ attention:
 energy:
   weight: 0.0
 
+# Sampling configuration
+sampling:
+  method: "t-edm"          # "ddpm", "ddim", "t-edm"
+  ddim_steps: 50           # steps for ddim, ignored for others
+
 # Noise schedule
 noise:
   schedule: "exponential"  # "cosine", "linear", "exponential"

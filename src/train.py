@@ -61,6 +61,7 @@ def main():
     parser.add_argument('--huber_delta', type=float, default=None, help='Delta for Huber loss')
     parser.add_argument('--exploration_ratio', type=float, default=None, help='Adaptive vs Min-SNR probability')
     parser.add_argument('--adaptive_start_pct', type=float, default=None, help='Fraction of pct_start where adaptive kicks in')
+    parser.add_argument('--sampling_method', type=str, default=None, help='ddpm, ddim, or t-edm')
     parser.add_argument('--ddim_steps', type=int, default=None, help='Number of steps for DDIM sampling')
     parser.add_argument('--log_every_n_epochs', type=int, default=None)
     parser.add_argument('--enable_progress_bar', type=str, default='true', help='true or false')
@@ -172,6 +173,9 @@ def main():
     if args.adaptive_start_pct is not None:
         if 'sampling' not in config: config['sampling'] = {}
         config['sampling']['adaptive_start_pct'] = args.adaptive_start_pct
+    if args.sampling_method is not None:
+        if 'sampling' not in config: config['sampling'] = {}
+        config['sampling']['method'] = args.sampling_method
     if args.ddim_steps is not None:
         if 'sampling' not in config: config['sampling'] = {}
         config['sampling']['ddim_steps'] = args.ddim_steps

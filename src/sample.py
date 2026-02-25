@@ -23,7 +23,7 @@ def main():
                        help='Dataset name (overrides config)')
     parser.add_argument('--num_samples', type=int, default=None,
                        help='Number of samples to generate (default: match real dataset size)')
-    parser.add_argument('--sampling_method', type=str, choices=['ddpm', 'ddim'], default=None,
+    parser.add_argument('--sampling_method', type=str, choices=['ddpm', 'ddim', 't-edm'], default=None,
                        help='Sampling method (overrides config)')
     parser.add_argument('--ddim_steps', type=int, default=None,
                        help='Number of steps for DDIM sampling (overrides config)')
@@ -219,7 +219,7 @@ def main():
     print(f"Generating {sampling_method.upper()} samples (Execution mapped to ONNX Runtime)...")
     
     samples = trainer_util.generate_samples(
-        num_samples, use_ddim=use_ddim, scale=scale_conditioning,
+        num_samples, use_ddim=use_ddim, sampling_method=sampling_method, scale=scale_conditioning,
         conditions=conditions, guidance_scale=guidance_scale
     )
     
