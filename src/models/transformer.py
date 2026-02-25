@@ -71,6 +71,7 @@ class WaveletDiffusionTransformer(pl.LightningModule):
         self.use_cross_level_attention = use_cross_level_attention
         self.max_epochs = max_epochs
         self.log_every_n_epochs = config['training'].get('log_every_n_epochs', 1)
+        self.log_level_loss_every_n_epochs = config['training'].get('log_level_loss_every_n_epochs', 100)
         self.compile_config = config.get('compile', {})
         
         self.T = T
@@ -544,8 +545,8 @@ class WaveletDiffusionTransformer(pl.LightningModule):
         self.log('lr', current_lr, prog_bar=True, on_epoch=True)
 
         if self.trainer.is_global_zero:
-            # Log every 100 epochs (at the end of the epoch)
-            if (self.current_epoch + 1) % 100 == 0:
+            # Log level losses at specified frequency
+            if (self.current_epoch + 1) % self.log_level_loss_every_n_epochs == 0:
                 self._log_level_losses_epoch_end()
 
     def _log_level_losses_epoch_end(self):

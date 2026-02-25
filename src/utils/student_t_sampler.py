@@ -36,8 +36,47 @@ class StudentTSampler:
         self.alphas_cumprod_prev = torch.cat([torch.tensor([1.0], device=alphas_cumprod.device), alphas_cumprod[:-1]])
         self.posterior_variance = self.betas * (1. - self.alphas_cumprod_prev) / (1. - self.alphas_cumprod)
 
+    def _get_prediction(self, x_t, t_norm, scale, conditions, guidance_scale, **kwargs):
+        """Get model prediction with optional CFG guidance, routing to ONNX if enabled."""
+        onnx_session = getattr(self.model, 'onnx_session', None)
+        
+        if onnx_session is not None:
+            import numpy as np
+            inputs = {
+                'x': x_t.cpu().numpy(),
+                't': t_norm.cpu().numpy()
+            }
+            if scale is not None:
+                inputs['scale'] = scale.cpu().numpy()
+            if conditions is not None:
+                profile_names = getattr(self.model.data_module, 'quarter_profile_names', []) if hasattr(self.model, 'data_module') else []
+                for i, cond in enumerate(conditions):
+                    name = profile_names[i] if i < len(profile_names) else f'cond{i}'
+                    inputs[name] = cond.cpu().numpy()
+                    
+            ort_outs = onnx_session.run(None, inputs)
+            device = x_t.device
+            pred = torch.from_numpy(ort_outs[0]).to(device)
+            
+            if guidance_scale is not None and guidance_scale != 1.0 and conditions is not None:
+                uncond_inputs = inputs.copy()
+                for i in range(len(conditions)):
+                    name = profile_names[i] if 'profile_names' in locals() and i < len(profile_names) else f'cond{i}'
+                    uncond_inputs[name] = np.zeros_like(inputs[name])
+                uncond_outs = onnx_session.run(None, uncond_inputs)
+                uncond_pred = torch.from_numpy(uncond_outs[0]).to(device)
+                return uncond_pred + guidance_scale * (pred - uncond_pred)
+            return pred
+
+        # Native PyTorch routing
+        if guidance_scale is not None and guidance_scale != 1.0 and conditions is not None:
+            uncond_pred = self.model(x_t, t_norm, scale=scale, conditions=None, **kwargs)
+            cond_pred = self.model(x_t, t_norm, scale=scale, conditions=conditions, **kwargs)
+            return uncond_pred + guidance_scale * (cond_pred - uncond_pred)
+        return self.model(x_t, t_norm, scale=scale, conditions=conditions, **kwargs)
+
     @torch.no_grad()
-    def sample_loop(self, shape, device, scale=None, conditions=None, show_progress=False):
+    def sample_loop(self, shape, device, scale=None, conditions=None, guidance_scale=None, show_progress=False, **kwargs):
         """
         Generate samples from pure noise using the Student-t reverse ODE/SDE formulation.
         """
@@ -64,7 +103,7 @@ class StudentTSampler:
             
             # Predict x_0 from x_t
             t_norm = t.float() / len(self.alphas_cumprod)
-            pred_x0 = self.model(x, t_norm, scale=scale, conditions=conditions)
+            pred_x0 = self._get_prediction(x, t_norm, scale, conditions, guidance_scale, **kwargs)
             
             # Use prediction to compute previous state x_{t-1} via Student-t posterior step
             out = self._denoise_step(x, t, pred_x0)

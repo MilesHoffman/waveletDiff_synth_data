@@ -65,6 +65,7 @@ def main():
     parser.add_argument('--eval_sampling_method', type=str, default=None, help='ddpm, ddim, or t-edm for inline evaluation')
     parser.add_argument('--ddim_steps', type=int, default=None, help='Number of steps for DDIM sampling')
     parser.add_argument('--log_every_n_epochs', type=int, default=None)
+    parser.add_argument('--log_level_loss_every_n_epochs', type=int, default=None)
     parser.add_argument('--enable_progress_bar', type=str, default='true', help='true or false')
     
     # Compile Options
@@ -185,6 +186,7 @@ def main():
         config['sampling']['ddim_steps'] = args.ddim_steps
         
     if args.log_every_n_epochs: config['training']['log_every_n_epochs'] = args.log_every_n_epochs
+    if args.log_level_loss_every_n_epochs is not None: config['training']['log_level_loss_every_n_epochs'] = args.log_level_loss_every_n_epochs
     
     enable_progress_bar = args.enable_progress_bar.lower() == 'true'
     
