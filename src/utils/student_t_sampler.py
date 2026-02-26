@@ -34,7 +34,8 @@ class StudentTSampler:
         
         # Posterior variance schedule components
         self.alphas_cumprod_prev = torch.cat([torch.tensor([1.0], device=alphas_cumprod.device), alphas_cumprod[:-1]])
-        self.posterior_variance = self.betas * (1. - self.alphas_cumprod_prev) / (1. - self.alphas_cumprod)
+        # Clamp denominator to prevent 0/0 NaN at t=0 where (1 - alpha_bar_0) = 0
+        self.posterior_variance = self.betas * (1. - self.alphas_cumprod_prev) / (1. - self.alphas_cumprod).clamp(min=1e-8)
 
     def _get_prediction(self, x_t, t_norm, scale, conditions, guidance_scale, **kwargs):
         """Get model prediction with optional CFG guidance, routing to ONNX if enabled."""
@@ -86,7 +87,8 @@ class StudentTSampler:
         # T = Z * sqrt(nu / V) where V ~ Chi-Square(nu) = Gamma(nu/2, 2)
         z = torch.randn(shape, device=device)
         alpha_expanded = torch.full(shape, self.nu / 2.0, device=device)
-        v = 2.0 * torch._standard_gamma(alpha_expanded)
+        # Clamp v away from zero to prevent sqrt(nu/0) -> Inf
+        v = (2.0 * torch._standard_gamma(alpha_expanded)).clamp(min=1e-6)
         
         x = z * torch.sqrt(self.nu / v)
         
@@ -125,20 +127,24 @@ class StudentTSampler:
         posterior_var = self.posterior_variance[t_idx]
 
         # 1. Compute the standard DDPM mean (the deterministic path)
+        # Clamp denominator to prevent division by zero at early timesteps
+        denom = (1 - alpha_prod_t).clamp(min=1e-8)
         pred_mean = (
-            torch.sqrt(alpha_prod_t_prev) * beta / (1 - alpha_prod_t) * pred_x0 +
-            torch.sqrt(alpha) * (1 - alpha_prod_t_prev) / (1 - alpha_prod_t) * x_t
+            torch.sqrt(alpha_prod_t_prev) * beta / denom * pred_x0 +
+            torch.sqrt(alpha) * (1 - alpha_prod_t_prev) / denom * x_t
         )
+        # Guard against any NaN/Inf in the mean before adding stochastic noise
+        pred_mean = torch.nan_to_num(pred_mean, nan=0.0, posinf=1e4, neginf=-1e4)
 
         # 2. Dynamic Variance Scaling (The t-EDM Heavy Tail injection)
         if t_idx > 0:
             # Generate conditional Student-t noise
             # Instead of standard Gaussian N(0, posterior_var), we inject heavy-tailed noise
             # that dynamically supports the scale of the predicted outlier
-            
             z = torch.randn_like(x_t)
             alpha_expanded = torch.full_like(x_t, self.nu / 2.0)
-            v = 2.0 * torch._standard_gamma(alpha_expanded)
+            # Clamp v away from zero to prevent sqrt(nu/0) -> Inf
+            v = (2.0 * torch._standard_gamma(alpha_expanded)).clamp(min=1e-6)
             t_noise = z * torch.sqrt(self.nu / v)
             
             # If nu > 2, maintain variance scaling as in forward process
