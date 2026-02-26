@@ -26,10 +26,13 @@ def plot_distribution_reduction(real, generated, n_samples=1000):
     real_flat = real[:n_samples].reshape(n_samples, -1)
     gen_flat = generated[:n_samples].reshape(n_samples, -1)
     
-    # Safely handle NaNs hallucinated by heavy-tailed generation
+    # Safely replace NaNs/Infs from heavy-tailed generation with bounded values
     if np.isnan(gen_flat).any() or np.isinf(gen_flat).any():
         print("Warning: Generated data contains NaNs or Infs. Filtering to prevent t-SNE crash...")
-        gen_flat = np.nan_to_num(gen_flat, nan=0.0, posinf=np.nanmax(gen_flat[np.isfinite(gen_flat)]), neginf=np.nanmin(gen_flat[np.isfinite(gen_flat)]))
+        finite_vals = gen_flat[np.isfinite(gen_flat)]
+        safe_max = float(finite_vals.max()) if len(finite_vals) > 0 else 1.0
+        safe_min = float(finite_vals.min()) if len(finite_vals) > 0 else -1.0
+        gen_flat = np.nan_to_num(gen_flat, nan=0.0, posinf=safe_max, neginf=safe_min)
         
     if np.isnan(real_flat).any() or np.isinf(real_flat).any():
         real_flat = np.nan_to_num(real_flat, nan=0.0)
