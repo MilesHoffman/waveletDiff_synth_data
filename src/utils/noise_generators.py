@@ -32,7 +32,7 @@ def generate_noise(shape, device, dtype=torch.float32, prior="gaussian", nu=3.0)
         
         # torch.full avoids CPU->GPU scalar transfer during CUDAGraph replay
         alpha_expanded = torch.full(shape, nu / 2.0, device=device, dtype=dtype)
-        v = 2.0 * torch._standard_gamma(alpha_expanded)
+        v = (2.0 * torch._standard_gamma(alpha_expanded)).clamp(min=1e-6)
         
         # Student-t is T = Z * sqrt(nu / V)
         t_noise = z * torch.sqrt(nu / v)

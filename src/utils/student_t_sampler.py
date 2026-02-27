@@ -2,7 +2,6 @@ import torch
 from typing import Optional, Callable
 from collections import namedtuple
 
-# Keep return type compatible with existing samplers
 SamplerOutput = namedtuple('SamplerOutput', ['prev_sample', 'pred_x0'])
 
 class StudentTSampler:
@@ -18,13 +17,14 @@ class StudentTSampler:
     def __init__(self, model: Callable, alphas_cumprod: torch.Tensor, nu: float = 3.0):
         """
         Args:
-            model: The neural network denoiser predicting the original data (x_0)
+            model: The neural network denoiser
             alphas_cumprod: The cumulative product of alphas from the noise schedule
             nu: Degrees of freedom controlling tail fatness (must match forward process)
         """
         self.model = model
         self.alphas_cumprod = alphas_cumprod
         self.nu = nu
+        self.prediction_target = getattr(model, 'prediction_target', 'noise')
         
         # Pre-compute standard DDPM terms needed for the mean prediction
         self.alphas = torch.empty_like(alphas_cumprod)
@@ -36,6 +36,9 @@ class StudentTSampler:
         self.alphas_cumprod_prev = torch.cat([torch.tensor([1.0], device=alphas_cumprod.device), alphas_cumprod[:-1]])
         # Clamp denominator to prevent 0/0 NaN at t=0 where (1 - alpha_bar_0) = 0
         self.posterior_variance = self.betas * (1. - self.alphas_cumprod_prev) / (1. - self.alphas_cumprod).clamp(min=1e-8)
+
+        # Total diffusion timesteps (alphas_cumprod includes index 0 padding)
+        self.T = len(alphas_cumprod) - 1
 
     def _get_prediction(self, x_t, t_norm, scale, conditions, guidance_scale, **kwargs):
         """Get model prediction with optional CFG guidance, routing to ONNX if enabled."""
@@ -76,18 +79,25 @@ class StudentTSampler:
             return uncond_pred + guidance_scale * (cond_pred - uncond_pred)
         return self.model(x_t, t_norm, scale=scale, conditions=conditions, **kwargs)
 
+    def _convert_to_x0(self, x_t: torch.Tensor, t_idx: int, model_output: torch.Tensor) -> torch.Tensor:
+        """Convert raw model output to an x_0 prediction regardless of prediction target."""
+        if self.prediction_target == "coefficient":
+            return model_output
+
+        # prediction_target == "noise": convert epsilon prediction to x_0
+        alpha_prod_t = self.alphas_cumprod[t_idx]
+        sqrt_alpha = torch.sqrt(alpha_prod_t.clamp(min=1e-8))
+        sqrt_one_minus_alpha = torch.sqrt((1.0 - alpha_prod_t).clamp(min=1e-8))
+        return (x_t - sqrt_one_minus_alpha * model_output) / sqrt_alpha
+
     @torch.no_grad()
     def sample_loop(self, shape, device, scale=None, conditions=None, guidance_scale=None, show_progress=False, **kwargs):
-        """
-        Generate samples from pure noise using the Student-t reverse ODE/SDE formulation.
-        """
+        """Generate samples from pure noise using the Student-t reverse SDE formulation."""
         import tqdm
         
         # Start from standard Student-t noise (matching forward process)
-        # T = Z * sqrt(nu / V) where V ~ Chi-Square(nu) = Gamma(nu/2, 2)
         z = torch.randn(shape, device=device)
         alpha_expanded = torch.full(shape, self.nu / 2.0, device=device)
-        # Clamp v away from zero to prevent sqrt(nu/0) -> Inf
         v = (2.0 * torch._standard_gamma(alpha_expanded)).clamp(min=1e-6)
         
         x = z * torch.sqrt(self.nu / v)
@@ -97,26 +107,28 @@ class StudentTSampler:
             scale_val = ((self.nu - 2.0) / self.nu) ** 0.5
             x = x * scale_val
 
-        timesteps = reversed(range(0, len(self.alphas_cumprod)))
-        iterator = tqdm.tqdm(timesteps, desc='t-EDM Sampling', total=len(self.alphas_cumprod)) if show_progress else timesteps
+        # Loop from T down to 1 (standard DDPM range, skip index 0 which is padding)
+        timesteps = reversed(range(1, self.T + 1))
+        iterator = tqdm.tqdm(timesteps, desc='t-EDM Sampling', total=self.T) if show_progress else timesteps
 
         for i in iterator:
             t = torch.full((shape[0],), i, device=device, dtype=torch.long)
             
-            # Predict x_0 from x_t
-            t_norm = t.float() / len(self.alphas_cumprod)
-            pred_x0 = self._get_prediction(x, t_norm, scale, conditions, guidance_scale, **kwargs)
+            # Get raw model output
+            t_norm = t.float() / self.T
+            raw_pred = self._get_prediction(x, t_norm, scale, conditions, guidance_scale, **kwargs)
             
-            # Use prediction to compute previous state x_{t-1} via Student-t posterior step
+            # Convert to x_0 estimate regardless of prediction target
+            pred_x0 = self._convert_to_x0(x, i, raw_pred)
+            
+            # Use x_0 prediction to compute previous state x_{t-1} via Student-t posterior step
             out = self._denoise_step(x, t, pred_x0)
             x = out.prev_sample
 
         return x
 
     def _denoise_step(self, x_t: torch.Tensor, t: torch.Tensor, pred_x0: torch.Tensor) -> SamplerOutput:
-        """
-        Computes a single reverse step using dynamic variance scaling for Student-t distributions.
-        """
+        """Computes a single reverse step using dynamic variance scaling for Student-t distributions."""
         device = x_t.device
         t_idx = t[0].item()
         
@@ -127,33 +139,27 @@ class StudentTSampler:
         posterior_var = self.posterior_variance[t_idx]
 
         # 1. Compute the standard DDPM mean (the deterministic path)
-        # Clamp denominator to prevent division by zero at early timesteps
         denom = (1 - alpha_prod_t).clamp(min=1e-8)
         pred_mean = (
             torch.sqrt(alpha_prod_t_prev) * beta / denom * pred_x0 +
             torch.sqrt(alpha) * (1 - alpha_prod_t_prev) / denom * x_t
         )
-        # Guard against any NaN/Inf in the mean before adding stochastic noise
         pred_mean = torch.nan_to_num(pred_mean, nan=0.0, posinf=1e4, neginf=-1e4)
 
         # 2. Dynamic Variance Scaling (The t-EDM Heavy Tail injection)
-        if t_idx > 0:
-            # Generate conditional Student-t noise
-            # Instead of standard Gaussian N(0, posterior_var), we inject heavy-tailed noise
-            # that dynamically supports the scale of the predicted outlier
+        if t_idx > 1:
             z = torch.randn_like(x_t)
             alpha_expanded = torch.full_like(x_t, self.nu / 2.0)
-            # Clamp v away from zero to prevent sqrt(nu/0) -> Inf
             v = (2.0 * torch._standard_gamma(alpha_expanded)).clamp(min=1e-6)
             t_noise = z * torch.sqrt(self.nu / v)
             
-            # If nu > 2, maintain variance scaling as in forward process
             if self.nu > 2.0:
                 scale_val = ((self.nu - 2.0) / self.nu) ** 0.5
                 t_noise = t_noise * scale_val
                 
             prev_sample = pred_mean + torch.sqrt(torch.clamp(posterior_var, min=1e-20)) * t_noise
         else:
+            # Final step (t=1 -> t=0): deterministic projection only
             prev_sample = pred_mean
 
         return SamplerOutput(prev_sample=prev_sample, pred_x0=pred_x0)
