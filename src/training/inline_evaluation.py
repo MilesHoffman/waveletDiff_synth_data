@@ -113,8 +113,9 @@ class InlineEvaluationCallback(pl.Callback):
         mem_stats = self._compute_ohlc_memorization_stats(real_ohlc_target, synth_ohlc, real_ohlc_ref)
         results.update(mem_stats)
         
-        # Metric 3: Context-FID
-        results['Context_FID'] = self._compute_training_frechet_distance(real_ohlc_target, synth_ohlc)
+        # Metric 3: Context-FID (Benchmarked)
+        results['Synth_to_Real_CFID'] = self._compute_training_frechet_distance(real_ohlc_target, synth_ohlc)
+        results['Real_to_Real_CFID'] = self._compute_training_frechet_distance(real_ohlc_target, real_ohlc_ref)
         
         # Metric 4: EVT Tail Index (Hill)
         evt_stats = self._compute_evt_tail_drift(real_ohlc_target, synth_ohlc)
@@ -131,7 +132,7 @@ class InlineEvaluationCallback(pl.Callback):
         print(f"  • Structural Fidelity")
         if self.ohlcv_indices is not None:
             print(f"    OHLC Valid Pct:  {results['OHLC_Valid_Pct']:.1f}%")
-        print(f"    Context-FID:     {results['Context_FID']:.4f}")
+        print(f"    S→R Context-FID: {results['Synth_to_Real_CFID']:.4f}  [vs Real: {results['Real_to_Real_CFID']:.4f}]")
         print(f"\n  • Memorization (Privacy) vs Baseline")
         print(f"    S→R DCR (5th):   {results['Synth_to_Real_DCR']:.4f}  [vs Real: {results['Real_to_Real_DCR']:.4f}]")
         print(f"    S→R NNDR (Avg):  {results['Synth_to_Real_NNDR']:.4f}  [vs Real: {results['Real_to_Real_NNDR']:.4f}]")
