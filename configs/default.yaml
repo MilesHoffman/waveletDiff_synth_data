@@ -27,31 +27,12 @@ energy:
 # Sampling configuration
 sampling:
   method: "t-edm"          # "ddpm", "ddim", "t-edm"
+  ddim_eta: 0.0            # Stochasticity parameter for DDIM (0.0=deterministic, 1.0=stochastic)
   ddim_steps: 50           # steps for ddim, ignored for others
+  exploration_ratio: 0.3   # Ratio of adaptive vs Min-SNR probability (for HybridSampler)
+  adaptive_start_pct: 0.8  # Fraction of pct_start where adaptive sampling kicks in (e.g. 0.8)
+  eval_method: "t-edm"     # Default method for inline evaluation during training
 
-# Noise schedule
-noise:
-  schedule: "exponential"  # "cosine", "linear", "exponential"
-  prior: "student-t"       # "gaussian" or "student-t"
-  nu: 3.0                  # Degrees of freedom for Student-t prior
-
-# Loss configuration
-loss:
-  type: "huber"            # "mse", "huber", "logcosh"
-  huber_delta: 1.0         # Delta parameter for Huber loss
-
-# Wavelet configuration
-wavelet:
-  type: "auto"  # "auto", "db2", "sym2", "coif1", "bior2.2", "rbio2.2", etc.
-  levels: "auto"  # Number of decomposition levels or "auto"
-
-# Sampling configuration
-sampling:
-  method: "ddpm"  # "ddpm" or "ddim"
-  ddim_eta: 0.0  # Stochasticity parameter for DDIM (0.0 = fully deterministic, 1.0 = DDPM-like)
-  ddim_steps: 50  # Number of DDIM steps (null = use all 1000 steps, e.g., 50 = accelerated DDIM)
-  exploration_ratio: 0.3  # Ratio of adaptive vs Min-SNR probability (for HybridSampler)
-  adaptive_start_pct: 0.8 # Fraction of pct_start where adaptive sampling kicks in (e.g. 0.8)
 
 # Quarter-window conditioning & Classifier-Free Guidance
 conditioning:

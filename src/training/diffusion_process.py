@@ -23,34 +23,24 @@ class DiffusionSampler(ABC):
         self.device = next(model.parameters()).device
         self.onnx_session = getattr(model, 'onnx_session', None)
     
-    def _get_prediction(self, x_t, t_norm, scale, conditions, guidance_scale):
+    def _get_prediction(self, x_t, t_norm, conditions, guidance_scale):
         """Get model prediction with optional CFG guidance, routing to ONNX if enabled."""
         if self.onnx_session is not None:
-            # 1. Prepare ONNX Input dictionary mapping
             inputs = {
                 'x': x_t.cpu().numpy(),
                 't': t_norm.cpu().numpy()
             }
-            if scale is not None:
-                # Keep scale 1D for dynamic axes matching
-                inputs['scale'] = scale.cpu().numpy()
             if conditions is not None:
-                # Use profile names if available from the data_module, otherwise default to cond{i}
                 profile_names = getattr(self.model.data_module, 'quarter_profile_names', [])
                 for i, cond in enumerate(conditions):
                     name = profile_names[i] if i < len(profile_names) else f'cond{i}'
-                    # Keep conditions 1D for dynamic axes matching
                     inputs[name] = cond.cpu().numpy()
                     
-            # 2. Execute Graph
             ort_outs = self.onnx_session.run(None, inputs)
             
-            # 3. Pull output back to PyTorch scope
             pred = torch.from_numpy(ort_outs[0]).to(self.device)
             if guidance_scale is not None and guidance_scale != 1.0 and conditions is not None:
-                # To do CFG via ONNX, we must run the uncond pass
                 uncond_inputs = inputs.copy()
-                # Create a blank list of conditions equivalent to None for the model wrapper
                 for i in range(len(conditions)):
                     name = profile_names[i] if 'profile_names' in locals() and i < len(profile_names) else f'cond{i}'
                     uncond_inputs[name] = np.zeros_like(inputs[name])
@@ -61,14 +51,13 @@ class DiffusionSampler(ABC):
 
         # Native PyTorch routing
         if guidance_scale is not None and guidance_scale != 1.0 and conditions is not None:
-            uncond_pred = self.model(x_t, t_norm, scale=scale, conditions=None)
-            cond_pred = self.model(x_t, t_norm, scale=scale, conditions=conditions)
+            uncond_pred = self.model(x_t, t_norm, conditions=None)
+            cond_pred = self.model(x_t, t_norm, conditions=conditions)
             return uncond_pred + guidance_scale * (cond_pred - uncond_pred)
-        return self.model(x_t, t_norm, scale=scale, conditions=conditions)
+        return self.model(x_t, t_norm, conditions=conditions)
     
     @abstractmethod
     def sample(self, x_t_initial: torch.Tensor, 
-               scale: Optional[torch.Tensor] = None,
                conditions: Optional[List[torch.Tensor]] = None,
                guidance_scale: Optional[float] = None,
                store_intermediates: bool = False,
@@ -78,7 +67,6 @@ class DiffusionSampler(ABC):
         pass
     
     def generate(self, n_samples: int, input_dim: int, num_features: int, 
-                 scale: Optional[torch.Tensor] = None,
                  conditions: Optional[List[torch.Tensor]] = None,
                  guidance_scale: Optional[float] = None,
                  show_progress: bool = True, **kwargs) -> Union[torch.Tensor, Dict[int, torch.Tensor]]:
@@ -90,7 +78,7 @@ class DiffusionSampler(ABC):
             prior=self.model.noise_prior, 
             nu=self.model.nu
         )
-        return self.sample(x_t_initial, scale=scale, conditions=conditions,
+        return self.sample(x_t_initial, conditions=conditions,
                            guidance_scale=guidance_scale, show_progress=show_progress, **kwargs)
     
     def reconstruct(self, x_0_original: torch.Tensor, show_progress: bool = True, **kwargs) -> torch.Tensor:
@@ -170,7 +158,6 @@ class DDPMSampler(DiffusionSampler):
         }
     
     def sample(self, x_t_initial: torch.Tensor, 
-               scale: Optional[torch.Tensor] = None,
                conditions: Optional[List[torch.Tensor]] = None,
                guidance_scale: Optional[float] = None,
                store_intermediates: bool = False,
@@ -203,7 +190,7 @@ class DDPMSampler(DiffusionSampler):
             for i in range(total_steps):
                 torch.compiler.cudagraph_mark_step_begin()
                 t_norm = sched['t_norms'][i].expand(batch_size)
-                prediction = self._get_prediction(x_t, t_norm, scale, conditions, guidance_scale)
+                prediction = self._get_prediction(x_t, t_norm, conditions, guidance_scale)
                 
                 noise = generate_noise(
                     shape=x_t.shape, 
@@ -297,7 +284,6 @@ class DDIMSampler(DiffusionSampler):
         }
     
     def sample(self, x_t_initial: torch.Tensor, 
-               scale: Optional[torch.Tensor] = None,
                conditions: Optional[List[torch.Tensor]] = None,
                guidance_scale: Optional[float] = None,
                store_intermediates: bool = False,
@@ -334,7 +320,7 @@ class DDIMSampler(DiffusionSampler):
             for i in range(total_steps):
                 torch.compiler.cudagraph_mark_step_begin()
                 t_norm = sched['t_norms'][i].expand(batch_size)
-                prediction = self._get_prediction(x_t, t_norm, scale, conditions, guidance_scale).clone()
+                prediction = self._get_prediction(x_t, t_norm, conditions, guidance_scale).clone()
                 
                 if self.eta == 0.0:
                     noise = zero_noise

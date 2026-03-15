@@ -14,11 +14,11 @@ A specialized diffusion model for generating high-fidelity synthetic OHLCV (Open
 
 - **Wavelet-Based Architecture**: Multi-resolution decomposition captures both trends and fine-grained patterns
 - **Level-Specific Transformers**: Dedicated networks for each frequency band with cross-level attention
-  - **18-Channel Feature Pipeline**: Deep structural decomposition of OHLC, cyclic time, Order Flow Imbalance (MFM), algorithm anchors (VWAP), and technical momentum.
+  - **SOTA 22-Channel Feature Pipeline**: Deep structural decomposition of OHLC using Robust Scaled Log-Returns, rolling indicators (Hurst, YZ Volatility, Skewness, Amihud), and Volume Log-Deviation.
   - **Ratio-Based Wicks**: Wicks modeled as ratios of the bar range [0, 1] for guaranteed valid OHLC construction
-  - **Contextual Encoding**: 'Day of Week' (sin/cos) and 'Gap' (ATR-normalized) for realistic market microsctructure
+  - **Contextual Encoding**: 'Day of Week' (sin/cos) and normalized Gap returns for realistic market microsctructure
   - **OHLC Constraint Preservation**: Mathematical guarantees that High ≥ Open/Close ≥ Low
-- **ATR Conditioning**: Generate samples with specific volatility characteristics
+- **4-Quadrant Conditioning**: Generate samples guided by specific trend, volatility, and order-flow regimes (YZ, Hurst, Skew, Amihud).
 - **DDPM/DDIM Sampling**: Standard stochastic or accelerated deterministic generation
 - **torch.compile Ready**: Optimized for CUDAGraph and reduce-overhead compilation
 
@@ -91,7 +91,7 @@ statsmodels
 cd src
 
 # Train on stocks dataset (default config)
-python train.py --experiment_name my_experiment --dataset stocks
+python train.py --experiment_name my_experiment --dataset stocks --export_onnx true
 
 # Train with custom configuration
 python train.py \
@@ -99,28 +99,37 @@ python train.py \
     --dataset stocks \
     --epochs 2000 \
     --batch_size 256 \
+    --use_ema true \
+    --export_onnx true \
+    --compile_enabled true \
     --compile_mode reduce-overhead
 ```
 
 ### Sample Generation
 
+Sampling now utilizes **ONNX Runtime** for high-performance inference. Ensure you have run `train.py` with `--export_onnx true` before sampling.
+
 ```bash
 cd src
 
-# Generate samples using DDPM
+# Generate samples using Student-t (t-EDM) - Recommended for heavy tails
 python sample.py \
     --experiment_name my_experiment \
-    --dataset stocks \
-    --data_dir path/to/your/data.csv \
+    --num_samples 10000 \
+    --sampling_method t-edm
+
+# Standard stochastic DDPM sampling
+python sample.py \
+    --experiment_name my_experiment \
     --num_samples 10000 \
     --sampling_method ddpm
 
 # Accelerated DDIM sampling
 python sample.py \
     --experiment_name my_experiment \
-    --data_dir path/to/your/data.csv \
     --num_samples 10000 \
-    --sampling_method ddim
+    --sampling_method ddim \
+    --ddim_steps 50
 ```
 
 ### Evaluation
@@ -130,7 +139,7 @@ Open `evaluation.ipynb` in Google Colab or Jupyter:
 ```python
 # Configure paths
 EXPERIMENT_NAME = "my_experiment"
-SAMPLING_METHOD = "ddpm"
+SAMPLING_METHOD = "t-edm" # Matches the generated files: t-edm_samples.npy
 
 # Run all cells to generate:
 # - t-SNE/PCA visualizations
@@ -138,6 +147,39 @@ SAMPLING_METHOD = "ddpm"
 # - Discriminative/Predictive scores
 # - Summary scorecard
 ```
+
+---
+
+## 🛠️ CLI Reference
+
+### `train.py`
+
+| Category | Flag | Description | Default |
+|----------|------|-------------|---------|
+| **Core** | `--experiment_name` | Unique ID for the run | `default` |
+| | `--dataset` | Dataset name (stocks, etth1, etc.) | `stocks` |
+| **Model** | `--prediction_target` | `noise` or `coefficient` | `noise` |
+| | `--use_cross_level_attention` | Enable attention between wavelet bands | `true` |
+| **Diffusion** | `--noise_prior` | `gaussian` or `student-t` | `gaussian` |
+| | `--nu` | Student-T degrees of freedom | `3.0` |
+| | `--noise_schedule` | `exponential`, `cosine`, `linear` | `exponential` |
+| **Sampling** | `--sampling_method` | `ddpm`, `ddim`, `t-edm` | `ddpm` |
+| | `--exploration_ratio` | Adaptive vs Min-SNR probability | `0.3` |
+| **Optimization** | `--use_ema` | Track Exponential Moving Average of weights | `true` |
+| | `--export_onnx` | Automatically export model to ONNX after training | `false` |
+| **Performance** | `--compile_enabled` | Enable `torch.compile` (A100 optimized) | `false` |
+| | `--precision` | `32`, `bf16-mixed`, `16-mixed` | `32` |
+
+### `sample.py`
+
+| Flag | Description |
+|------|-------------|
+| `--experiment_name` | Name of the experiment to load |
+| `--sampling_method` | `ddpm`, `ddim`, `t-edm` (must match training prior) |
+| `--num_samples` | Number of synthetic samples to generate |
+| `--guidance_scale` | CFG scale (>1.0 to amplify conditioning) |
+| `--inference_engine` | `onnx` (default) or `tensorrt` |
+
 
 ---
 
@@ -226,7 +268,7 @@ Dataset-specific configs in `configs/datasets/`:
 
 | Dataset | Features | Seq Length | Description |
 |---------|----------|------------|-------------|
-| `stocks` | 16 | 24 | OHLCV + Indicators (SMA, RSI, MFI, ATR) |
+| `stocks` | 22 | 64 | OHLCV + SOTA Rollers (Hurst, YZ Vol, Amihud, Skew) |
 | `etth1/etth2` | 7 | 24-96 | Electricity Transformer Temperature |
 | `exchange_rate` | 8 | 24 | Currency exchange rates |
 | `fmri` | Variable | 24 | fMRI brain activity |
@@ -247,31 +289,40 @@ def load_custom_data(data_dir, seq_len=24, normalize_data=True):
 
 ## 🔬 Technical Details
 
-### 18-Channel Feature Pipeline
+### SOTA 22-Channel Feature Matrix
 
-WaveletDiff uses a **Ratio-Based** structural decomposition with integrated technical indicators and advanced Order Flow proxies:
+WaveletDiff uses a **Ratio-Based** structural decomposition combined with Robust Scaled Log-Returns and advanced Technical/Microstructure proxies:
 
 ```
-# --- Core OHLC (9 Channels) ---
-[0] gap_norm = (Open_t - Close_{t-1}) / ATR_pct
-[1] body_norm = (Close_t - Open_t) / ATR_pct
-[2] wick_high_ratio = (High - max(O,C)) / (High - Low)  # [0, 1]
-[3] wick_low_ratio = (min(O,C) - Low) / (High - Low)    # [0, 1]
-[4] volume_norm = (log(Volume + \epsilon) - \mu) / \sigma # Global Z-Score Standardization
-[5] day_sin, [6] day_cos = Cyclic Day Encoding
-[7] cum_ret_norm = (Close - Open_0) / ATR_pct
-[8] bar_range_norm = (High - Low) / ATR_pct
+# --- Core OHLC Structure & Cyclic Time (8 Channels) ---
+[0] gap_norm = RobustScale( log(Open_t / Close_{t-1}) )
+[1] intraday_return = RobustScale( log(Close_t / Open_t) )
+[2] cum_ret_norm = RobustScale( log(Close_t / Open_0) )
+[3] range_norm = RobustScale( (High - Low) / Close_{t-1} )
+[4] wick_high_ratio = (High - max(O,C)) / (High - Low)  # [0, 1]
+[5] wick_low_ratio = (min(O,C) - Low) / (High - Low)    # [0, 1]
+[6] day_sin, [7] day_cos = Cyclic Day Encoding
 
-# --- Market Microstructure & Technicals (9 Channels) ---
-[9-12] sma_*_dev = (Close - SMA_N) / ATR_pct   # N = 200, 100, 50, 20
-[13] atr_ratio = log(ATR / SMA_20(ATR))
-[14] rsi_norm = (RSI - 50) / 50                 # [-1, 1]
-[15] mfi_norm = (MFI - 50) / 50                 # [-1, 1]
-[16] mfm = Money Flow Multiplier                # Proxy Order Flow Imbalance [-1, 1]
-[17] vwap_20_dev = log(Close / VWAP_20)         # Algorithmic mean-reversion tension
+# --- Market Microstructure & Structural Variance (7 Channels) ---
+[8] log_ret_sq = (log(Close_t / Close_{t-1}))^2
+[9] semivar_down = Rolling Downside Semivariance (20 periods)
+[10] mfm_norm = Money Flow Multiplier [-1, 1]
+[11] yz_vol_norm = Yang-Zhang Volatility 
+[12] hurst_norm = Rolling Hurst Exponent (Trend Memory)
+[13] skew_norm = Rolling Skewness (Tail Asymmetry)
+[14] amihud_norm = Rolling Amihud Illiquidity Ratio
+
+# --- Price Distance & Moving Averages (7 Channels) ---
+[15] sma_200_dev = log(Close / SMA_200)
+[16] sma_100_dev = log(Close / SMA_100)
+[17] sma_50_dev  = log(Close / SMA_50)
+[18] sma_20_dev  = log(Close / SMA_20)
+[19] ema_9_dev   = log(Close / EMA_9)
+[20] trange_dev  = log(TrueRange / SMA_20(TrueRange))
+[21] vol_log_dev = (log(Volume) - Rolling_Median_Vol) / (Rolling_IQR_Vol / 1.349)
 ```
 
-**OHLC Constraints** are mathematically guaranteed by the ratio-based wick representation:
+**OHLC Constraints** are mathematically guaranteed perfectly during Log-Return inverse chaining:
 1.  `High >= Low` (by definition of range)
 2.  `High >= max(Open, Close)` (by definition of wick ratios)
 3.  `Low <= min(Open, Close)` (by definition of wick ratios)
@@ -298,8 +349,8 @@ Cross-level attention enables information exchange between scales.
 
 To eliminate "price scale noise" and focus purely on temporal dynamics, WaveletDiff uses an **Index-100 Evaluation** style:
 
-1.  **Reparameterized Data**: Samples are generated in percentage-return space (normalized by ATR).
-2.  **Fixed Reconstruction**: During evaluation, the `anchor` price for **both** real and synthetic samples is fixed to **100.0**.
+1.  **Reparameterized Data**: Samples are generated in standard stationary feature space (Log-Returns, Feature Deviations).
+2.  **Fixed Reconstruction**: During evaluation, the `fixed_anchor` price for **both** real and synthetic samples is fixed to **100.0**, and the volume anchors use matching samples.
 3.  **Cumulative Dynamics**: This transforms the "Dollar Space" metrics into a pure study of cumulative returns and internal "vibe."
 
 This ensures that a stock at $10 and a stock at $1000 are compared on an equal playing field, revealing whether the model has truly mastered the statistical texture of the market.
@@ -385,9 +436,7 @@ python train.py \
 
 ### Heavy-Tailed Generation (Student-T Prior)
 
-WaveletDiff supports specialized statistical priors for deep financial modeling. By replacing standard Gaussian denoising with a **Student-T noise prior** (`--noise_prior student-t --nu 3.0`), the architecture natively supports the generation of extreme black-swan events ($5\sigma$ spikes) and fat-tailed distribution structures common in real-world assets. 
-
-We highly recommend pairing this with the **Huber Loss** (`--loss_type huber --huber_delta 1.0`) to prevent the enormous gradients of the Student-T extreme samples from destabilizing the optimizer.
+We highly recommend pairing this with the **Huber Loss** (`--loss_type huber --huber_delta 1.0`) to prevent the enormous gradients of the Student-T extreme samples from destabilizing the optimizer. Always sample using `--sampling_method t-edm` for these models to correctly utilize the Student-T posterior logic.
 
 ### Custom Noise Schedule
 
@@ -403,17 +452,11 @@ noise:
 ### Continuous Conditioning & Augmentation
 
 WaveletDiff supports conditioning on continuous variables to give fine-grained control over the generated market regimes. The primary conditioning inputs include:
-- **Scale (ATR)**: Controls the target volatility.
-- **Quarter Profiles**: Incorporates macro-level seasonality or trend conditioning.
+- **Quarter Profiles (4-Quadrant Arrays)**: Incorporates macro-level trend conditioning by taking snapshots of Yang-Zhang Volatility, Hurst Exponent, Skewness, and Amihud Illiquidity at each quarter of the generation window.
 
 To prevent the model from overfitting to exact conditioning values seen during training and to enable smooth interpolation at inference time, **Condition Augmentation** is applied. Gaussian noise is added to the conditioning variables during training, improving the model's robustness and generalization.
 
-At inference, you can generate samples with specific conditioning:
-
-```python
-# Generate with specific volatility (e.g., 2.5% ATR)
-samples = model.generate(n_samples=1000, scale=2.5)
-```
+At inference, you can generate samples with specific conditioning regimes.
 
 ### Exponential Moving Average (EMA) Weights
 

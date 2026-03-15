@@ -1,7 +1,9 @@
 """
 Dataset loading utilities for various time series datasets.
 
-Extracted from the main data module to keep it clean and focused.
+Implements the SOTA 22-feature pipeline for financial time series,
+with Robust Scaling, Log-Ratio normalizations, and 4-quadrant
+global conditioning (YZ, Hurst, Skewness, Amihud).
 """
 
 import pandas as pd
@@ -11,353 +13,354 @@ import os
 from scipy.stats import skew as scipy_skew
 from typing import Dict, Any, Tuple
 
-ATR_PERIOD = 14
 
-
-def compute_atr(high: np.ndarray, low: np.ndarray, close: np.ndarray, period: int = ATR_PERIOD) -> np.ndarray:
-    """
-    Compute Average True Range (ATR) using Wilder's smoothing.
-    
-    Returns array of same length as input, with first (period-1) values as NaN.
-    """
-    prev_close = np.roll(close, 1)
-    prev_close[0] = close[0]
-    
-    tr = np.maximum(
-        high - low,
-        np.maximum(
-            np.abs(high - prev_close),
-            np.abs(low - prev_close)
-        )
-    )
-    
-    atr = np.full_like(tr, np.nan)
-    atr[period - 1] = np.mean(tr[:period])
-    
-    multiplier = 1.0 / period
-    for i in range(period, len(tr)):
-        atr[i] = atr[i - 1] * (1 - multiplier) + tr[i] * multiplier
-    
-    return atr
-
+# ─── Rolling Indicator Functions ────────────────────────────────────────────────
 
 def compute_sma(data: np.ndarray, period: int) -> np.ndarray:
     """Compute Simple Moving Average."""
     ret = np.cumsum(data, dtype=float)
     ret[period:] = ret[period:] - ret[:-period]
     sma = ret[period - 1:] / period
-    
-    # Pad beginning with NaN to match original length
+
     pad = np.full(period - 1, np.nan)
     return np.concatenate([pad, sma])
 
 
-def compute_rsi(close: np.ndarray, period: int = 14) -> np.ndarray:
-    """
-    Compute Relative Strength Index (RSI) using Wilder's smoothing.
-    
-    Returns array of same length as input, with first `period` values as NaN.
-    """
-    delta = np.diff(close, prepend=close[0])
-    
-    gains = np.where(delta > 0, delta, 0.0)
-    losses = np.where(delta < 0, -delta, 0.0)
-    
-    avg_gain = np.full_like(close, np.nan)
-    avg_loss = np.full_like(close, np.nan)
-    
-    avg_gain[period] = np.mean(gains[1:period + 1])
-    avg_loss[period] = np.mean(losses[1:period + 1])
-    
-    multiplier = 1.0 / period
-    for i in range(period + 1, len(close)):
-        avg_gain[i] = avg_gain[i - 1] * (1 - multiplier) + gains[i] * multiplier
-        avg_loss[i] = avg_loss[i - 1] * (1 - multiplier) + losses[i] * multiplier
-    
-    rs = avg_gain / (avg_loss + 1e-10)
-    rsi = 100.0 - (100.0 / (1.0 + rs))
-    
-    return rsi
-
-
-def compute_mfi(high: np.ndarray, low: np.ndarray, close: np.ndarray, 
+def compute_mfi(high: np.ndarray, low: np.ndarray, close: np.ndarray,
                 volume: np.ndarray, period: int = 14) -> np.ndarray:
-    """
-    Compute Money Flow Index (MFI).
-    
-    Returns array of same length as input, with first `period` values as NaN.
-    """
+    """Compute Money Flow Index (MFI). Output range [0, 1]."""
     typical_price = (high + low + close) / 3.0
     raw_money_flow = typical_price * volume
-    
+
     tp_diff = np.diff(typical_price, prepend=typical_price[0])
-    
+
     positive_flow = np.where(tp_diff > 0, raw_money_flow, 0.0)
     negative_flow = np.where(tp_diff < 0, raw_money_flow, 0.0)
-    
+
     mfi = np.full_like(close, np.nan)
-    
+
     for i in range(period, len(close)):
         pos_sum = np.sum(positive_flow[i - period + 1:i + 1])
         neg_sum = np.sum(negative_flow[i - period + 1:i + 1])
-        
+
         money_ratio = pos_sum / (neg_sum + 1e-10)
-        mfi[i] = 100.0 - (100.0 / (1.0 + money_ratio))
-    
+        mfi[i] = (100.0 - (100.0 / (1.0 + money_ratio))) / 100.0
+
     return mfi
 
+
+def compute_rolling_yang_zhang(open_prices: np.ndarray, high: np.ndarray,
+                                low: np.ndarray, close: np.ndarray,
+                                period: int = 20) -> np.ndarray:
+    """
+    Rolling Yang-Zhang volatility estimator.
+
+    Decomposes into overnight, close-to-open, and Rogers-Satchell components.
+    Returns log-transformed values for embedding stability.
+    """
+    n = len(close)
+    yz = np.full(n, np.nan)
+
+    for i in range(period, n):
+        s = i - period
+        o_w = open_prices[s:i]
+        h_w = high[s:i]
+        l_w = low[s:i]
+        c_w = close[s:i]
+
+        log_oc = np.log(o_w[1:] / c_w[:-1])
+        log_co = np.log(c_w / o_w)
+        log_ho = np.log(h_w / o_w)
+        log_lo = np.log(l_w / o_w)
+        log_hc = np.log(h_w / c_w)
+        log_lc = np.log(l_w / c_w)
+
+        sigma_o = np.var(log_oc, ddof=1) if len(log_oc) > 1 else 0.0
+        sigma_c = np.var(log_co, ddof=1) if period > 1 else 0.0
+        sigma_rs = np.mean(log_ho * log_hc + log_lo * log_lc)
+
+        k = 0.34 / (1.34 + (period + 1) / (period - 1)) if period > 1 else 0.34
+        sigma_yz_sq = sigma_o + k * sigma_c + (1 - k) * sigma_rs
+        yz[i] = np.sqrt(max(sigma_yz_sq, 0.0))
+
+    return yz
+
+
+def compute_rolling_hurst(close: np.ndarray, period: int = 20) -> np.ndarray:
+    """
+    Rolling Hurst Exponent via Rescaled Range (R/S) analysis.
+
+    H < 0.5: Mean-reverting, H = 0.5: Random walk, H > 0.5: Trending.
+    """
+    n = len(close)
+    hurst = np.full(n, np.nan)
+    log_returns = np.diff(np.log(close), prepend=0.0)
+    log_returns[0] = 0.0
+
+    for i in range(period, n):
+        ts = log_returns[i - period + 1:i + 1]
+        mean_ts = np.mean(ts)
+        deviate = np.cumsum(ts - mean_ts)
+        r = np.max(deviate) - np.min(deviate)
+        s = np.std(ts, ddof=1)
+
+        if s < 1e-12 or r < 1e-12:
+            hurst[i] = 0.5
+        else:
+            hurst[i] = np.log(r / s) / np.log(period)
+            hurst[i] = np.clip(hurst[i], 0.0, 1.0)
+
+    return hurst
+
+
+def compute_rolling_skewness(close: np.ndarray, period: int = 20) -> np.ndarray:
+    """Rolling Fisher skewness of log-returns."""
+    n = len(close)
+    skewness = np.full(n, np.nan)
+    log_returns = np.diff(np.log(close), prepend=0.0)
+    log_returns[0] = 0.0
+
+    for i in range(period, n):
+        window = log_returns[i - period + 1:i + 1]
+        if np.std(window) < 1e-10:
+            skewness[i] = 0.0
+        else:
+            skewness[i] = float(scipy_skew(window, bias=False))
+
+    return skewness
+
+
+def compute_rolling_semivariance(close: np.ndarray, period: int = 20) -> np.ndarray:
+    """Rolling downside semivariance of log-returns."""
+    n = len(close)
+    semivar = np.full(n, np.nan)
+    log_returns = np.diff(np.log(close), prepend=0.0)
+    log_returns[0] = 0.0
+
+    for i in range(period, n):
+        window = log_returns[i - period + 1:i + 1]
+        mean_r = np.mean(window)
+        downside = window[window < mean_r] - mean_r
+        if len(downside) > 1:
+            semivar[i] = np.mean(downside ** 2)
+        else:
+            semivar[i] = 0.0
+
+    return semivar
+
+
+def compute_rolling_amihud(close: np.ndarray, volume: np.ndarray,
+                           period: int = 20) -> np.ndarray:
+    """Rolling Amihud Illiquidity Ratio: mean(|return| / volume)."""
+    n = len(close)
+    amihud = np.full(n, np.nan)
+    log_returns = np.abs(np.diff(np.log(close), prepend=0.0))
+    log_returns[0] = 0.0
+
+    for i in range(period, n):
+        ret_w = log_returns[i - period + 1:i + 1]
+        vol_w = volume[i - period + 1:i + 1]
+        ratios = ret_w / (vol_w + 1e-10)
+        amihud[i] = np.mean(ratios)
+
+    return amihud
 
 
 # ─── Quarter-Window Conditioning Helpers ───────────────────────────────────────
 
-def compute_quarter_yang_zhang_vol(open_q: np.ndarray, high_q: np.ndarray,
-                                   low_q: np.ndarray, close_q: np.ndarray) -> float:
-    """
-    Yang-Zhang volatility estimator for a single quarter-window.
-
-    Decomposes into overnight (open-to-close) and Rogers-Satchell components,
-    correcting for drift and overnight gaps. Returns log-transformed value
-    for embedding stability.
-    """
-    n = len(close_q)
-    if n < 2:
+def _quarter_snapshot_yz(open_prices: np.ndarray, high: np.ndarray,
+                         low: np.ndarray, close: np.ndarray,
+                         global_idx: int, period: int = 20) -> float:
+    """Snapshot of rolling 20-day Yang-Zhang at a specific global index."""
+    if global_idx < period:
         return 0.0
 
-    log_oc = np.log(open_q[1:] / close_q[:-1])  # Overnight returns
-    log_co = np.log(close_q / open_q)             # Close-to-open returns
-    log_ho = np.log(high_q / open_q)
-    log_lo = np.log(low_q / open_q)
-    log_hc = np.log(high_q / close_q)
-    log_lc = np.log(low_q / close_q)
+    s = global_idx - period
+    o_w = open_prices[s:global_idx]
+    h_w = high[s:global_idx]
+    l_w = low[s:global_idx]
+    c_w = close[s:global_idx]
 
-    # Overnight variance
+    log_oc = np.log(o_w[1:] / c_w[:-1])
+    log_co = np.log(c_w / o_w)
+    log_ho = np.log(h_w / o_w)
+    log_lo = np.log(l_w / o_w)
+    log_hc = np.log(h_w / c_w)
+    log_lc = np.log(l_w / c_w)
+
     sigma_o = np.var(log_oc, ddof=1) if len(log_oc) > 1 else 0.0
+    sigma_c = np.var(log_co, ddof=1) if period > 1 else 0.0
+    sigma_rs = np.mean(log_ho * log_hc + log_lo * log_lc)
 
-    # Close-to-open variance
-    sigma_c = np.var(log_co, ddof=1) if n > 1 else 0.0
-
-    # Rogers-Satchell variance
-    rs = log_ho * log_hc + log_lo * log_lc
-    sigma_rs = np.mean(rs) if len(rs) > 0 else 0.0
-
-    # Yang-Zhang combination (k chosen for minimum variance)
-    k = 0.34 / (1.34 + (n + 1) / (n - 1)) if n > 1 else 0.34
+    k = 0.34 / (1.34 + (period + 1) / (period - 1)) if period > 1 else 0.34
     sigma_yz_sq = sigma_o + k * sigma_c + (1 - k) * sigma_rs
 
-    sigma_yz = np.sqrt(max(sigma_yz_sq, 0.0))
-    return float(np.log1p(sigma_yz * 100.0))  # Log-transform for embedding
+    return float(np.log1p(np.sqrt(max(sigma_yz_sq, 0.0)) * 100.0))
 
 
-def compute_quarter_log_return(close_q: np.ndarray) -> float:
-    """Cumulative log-return over a quarter-window."""
-    if len(close_q) < 2:
-        return 0.0
-    return float(np.log(close_q[-1] / close_q[0]))
+def _quarter_snapshot_hurst(close: np.ndarray, global_idx: int,
+                            period: int = 20) -> float:
+    """Snapshot of rolling 20-day Hurst at a specific global index."""
+    if global_idx < period:
+        return 0.5
+
+    log_returns = np.diff(np.log(close[global_idx - period:global_idx]))
+    if len(log_returns) < 2:
+        return 0.5
+
+    mean_ts = np.mean(log_returns)
+    deviate = np.cumsum(log_returns - mean_ts)
+    r = np.max(deviate) - np.min(deviate)
+    s = np.std(log_returns, ddof=1)
+
+    if s < 1e-12 or r < 1e-12:
+        return 0.5
+
+    h = np.log(r / s) / np.log(period)
+    return float(np.clip(h, 0.0, 1.0))
 
 
-def compute_quarter_adx(high_q: np.ndarray, low_q: np.ndarray,
-                        close_q: np.ndarray) -> float:
-    """
-    Simplified ADX for a quarter-window.
-
-    Uses the directional movement ratio averaged over the quarter,
-    normalized to [0, 1]. Adapted for short windows where standard
-    14-period Wilder smoothing is not applicable.
-    """
-    n = len(close_q)
-    if n < 2:
-        return 0.0
-
-    up_move = np.diff(high_q)
-    down_move = -np.diff(low_q)
-
-    plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0.0)
-    minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0.0)
-
-    prev_close = close_q[:-1]
-    tr = np.maximum(
-        high_q[1:] - low_q[1:],
-        np.maximum(
-            np.abs(high_q[1:] - prev_close),
-            np.abs(low_q[1:] - prev_close)
-        )
-    )
-    tr_sum = np.sum(tr) + 1e-10
-
-    plus_di = np.sum(plus_dm) / tr_sum
-    minus_di = np.sum(minus_dm) / tr_sum
-
-    di_sum = plus_di + minus_di
-    if di_sum < 1e-10:
+def _quarter_snapshot_skew(close: np.ndarray, global_idx: int,
+                           period: int = 20) -> float:
+    """Snapshot of rolling 20-day skewness at a specific global index."""
+    if global_idx < period:
         return 0.0
 
-    dx = abs(plus_di - minus_di) / di_sum
-    return float(np.clip(dx, 0.0, 1.0))
-
-
-def compute_quarter_vwap_dev(high_q: np.ndarray, low_q: np.ndarray,
-                             close_q: np.ndarray, volume_q: np.ndarray,
-                             atr_mean: float) -> float:
-    """
-    VWAP deviation for a quarter-window, ATR-normalized.
-
-    Measures how far the closing price sits from the volume-weighted
-    average price, capturing institutional flow direction.
-    """
-    typical_price = (high_q + low_q + close_q) / 3.0
-    vol_sum = np.sum(volume_q) + 1e-10
-    vwap = np.sum(typical_price * volume_q) / vol_sum
-
-    deviation = (close_q[-1] - vwap) / (atr_mean + 1e-10)
-    return float(deviation)
-
-
-def compute_quarter_skew(close_q: np.ndarray) -> float:
-    """
-    Fisher skewness of log-returns within a quarter-window.
-
-    Captures the asymmetry of the return distribution — negative skew
-    indicates crash-prone dynamics, positive skew indicates squeeze-prone.
-    """
-    if len(close_q) < 3:
+    log_returns = np.diff(np.log(close[global_idx - period:global_idx]))
+    if len(log_returns) < 3 or np.std(log_returns) < 1e-10:
         return 0.0
-    log_returns = np.diff(np.log(close_q))
-    if np.std(log_returns) < 1e-10:
-        return 0.0
+
     return float(scipy_skew(log_returns, bias=False))
+
+
+def _quarter_snapshot_amihud(close: np.ndarray, volume: np.ndarray,
+                             global_idx: int, period: int = 20) -> float:
+    """Snapshot of rolling 20-day Amihud at a specific global index."""
+    if global_idx < period:
+        return 0.0
+
+    log_returns = np.abs(np.diff(np.log(close[global_idx - period:global_idx])))
+    vol_w = volume[global_idx - period + 1:global_idx]
+    if len(log_returns) == 0 or len(vol_w) == 0:
+        return 0.0
+
+    min_len = min(len(log_returns), len(vol_w))
+    ratios = log_returns[:min_len] / (vol_w[:min_len] + 1e-10)
+    return float(np.mean(ratios))
 
 
 def compute_quarter_profiles(open_w: np.ndarray, high_w: np.ndarray,
                              low_w: np.ndarray, close_w: np.ndarray,
-                             volume_w: np.ndarray, atr_mean: float,
+                             volume_w: np.ndarray,
+                             global_open: np.ndarray, global_high: np.ndarray,
+                             global_low: np.ndarray, global_close: np.ndarray,
+                             global_volume: np.ndarray,
+                             window_start_global: int,
                              n_quarters: int = 4) -> dict:
     """
-    Compute all 5 conditioning profiles for a single window.
+    Compute 4 conditioning profiles for a single window.
 
-    Splits the window into n_quarters equal segments and computes
-    each metric per segment.
+    Each profile value is a snapshot of the rolling 20-day metric
+    evaluated at the final bar of each quadrant of the window.
 
     Returns:
-        dict with keys: 'yz', 'ret', 'adx', 'vwap', 'skew'
+        dict with keys: 'yz', 'hurst', 'skew', 'amihud'
         Each value is a numpy array of shape (n_quarters,).
     """
     seq_len = len(close_w)
     q_size = seq_len // n_quarters
 
     profiles = {k: np.zeros(n_quarters, dtype=np.float32)
-                for k in ('yz', 'ret', 'adx', 'vwap', 'skew')}
+                for k in ('yz', 'hurst', 'skew', 'amihud')}
 
     for q in range(n_quarters):
-        s = q * q_size
-        e = s + q_size if q < n_quarters - 1 else seq_len
+        if q < n_quarters - 1:
+            end_local = (q + 1) * q_size - 1
+        else:
+            end_local = seq_len - 1
 
-        oq = open_w[s:e]
-        hq = high_w[s:e]
-        lq = low_w[s:e]
-        cq = close_w[s:e]
-        vq = volume_w[s:e]
+        end_global = window_start_global + end_local
 
-        profiles['yz'][q] = compute_quarter_yang_zhang_vol(oq, hq, lq, cq)
-        profiles['ret'][q] = compute_quarter_log_return(cq)
-        profiles['adx'][q] = compute_quarter_adx(hq, lq, cq)
-        profiles['vwap'][q] = compute_quarter_vwap_dev(hq, lq, cq, vq, atr_mean)
-        profiles['skew'][q] = compute_quarter_skew(cq)
+        profiles['yz'][q] = _quarter_snapshot_yz(
+            global_open, global_high, global_low, global_close, end_global)
+        profiles['hurst'][q] = _quarter_snapshot_hurst(global_close, end_global)
+        profiles['skew'][q] = _quarter_snapshot_skew(global_close, end_global)
+        profiles['amihud'][q] = _quarter_snapshot_amihud(
+            global_close, global_volume, end_global)
 
     return profiles
 
 
-def reparameterize_ohlc_window(ohlc: np.ndarray, atr_values: np.ndarray) -> Tuple[np.ndarray, float, float]:
-    """
-    Reparameterize a single OHLC window into percentage-space, ATR-normalized features.
-    
-    Args:
-        ohlc: Window of shape (seq_len, 4) with columns [Open, High, Low, Close]
-        atr_values: ATR values for the window, shape (seq_len,)
-    
-    Returns:
-        reparam: Reparameterized features (seq_len, 5): 
-                [body_norm, wick_high_ratio, wick_low_ratio, bar_range_norm, cum_ret_norm]
-        anchor: First Open price (scalar)
-        atr_pct: Mean ATR as percentage of anchor (scalar)
-    """
-    anchor = ohlc[0, 0]
-    mean_atr = np.mean(atr_values)
-    atr_pct = (mean_atr / anchor) * 100.0
-    
-    atr_pct = max(atr_pct, 1e-6)
-    
-    open_prices = ohlc[:, 0]
-    high_prices = ohlc[:, 1]
-    low_prices = ohlc[:, 2]
-    close_prices = ohlc[:, 3]
-    
-    # Base percentage moves relative to anchor
-    body_pct = ((close_prices - open_prices) / anchor) * 100.0
-    bar_range_pct = ((high_prices - low_prices) / anchor) * 100.0
-    cum_ret_pct = ((close_prices - anchor) / anchor) * 100.0
-    
-    # Standard normalization for magnitude channels
-    body_norm = body_pct / atr_pct
-    bar_range_norm = bar_range_pct / atr_pct
-    cum_ret_norm = cum_ret_pct / atr_pct
-    
-    # Ratio-based wicks (bounded [0, 1])
-    # wick = distance / total_range
-    total_range = high_prices - low_prices
-    total_range = np.where(total_range < 1e-9, 1e-9, total_range) # Prevent div by zero
-    
-    max_oc = np.maximum(open_prices, close_prices)
-    min_oc = np.minimum(open_prices, close_prices)
-    
-    wick_high_ratio = (high_prices - max_oc) / total_range
-    wick_low_ratio = (min_oc - low_prices) / total_range
-    
-    reparam = np.stack([
-        body_norm, 
-        wick_high_ratio, 
-        wick_low_ratio, 
-        bar_range_norm, 
-        cum_ret_norm
-    ], axis=1)
-    
-    return reparam.astype(np.float32), float(anchor), float(atr_pct)
+# ─── Robust Scaling Utilities ──────────────────────────────────────────────────
+
+def robust_scale(arr: np.ndarray) -> Tuple[np.ndarray, float, float]:
+    """Global Robust Scaling: (x - median) / IQR. Returns scaled array, median, iqr."""
+    valid = arr[~np.isnan(arr)]
+    median = float(np.median(valid))
+    q75, q25 = np.percentile(valid, [75, 25])
+    iqr = float(q75 - q25)
+    if iqr < 1e-10:
+        iqr = 1.0
+    return (arr - median) / iqr, median, iqr
 
 
-def create_sliding_windows(data: np.ndarray, 
-                          seq_len: int, 
+def log_zscore(arr: np.ndarray) -> Tuple[np.ndarray, float, float]:
+    """Log-transform then Z-Score for strictly positive, right-skewed data."""
+    valid = arr[~np.isnan(arr)]
+    log_arr = np.where(np.isnan(arr), np.nan, np.log(arr + 1e-10))
+    valid_log = log_arr[~np.isnan(log_arr)]
+    mean = float(np.mean(valid_log))
+    std = float(np.std(valid_log))
+    if std < 1e-10:
+        std = 1.0
+    return (log_arr - mean) / std, mean, std
+
+
+def zscore(arr: np.ndarray) -> Tuple[np.ndarray, float, float]:
+    """Standard Z-Score normalization."""
+    valid = arr[~np.isnan(arr)]
+    mean = float(np.mean(valid))
+    std = float(np.std(valid))
+    if std < 1e-10:
+        std = 1.0
+    return (arr - mean) / std, mean, std
+
+
+# ─── Legacy Dataset Loaders ────────────────────────────────────────────────────
+
+def create_sliding_windows(data: np.ndarray,
+                          seq_len: int,
                           stride: int = 1,
                           normalize: bool = True) -> Tuple[np.ndarray, dict]:
-    """
-    Create sliding window samples from long time series data (legacy, non-OHLC).
-    """
+    """Create sliding window samples from long time series data (legacy, non-OHLC)."""
     total_timesteps, n_features = data.shape
-    
+
     if seq_len > total_timesteps:
         raise ValueError(f"seq_len ({seq_len}) cannot be larger than total timesteps ({total_timesteps})")
-    
+
     norm_stats = None
     if normalize:
         data = data.astype(np.float32)
         data_mean = np.mean(data, axis=0)
         data_std = np.std(data, axis=0)
         data_std = np.where(data_std == 0, 1.0, data_std)
-        
+
         norm_stats = {
             'mean': data_mean,
             'std': data_std
         }
         data = (data - data_mean) / data_std
-    
+
     n_samples = (total_timesteps - seq_len) // stride + 1
-    
+
     windows = []
     for i in range(n_samples):
         start_idx = i * stride
         end_idx = start_idx + seq_len
-        
+
         if end_idx <= total_timesteps:
             windows.append(data[start_idx:end_idx])
-    
+
     return np.array(windows), norm_stats
 
 
@@ -366,7 +369,7 @@ def load_ett_data(dataset_name: str, data_dir: str, seq_len: int = 24, normalize
     ett_path = os.path.join(data_dir, "ETT-small", f"ETT{dataset_name[-2:]}.csv")
     if not os.path.exists(ett_path):
         raise FileNotFoundError(f"ETT data not found at: {ett_path}")
-    
+
     df = pd.read_csv(ett_path)
     data, norm_stats = create_sliding_windows(df.values[:, 1:], seq_len=seq_len, stride=1, normalize=normalize_data)
     data = data.astype(np.float32)
@@ -383,7 +386,7 @@ def load_fmri_data(data_dir: str, seq_len: int = 24, normalize_data: bool = True
     data = loadmat(fmri_path)
     data, norm_stats = create_sliding_windows(data['ts'], seq_len=seq_len, stride=1, normalize=normalize_data)
     data = data.astype(np.float32)
-    
+
     return torch.FloatTensor(data), norm_stats
 
 
@@ -396,7 +399,7 @@ def load_exchange_rate_data(data_dir: str, seq_len: int = 24, normalize_data: bo
     df = pd.read_csv(exchange_rate_path, header=None)
     data, norm_stats = create_sliding_windows(df.values, seq_len=seq_len, stride=1, normalize=normalize_data)
     data = data.astype(np.float32)
-    
+
     return torch.FloatTensor(data), norm_stats
 
 
@@ -406,51 +409,59 @@ OHLCV_COLUMNS = ["open", "high", "low", "close", "volume"]
 def _select_ohlcv_columns(df: pd.DataFrame) -> pd.DataFrame:
     """Select and reorder DataFrame to strict OHLCV columns (case-insensitive)."""
     col_map = {c.lower(): c for c in df.columns}
-    
+
     missing = [c for c in OHLCV_COLUMNS if c not in col_map]
     if missing:
         raise ValueError(f"Missing required OHLCV columns: {missing}. Available: {list(df.columns)}")
-    
+
     return df[[col_map[c] for c in OHLCV_COLUMNS]]
 
 
+# ─── SOTA 22-Feature Stocks Loader ─────────────────────────────────────────────
+
 def load_stocks_data(data_dir: str, seq_len: int = 24, normalize_data: bool = True) -> Tuple[torch.Tensor, dict]:
     """
-    Load Stocks dataset with OHLC reparameterization, ATR-based scaling, and technical indicators.
-    
-    Features output (16 channels):
-        [0] gap_norm: Overnight gap (ATR-normalized)
-        [1] body_norm: Close - Open (ATR-normalized)
-        [2] wick_high_ratio: Upper wick / bar range
-        [3] wick_low_ratio: Lower wick / bar range
-        [4] volume_norm: log(Volume / SMA_20(Volume))
-        [5] day_sin: Sin(day of week)
-        [6] day_cos: Cos(day of week)
-        [7] cum_ret_norm: Cumulative return (ATR-normalized)
-        [8] bar_range_norm: High - Low (ATR-normalized)
-        [9] sma_200_dev: Close - SMA_200 (ATR-normalized)
-        [10] sma_100_dev: Close - SMA_100 (ATR-normalized)
-        [11] sma_50_dev: Close - SMA_50 (ATR-normalized)
-        [12] sma_20_dev: Close - SMA_20 (ATR-normalized)
-        [13] atr_ratio: log(ATR / SMA_20(ATR))
-        [14] rsi_norm: (RSI - 50) / 50
-        [15] mfi_norm: (MFI - 50) / 50
+    Load Stocks dataset with the SOTA 22-feature pipeline.
+
+    Features output (22 channels):
+        [0]  overnight_gap:     log(Open_t / Close_{t-1})
+        [1]  intraday_return:   log(Close_t / Open_t)
+        [2]  total_log_return:  log(Close_t / Close_{t-1})
+        [3]  normalized_range:  (High - Low) / Close_{t-1}
+        [4]  wick_high_ratio:   (High - max(O,C)) / (H-L)        [0,1]
+        [5]  wick_low_ratio:    (min(O,C) - Low) / (H-L)         [0,1]
+        [6]  prev_intraday_ret: log(Close_{t-1} / Open_{t-1})
+        [7]  cum_return:        log(Close_t / Close_window_start)
+        [8]  day_sin:           sin(2*pi*dow/5)                   [-1,1]
+        [9]  day_cos:           cos(2*pi*dow/5)                   [-1,1]
+        [10] sma_20_dist:       (Close / SMA_20) - 1
+        [11] sma_50_dist:       (Close / SMA_50) - 1
+        [12] sma_100_dist:      (Close / SMA_100) - 1
+        [13] sma_200_dist:      (Close / SMA_200) - 1
+        [14] hurst:             Rolling 20-day Hurst              [0,1]
+        [15] yz_vol:            Rolling 20-day Yang-Zhang
+        [16] skewness:          Rolling 20-day Fisher Skew
+        [17] semivariance:      Rolling 20-day Downside Var
+        [18] amihud:            Rolling 20-day |Ret|/Vol
+        [19] vol_shock:         log(Volume_t / Volume_{t-1})
+        [20] mfi:               MFI_14 / 100                     [0,1]
+        [21] vol_log_dev:       (log(V_t) - Median_W) / (IQR_W / 1.349)
+
+    Global Conditioning (4 profiles × 4 quadrants):
+        yz, hurst, skew, amihud
     """
-    # 1. Resolve Path
+    # ── 1. Resolve Path ──
     stocks_path = data_dir
-    
-    # Check if we need to look in parent dir (common when running from src/)
+
     if not os.path.exists(stocks_path) and not os.path.isabs(stocks_path):
         if os.path.exists(os.path.join("..", stocks_path)):
             stocks_path = os.path.join("..", stocks_path)
-            # Update data_dir base for directory scans below
             data_dir = stocks_path
 
     if not os.path.isfile(stocks_path):
-        # Try finding SPY in subfolder first
         spy_cand = os.path.join(data_dir, "stocks", "SPY_stock_data.csv")
         generic_cand = os.path.join(data_dir, "stocks", "stock_data.csv")
-        
+
         if os.path.exists(spy_cand):
             stocks_path = spy_cand
         elif os.path.exists(generic_cand):
@@ -460,259 +471,308 @@ def load_stocks_data(data_dir: str, seq_len: int = 24, normalize_data: bool = Tr
 
     print(f"Loading stock data from {stocks_path}...")
     df = pd.read_csv(stocks_path)
-    
-    # 2. Handle Multi-ticker / Metadata headers
+
+    # ── 2. Handle Multi-ticker / Metadata headers ──
     try:
-        # Check if 'Open' is numeric, if not, it might be a multi-index CSV or have meta-rows
         pd.to_numeric(df['Open'].iloc[0])
     except (ValueError, KeyError, TypeError, IndexError):
         print("Detected non-numeric first row (metadata/headers), dropping...")
         df = df.iloc[1:].reset_index(drop=True)
 
-    # 3. Date / Day of Week
-    # We prioritize the 'Date' column for real calendar context
+    # ── 3. Date / Day of Week ──
     if 'Date' in df.columns:
         df['Date'] = pd.to_datetime(df['Date'])
-        day_of_week = df['Date'].dt.dayofweek.values # 0=Monday, 6=Sunday
+        day_of_week = df['Date'].dt.dayofweek.values
     else:
         print("No 'Date' column found. Falling back to synthetic 5-day cycle.")
         day_of_week = np.arange(len(df)) % 5
 
-    # Ensure OHLCV columns exist
     df = _select_ohlcv_columns(df)
-    
-    data = df.values.astype(np.float32)
-    
+    data = df.values.astype(np.float64)
+
     open_prices = data[:, 0]
     high_prices = data[:, 1]
     low_prices = data[:, 2]
     close_prices = data[:, 3]
     volume = data[:, 4]
-    
-    # Compute indicators on full dataset
-    atr = compute_atr(high_prices, low_prices, close_prices, period=ATR_PERIOD)
-    
-    # Compute Volume SMA
-    vol_sma_period = 20
-    vol_sma = compute_sma(volume, period=vol_sma_period)
-    
-    # --- NEW: Technical Indicators ---
-    # SMAs for price context
+
+    eps = 1e-10
+
+    # ── 4. Compute Full-Length Rolling Indicators ──
     sma_200 = compute_sma(close_prices, period=200)
     sma_100 = compute_sma(close_prices, period=100)
     sma_50 = compute_sma(close_prices, period=50)
     sma_20 = compute_sma(close_prices, period=20)
-    
-    # ATR SMA for relative volatility
-    atr_sma_20 = compute_sma(atr, period=20)
-    
-    # RSI and MFI
-    rsi = compute_rsi(close_prices, period=14)
+
     mfi = compute_mfi(high_prices, low_prices, close_prices, volume, period=14)
-    
-    # --- Structural Volume Features ---
-    # 1. Money Flow Multiplier (MFM)
-    mfm = ((close_prices - low_prices) - (high_prices - close_prices)) / (high_prices - low_prices + 1e-10)
-    
-    # 2. VWAP 20 Deviation Anchor
-    typical_price = (high_prices + low_prices + close_prices) / 3.0
-    vol_sum_20 = compute_sma(volume, period=20) * 20.0
-    tp_vol_sum_20 = compute_sma(typical_price * volume, period=20) * 20.0
-    vwap_20 = tp_vol_sum_20 / (vol_sum_20 + 1e-10)
-    
-    # Start after ALL indicators are valid (200-day SMA is the limiter)
+
+    rolling_yz = compute_rolling_yang_zhang(open_prices, high_prices, low_prices, close_prices, period=20)
+    rolling_hurst = compute_rolling_hurst(close_prices, period=20)
+    rolling_skew = compute_rolling_skewness(close_prices, period=20)
+    rolling_semivar = compute_rolling_semivariance(close_prices, period=20)
+    rolling_amihud = compute_rolling_amihud(close_prices, volume, period=20)
+
+    # ── 5. Compute per-bar raw features on full dataset ──
+    prev_close = np.roll(close_prices, 1)
+    prev_close[0] = close_prices[0]
+    prev_open = np.roll(open_prices, 1)
+    prev_open[0] = open_prices[0]
+
+    overnight_gap_raw = np.log(open_prices / (prev_close + eps))
+    intraday_return_raw = np.log(close_prices / (open_prices + eps))
+    total_log_return_raw = np.log(close_prices / (prev_close + eps))
+
+    bar_range = high_prices - low_prices
+    normalized_range_raw = bar_range / (prev_close + eps)
+
+    safe_range = np.where(bar_range < eps, eps, bar_range)
+    max_oc = np.maximum(open_prices, close_prices)
+    min_oc = np.minimum(open_prices, close_prices)
+    wick_high_ratio = np.clip((high_prices - max_oc) / safe_range, 0.0, 1.0)
+    wick_low_ratio = np.clip((min_oc - low_prices) / safe_range, 0.0, 1.0)
+
+    prev_intraday_raw = np.log(prev_close / (prev_open + eps))
+
+    vol_shock_raw = np.log(volume / (np.roll(volume, 1) + eps))
+    vol_shock_raw[0] = 0.0
+
+    # Volume Log-Deviation: rolling median/IQR of log(volume)
+    log_volume = np.log(volume + eps)
+    vol_log_dev = np.full_like(log_volume, np.nan)
+    vol_median_arr = np.full_like(log_volume, np.nan)
+    vol_iqr_arr = np.full_like(log_volume, np.nan)
+    vol_rolling_period = 20
+
+    for i in range(vol_rolling_period, len(log_volume)):
+        window = log_volume[i - vol_rolling_period:i]
+        med = np.median(window)
+        q75, q25 = np.percentile(window, [75, 25])
+        iqr = (q75 - q25) / 1.349
+        if iqr < eps:
+            iqr = 1.0
+        vol_log_dev[i] = (log_volume[i] - med) / iqr
+        vol_median_arr[i] = med
+        vol_iqr_arr[i] = iqr
+
+    # SMA distances (log-ratio-based, stationary and symmetric)
+    sma_20_dist = np.log((close_prices + eps) / (sma_20 + eps))
+    sma_50_dist = np.log((close_prices + eps) / (sma_50 + eps))
+    sma_100_dist = np.log((close_prices + eps) / (sma_100 + eps))
+    sma_200_dist = np.log((close_prices + eps) / (sma_200 + eps))
+
+    # ── 6. Determine Valid Start ──
     valid_start = 200
-    
-    eps = 1e-6
-    # Compute global volume standardization stats on valid data
-    valid_volume = volume[valid_start:]
-    log_vol = np.log(valid_volume + eps)
-    vol_mean = np.mean(log_vol)
-    vol_std = np.std(log_vol) + eps
-    
+
+    # ── 7. Slice to valid region ──
     open_prices = open_prices[valid_start:]
     high_prices = high_prices[valid_start:]
     low_prices = low_prices[valid_start:]
     close_prices = close_prices[valid_start:]
     volume = volume[valid_start:]
-    atr = atr[valid_start:]
-    vol_sma = vol_sma[valid_start:]
     day_of_week = day_of_week[valid_start:]
-    
-    # Slice new indicators
-    sma_200 = sma_200[valid_start:]
-    sma_100 = sma_100[valid_start:]
-    sma_50 = sma_50[valid_start:]
-    sma_20 = sma_20[valid_start:]
-    atr_sma_20 = atr_sma_20[valid_start:]
-    rsi = rsi[valid_start:]
-    mfi = mfi[valid_start:]
-    mfm = mfm[valid_start:]
-    vwap_20 = vwap_20[valid_start:]
 
-    
+    overnight_gap_raw = overnight_gap_raw[valid_start:]
+    intraday_return_raw = intraday_return_raw[valid_start:]
+    total_log_return_raw = total_log_return_raw[valid_start:]
+    normalized_range_raw = normalized_range_raw[valid_start:]
+    wick_high_ratio = wick_high_ratio[valid_start:]
+    wick_low_ratio = wick_low_ratio[valid_start:]
+    prev_intraday_raw = prev_intraday_raw[valid_start:]
+    vol_shock_raw = vol_shock_raw[valid_start:]
+    vol_log_dev = vol_log_dev[valid_start:]
+    vol_median_arr = vol_median_arr[valid_start:]
+    vol_iqr_arr = vol_iqr_arr[valid_start:]
+
+    sma_20_dist = sma_20_dist[valid_start:]
+    sma_50_dist = sma_50_dist[valid_start:]
+    sma_100_dist = sma_100_dist[valid_start:]
+    sma_200_dist = sma_200_dist[valid_start:]
+
+    mfi = mfi[valid_start:]
+    rolling_yz = rolling_yz[valid_start:]
+    rolling_hurst = rolling_hurst[valid_start:]
+    rolling_skew = rolling_skew[valid_start:]
+    rolling_semivar = rolling_semivar[valid_start:]
+    rolling_amihud = rolling_amihud[valid_start:]
+
+    # ── 8. Apply SOTA Normalization (Global Robust Scaling / Log-ZScore) ──
+    overnight_gap_scaled, gap_med, gap_iqr = robust_scale(overnight_gap_raw)
+    intraday_return_scaled, idr_med, idr_iqr = robust_scale(intraday_return_raw)
+    total_log_return_scaled, tlr_med, tlr_iqr = robust_scale(total_log_return_raw)
+    normalized_range_scaled, nr_med, nr_iqr = robust_scale(normalized_range_raw)
+    prev_intraday_scaled, pidr_med, pidr_iqr = robust_scale(prev_intraday_raw)
+    vol_shock_scaled, vs_med, vs_iqr = robust_scale(vol_shock_raw)
+
+    sma_20_dist_scaled, sma20_med, sma20_iqr = robust_scale(sma_20_dist)
+    sma_50_dist_scaled, sma50_med, sma50_iqr = robust_scale(sma_50_dist)
+    sma_100_dist_scaled, sma100_med, sma100_iqr = robust_scale(sma_100_dist)
+    sma_200_dist_scaled, sma200_med, sma200_iqr = robust_scale(sma_200_dist)
+
+    yz_scaled, yz_log_mean, yz_log_std = log_zscore(rolling_yz)
+    semivar_scaled, sv_log_mean, sv_log_std = log_zscore(rolling_semivar)
+    amihud_scaled, am_log_mean, am_log_std = log_zscore(rolling_amihud)
+    skew_scaled, skew_mean, skew_std = zscore(rolling_skew)
+
+    # ── 9. Build Windows ──
     total_timesteps = len(open_prices)
-    
+
     if seq_len > total_timesteps:
         raise ValueError(f"seq_len ({seq_len}) cannot be larger than available timesteps ({total_timesteps})")
-    
+
     n_samples = total_timesteps - seq_len + 1
-    
+
     windows = []
     anchors = []
-    atr_pcts = []
-    quarter_profiles = {k: [] for k in ('yz', 'ret', 'adx', 'vwap', 'skew')}
-    
+    vol_medians = []
+    vol_iqrs = []
+    quarter_profiles = {k: [] for k in ('yz', 'hurst', 'skew', 'amihud')}
+
+    # We need global arrays (pre-slice) for quarter profile snapshots
+    # Re-read full-length arrays from the original dataframe for global lookback
+    full_data = df.values.astype(np.float64)
+    g_open = full_data[:, 0]
+    g_high = full_data[:, 1]
+    g_low = full_data[:, 2]
+    g_close = full_data[:, 3]
+    g_volume = full_data[:, 4]
+
     for i in range(n_samples):
-        start_idx = i
-        end_idx = start_idx + seq_len
-        
-        ohlc_window = np.stack([
-            open_prices[start_idx:end_idx],
-            high_prices[start_idx:end_idx],
-            low_prices[start_idx:end_idx],
-            close_prices[start_idx:end_idx]
+        s = i
+        e = s + seq_len
+
+        # Day encoding
+        curr_days = day_of_week[s:e]
+        day_sin = np.sin(2 * np.pi * curr_days / 5.0)
+        day_cos = np.cos(2 * np.pi * curr_days / 5.0)
+
+        # Cumulative return relative to window start
+        window_close = close_prices[s:e]
+        cum_return = np.log(window_close / (window_close[0] + eps))
+
+        # Volume anchors for this window (use the values at window start)
+        w_vol_med = vol_median_arr[s] if not np.isnan(vol_median_arr[s]) else 0.0
+        w_vol_iqr = vol_iqr_arr[s] if not np.isnan(vol_iqr_arr[s]) else 1.0
+
+        # Price anchor for reconstruction
+        anchor = float(close_prices[s])
+
+        # NaN-safe feature fill
+        def safe(arr, start, end):
+            slc = arr[start:end].copy()
+            slc[np.isnan(slc)] = 0.0
+            return slc
+
+        # ── Concatenate 22 features ──
+        window_features = np.stack([
+            safe(overnight_gap_scaled, s, e),       # [0]
+            safe(intraday_return_scaled, s, e),     # [1]
+            safe(total_log_return_scaled, s, e),    # [2]
+            safe(normalized_range_scaled, s, e),    # [3]
+            wick_high_ratio[s:e],                   # [4]
+            wick_low_ratio[s:e],                    # [5]
+            safe(prev_intraday_scaled, s, e),       # [6]
+            cum_return,                             # [7]
+            day_sin,                                # [8]
+            day_cos,                                # [9]
+            safe(sma_20_dist_scaled, s, e),         # [10]
+            safe(sma_50_dist_scaled, s, e),         # [11]
+            safe(sma_100_dist_scaled, s, e),        # [12]
+            safe(sma_200_dist_scaled, s, e),        # [13]
+            safe(rolling_hurst[s:e], s, e) if False else np.nan_to_num(rolling_hurst[s:e], nan=0.5),  # [14]
+            safe(yz_scaled, s, e),                  # [15]
+            safe(skew_scaled, s, e),                # [16]
+            safe(semivar_scaled, s, e),             # [17]
+            safe(amihud_scaled, s, e),              # [18]
+            safe(vol_shock_scaled, s, e),           # [19]
+            np.nan_to_num(mfi[s:e], nan=0.5),       # [20]
+            safe(vol_log_dev, s, e),                # [21]
         ], axis=1)
-        
-        atr_window = atr[start_idx:end_idx]
-        
-        reparam, anchor, atr_pct = reparameterize_ohlc_window(ohlc_window, atr_window)
-        
-        # Volume Normalization: Z-Score of Log Volume
-        curr_vol = volume[start_idx:end_idx]
-        vol_norm = (np.log(curr_vol + eps) - vol_mean) / vol_std
-        
-        # --- NEW FEATURES: Day and Gap ---
-        # 1. Day of Week Encoding (Cyclic 7-day)
-        curr_days = day_of_week[start_idx:end_idx]
-        day_sin = np.sin(2 * np.pi * curr_days / 7.0)
-        day_cos = np.cos(2 * np.pi * curr_days / 7.0)
-        
-        # 2. Overnight Gap 
-        prev_close_window = np.zeros_like(ohlc_window[:, 0])
-        prev_close_window[1:] = ohlc_window[:-1, 3]
-        if start_idx > 0:
-            prev_close_window[0] = close_prices[start_idx - 1]
-        else:
-            prev_close_window[0] = ohlc_window[0, 0]
-            
-        gap_raw = ohlc_window[:, 0] - prev_close_window
-        gap_norm = (gap_raw / anchor) * 100.0 / atr_pct
-        
-        # --- NEW: Technical Indicator Features ---
-        # SMA Deviations: (Close - SMA) / (anchor * atr_pct / 100)
-        # This normalizes distance from SMA by local volatility
-        scale_factor = anchor * atr_pct / 100.0
-        
-        curr_close = close_prices[start_idx:end_idx]
-        sma_200_dev = (curr_close - sma_200[start_idx:end_idx]) / scale_factor
-        sma_100_dev = (curr_close - sma_100[start_idx:end_idx]) / scale_factor
-        sma_50_dev = (curr_close - sma_50[start_idx:end_idx]) / scale_factor
-        sma_20_dev = (curr_close - sma_20[start_idx:end_idx]) / scale_factor
-        
-        # ATR Ratio: log(ATR / SMA_20(ATR))
-        # Centered around 0 when ATR equals its recent average
-        curr_atr = atr[start_idx:end_idx]
-        curr_atr_sma = atr_sma_20[start_idx:end_idx]
-        atr_ratio = np.log((curr_atr + eps) / (curr_atr_sma + eps))
-        
-        # RSI/MFI: (X - 50) / 50 → Maps [0, 100] to [-1, 1]
-        rsi_norm = (rsi[start_idx:end_idx] - 50.0) / 50.0
-        mfi_norm = (mfi[start_idx:end_idx] - 50.0) / 50.0
-        
-        # Extract structural volume features
-        curr_mfm = mfm[start_idx:end_idx]
-        curr_vwap_20 = vwap_20[start_idx:end_idx]
-        vwap_20_dev = np.log((curr_close + eps) / (curr_vwap_20 + eps))
-        
-        # Concatenate all 18 features
-        window_features = np.concatenate([
-            gap_norm.reshape(-1, 1),
-            reparam[:, 0:1],  # body_norm
-            reparam[:, 1:2],  # wick_high_ratio
-            reparam[:, 2:3],  # wick_low_ratio
-            vol_norm.reshape(-1, 1),
-            day_sin.reshape(-1, 1),
-            day_cos.reshape(-1, 1),
-            reparam[:, 4:5],  # cum_ret_norm
-            reparam[:, 3:4],  # bar_range_norm
-            # --- Technicals ---
-            sma_200_dev.reshape(-1, 1),
-            sma_100_dev.reshape(-1, 1),
-            sma_50_dev.reshape(-1, 1),
-            sma_20_dev.reshape(-1, 1),
-            atr_ratio.reshape(-1, 1),
-            rsi_norm.reshape(-1, 1),
-            mfi_norm.reshape(-1, 1),
-            # --- Structural Volume ---
-            curr_mfm.reshape(-1, 1),
-            vwap_20_dev.reshape(-1, 1)
-        ], axis=1)
-        
+
         windows.append(window_features)
         anchors.append(anchor)
-        atr_pcts.append(atr_pct)
-        
-        # Quarter-window conditioning profiles
-        mean_atr = np.mean(atr_window)
+        vol_medians.append(w_vol_med)
+        vol_iqrs.append(w_vol_iqr)
+
+        # Quarter-window conditioning profiles (snapshots from global arrays)
+        global_start = valid_start + s
         profiles = compute_quarter_profiles(
-            open_prices[start_idx:end_idx],
-            high_prices[start_idx:end_idx],
-            low_prices[start_idx:end_idx],
-            close_prices[start_idx:end_idx],
-            volume[start_idx:end_idx],
-            atr_mean=mean_atr
+            open_prices[s:e], high_prices[s:e],
+            low_prices[s:e], close_prices[s:e],
+            volume[s:e],
+            g_open, g_high, g_low, g_close, g_volume,
+            window_start_global=global_start
         )
         for k in quarter_profiles:
             quarter_profiles[k].append(profiles[k])
-    
+
     windows = np.array(windows, dtype=np.float32)
     anchors = np.array(anchors, dtype=np.float32)
-    atr_pcts = np.array(atr_pcts, dtype=np.float32)
-    
-    # Stack quarter profiles: each (N, 4)
+    vol_medians = np.array(vol_medians, dtype=np.float32)
+    vol_iqrs = np.array(vol_iqrs, dtype=np.float32)
+
     quarter_profile_arrays = {k: np.array(v, dtype=np.float32)
                               for k, v in quarter_profiles.items()}
-    
+
     norm_stats = {
         'reparameterized': True,
         'anchors': anchors,
-        'atr_pcts': atr_pcts,
-        'volume_type': 'zscore_log',
-        'volume_mean': float(vol_mean),
-        'volume_std': float(vol_std),
+        'vol_medians': vol_medians,
+        'vol_iqrs': vol_iqrs,
+        # Robust scaling stats for inverse normalization
+        'robust_scales': {
+            'overnight_gap': {'median': gap_med, 'iqr': gap_iqr},
+            'intraday_return': {'median': idr_med, 'iqr': idr_iqr},
+            'total_log_return': {'median': tlr_med, 'iqr': tlr_iqr},
+            'normalized_range': {'median': nr_med, 'iqr': nr_iqr},
+            'prev_intraday': {'median': pidr_med, 'iqr': pidr_iqr},
+            'vol_shock': {'median': vs_med, 'iqr': vs_iqr},
+            'sma_20_dist': {'median': sma20_med, 'iqr': sma20_iqr},
+            'sma_50_dist': {'median': sma50_med, 'iqr': sma50_iqr},
+            'sma_100_dist': {'median': sma100_med, 'iqr': sma100_iqr},
+            'sma_200_dist': {'median': sma200_med, 'iqr': sma200_iqr},
+        },
+        'log_zscore_stats': {
+            'yz_vol': {'mean': yz_log_mean, 'std': yz_log_std},
+            'semivariance': {'mean': sv_log_mean, 'std': sv_log_std},
+            'amihud': {'mean': am_log_mean, 'std': am_log_std},
+        },
+        'zscore_stats': {
+            'skewness': {'mean': skew_mean, 'std': skew_std},
+        },
+        'volume_type': 'log_deviation_median',
         'feature_names': [
-            'gap_norm', 'body_norm', 'wick_high_ratio', 'wick_low_ratio', 'volume_norm',
-            'day_sin', 'day_cos', 'cum_ret_norm', 'bar_range_norm',
-            'sma_200_dev', 'sma_100_dev', 'sma_50_dev', 'sma_20_dev',
-            'atr_ratio', 'rsi_norm', 'mfi_norm', 'mfm', 'vwap_20_dev'
+            'overnight_gap', 'intraday_return', 'total_log_return',
+            'normalized_range', 'wick_high_ratio', 'wick_low_ratio',
+            'prev_intraday_ret', 'cum_return',
+            'day_sin', 'day_cos',
+            'sma_20_dist', 'sma_50_dist', 'sma_100_dist', 'sma_200_dist',
+            'hurst', 'yz_vol', 'skewness', 'semivariance',
+            'amihud', 'vol_shock', 'mfi', 'vol_log_dev'
         ],
         'quarter_profiles': quarter_profile_arrays,
     }
-    
-    print(f"Loaded {n_samples} windows with 16-channel feature pipeline")
-    print(f"  ATR_pct range: [{atr_pcts.min():.2f}%, {atr_pcts.max():.2f}%]")
-    print(f"  Volume Norm mean: {windows[:, :, 4].mean():.4f} (should be ~0)")
-    print(f"  RSI Norm mean: {windows[:, :, 14].mean():.4f} (should be ~0)")
+
+    print(f"Loaded {n_samples} windows with SOTA 22-channel feature pipeline")
+    print(f"  Anchor price range: [{anchors.min():.2f}, {anchors.max():.2f}]")
+    print(f"  Vol LogDev mean: {windows[:, :, 21].mean():.4f} (should be ~0)")
     for pname, parr in quarter_profile_arrays.items():
         print(f"  {pname}_profile: mean={parr.mean():.4f}, std={parr.std():.4f}")
-    
-    return torch.FloatTensor(windows), norm_stats
 
+    return torch.FloatTensor(windows), norm_stats
 
 
 def load_eeg_data(data_dir: str, seq_len: int = 24, normalize_data: bool = True) -> Tuple[torch.Tensor, dict]:
     """Load EEG Eye State dataset."""
     from scipy.io import arff
-    
+
     eeg_path = os.path.join(data_dir, "EEG", "EEG_Eye_State.arff")
     if not os.path.exists(eeg_path):
         raise FileNotFoundError(f"EEG data not found at: {eeg_path}")
-    
+
     eeg_data, eeg_meta = arff.loadarff(eeg_path)
     eeg_df = pd.DataFrame(eeg_data)
 
     data, norm_stats = create_sliding_windows(eeg_df.values[:, :-1], seq_len=seq_len, stride=1, normalize=normalize_data)
     data = data.astype(np.float32)
-    
+
     return torch.FloatTensor(data), norm_stats

@@ -28,7 +28,6 @@ class InlineEvaluationCallback(pl.Callback):
         
         # Caches for uniform extraction conditions
         self.eval_indices = None
-        self.eval_scale = None
         self.eval_conditions = None
         
     def _find_ema_callback(self, trainer):
@@ -59,12 +58,8 @@ class InlineEvaluationCallback(pl.Callback):
         # 2. Extract Consistent Conditions (Uniformly Spaced)
         if getattr(self.data_module, 'has_conditioning', False):
             if self.eval_indices is None:
-                total_samples = len(self.data_module.norm_stats['atr_pcts'])
-                # Get evenly spaced indices across the entire dataset to ensure comparability
+                total_samples = len(self.data_module.norm_stats['anchors'])
                 self.eval_indices = np.linspace(0, total_samples - 1, self.n_samples, dtype=int)
-                
-                atr_pcts = self.data_module.norm_stats['atr_pcts']
-                self.eval_scale = torch.FloatTensor(atr_pcts[self.eval_indices]).to(pl_module.device)
                 
                 if getattr(self.data_module, 'has_quarter_conditioning', False):
                     qp = self.data_module.norm_stats['quarter_profiles']
@@ -76,16 +71,13 @@ class InlineEvaluationCallback(pl.Callback):
                 self.eval_indices = np.linspace(0, len(self.data_module.raw_data_tensor) - 1, self.n_samples, dtype=int)
 
         # Ensure conditions are on the correct device if already cached
-        scale = None
         conditions = None
-        if self.eval_scale is not None:
-            scale = self.eval_scale.to(pl_module.device)
         if self.eval_conditions is not None:
             conditions = [c.to(pl_module.device) for c in self.eval_conditions]
 
         # 3. Generate DDIM-50 samples
         print("  [DDIM] Generating synthetic samples (50 steps) uniformly distributed...")
-        synth_wavelet = self._generate_samples(pl_module, scale=scale, conditions=conditions)
+        synth_wavelet = self._generate_samples(pl_module, conditions=conditions)
         synth_ts_norm = self.data_module.convert_wavelet_to_timeseries(synth_wavelet).cpu().numpy()
         
         # 4. Reconstruct OHLC Space
@@ -148,33 +140,27 @@ class InlineEvaluationCallback(pl.Callback):
         for k, v in results.items():
             pl_module.log(f"eval/{k}", v, prog_bar=False)
 
-    def _generate_samples(self, pl_module, scale=None, conditions=None) -> torch.Tensor:
+    def _generate_samples(self, pl_module, conditions=None) -> torch.Tensor:
         pl_module.eval()
         from .diffusion_process import DiffusionTrainer
         
-        # We temporarily patch the model's abstract properties required by the trainer 
-        # since it normally expects them from the data module during inference.
         pl_module.input_dim = self.data_module.get_input_dim()
         pl_module.num_features = self.data_module.get_wavelet_info()['n_features']
         
-        # Check config for evaluation sampling method
         config_obj = getattr(pl_module, 'config', getattr(pl_module, 'hparams', {}))
         sampling_method = config_obj.get('sampling', {}).get('eval_method', config_obj.get('sampling', {}).get('method', 'ddpm'))
         use_ddim = (sampling_method == 'ddim')
         
-        # Override model's DDIM settings for exactly 50 steps during evaluation
         original_ddim_steps = getattr(pl_module, 'ddim_steps', None)
         if use_ddim:
             pl_module.ddim_steps = 50
         
-        # Equip the trainer and generate deterministic samples using compiled path
         trainer_util = DiffusionTrainer(pl_module)
         
         x_t = trainer_util.generate_samples(
             n_samples=self.n_samples, 
             use_ddim=use_ddim, 
             sampling_method=sampling_method,
-            scale=scale,
             conditions=conditions, 
             show_progress=False
         )

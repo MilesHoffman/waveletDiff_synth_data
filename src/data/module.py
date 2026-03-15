@@ -1,8 +1,8 @@
 """
 Wavelet Time Series Data Module for PyTorch Lightning.
 
-Revised from the original wavelet_transformer/wavelet_data_module.py
-to fit the new modular architecture.
+Handles wavelet decomposition/reconstruction and OHLCV inverse normalization
+for the SOTA 22-feature pipeline.
 """
 
 import pytorch_lightning as pl
@@ -20,19 +20,18 @@ from .loaders import (
 class WaveletTimeSeriesDataModule(pl.LightningDataModule):
     def __init__(self, config=None, data_tensor: torch.Tensor = None, **kwargs):
         """
-        WaveletTimeSeriesDataModule for loading time series datasets and converting to wavelet coefficients.
-        
+        WaveletTimeSeriesDataModule for loading time series datasets
+        and converting to wavelet coefficients.
+
         Args:
             config: Configuration dict containing all parameters
             data_tensor: Pre-loaded data tensor (if None, loads from config)
-            **kwargs: Individual parameters for backward compatibility
         """
         super().__init__()
-        
-        # Enforce config usage
+
         if config is None:
             raise ValueError("WaveletTimeSeriesDataModule now requires 'config' to be provided.")
-        
+
         self.dataset_name = config['dataset']['name']
         self.seq_len = config['dataset']['seq_len']
         self.batch_size = config['training']['batch_size']
@@ -46,7 +45,8 @@ class WaveletTimeSeriesDataModule(pl.LightningDataModule):
         if data_tensor is not None:
             self.raw_data_tensor, self.norm_stats = data_tensor, None
         elif self.dataset_name is not None:
-            self.raw_data_tensor, self.norm_stats = self._load_dataset(self.dataset_name, seq_len=self.seq_len, normalize_data=self.normalize_data)
+            self.raw_data_tensor, self.norm_stats = self._load_dataset(
+                self.dataset_name, seq_len=self.seq_len, normalize_data=self.normalize_data)
         else:
             raise ValueError("Either dataset_name or data_tensor must be provided")
 
@@ -54,19 +54,12 @@ class WaveletTimeSeriesDataModule(pl.LightningDataModule):
 
         # Convert to wavelet coefficients
         self.data_tensor, self.wavelet_info = self._convert_to_wavelet_coefficients()
-        
-        # Create ATR tensor for conditioning (if using reparameterized stocks data)
-        if self.norm_stats is not None and self.norm_stats.get('reparameterized', False):
-            self.atr_tensor = torch.FloatTensor(self.norm_stats['atr_pcts'])
-            self.has_conditioning = True
-            print(f"ATR conditioning enabled: {len(self.atr_tensor)} samples")
-        else:
-            self.atr_tensor = None
-            self.has_conditioning = False
-        
-        # Create quarter-profile tensors for conditioning
+
+        # Quarter-profile conditioning tensors
         self.has_quarter_conditioning = False
         self.quarter_profile_tensors = {}
+        self.has_conditioning = False
+
         if (self.norm_stats is not None
                 and self.norm_stats.get('quarter_profiles') is not None):
             qp = self.norm_stats['quarter_profiles']
@@ -74,36 +67,34 @@ class WaveletTimeSeriesDataModule(pl.LightningDataModule):
             for name, arr in qp.items():
                 self.quarter_profile_tensors[name] = torch.FloatTensor(arr)
             self.has_quarter_conditioning = True
+            self.has_conditioning = True
             n = len(next(iter(qp.values())))
             print(f"Quarter conditioning enabled: {len(self.quarter_profile_names)} profiles × {n} samples")
-        
-        # Move dataset to GPU RAM if available (eliminates PCIe transfer overhead)
+
+        # Move dataset to GPU RAM if available
         self.data_on_gpu = torch.cuda.is_available()
         if self.data_on_gpu:
             self.data_tensor = self.data_tensor.cuda()
-            if self.atr_tensor is not None:
-                self.atr_tensor = self.atr_tensor.cuda()
             for name in self.quarter_profile_tensors:
                 self.quarter_profile_tensors[name] = self.quarter_profile_tensors[name].cuda()
             print("Dataset moved to GPU RAM for faster training")
-        
+
         # Create dataset with conditioning if available
-        if self.has_conditioning:
-            dataset_tensors = [self.data_tensor, self.atr_tensor]
-            if self.has_quarter_conditioning:
-                for name in self.quarter_profile_names:
-                    dataset_tensors.append(self.quarter_profile_tensors[name])
+        if self.has_quarter_conditioning:
+            dataset_tensors = [self.data_tensor]
+            for name in self.quarter_profile_names:
+                dataset_tensors.append(self.quarter_profile_tensors[name])
             self.dataset = TensorDataset(*dataset_tensors)
         else:
             self.dataset = TensorDataset(self.data_tensor)
-        
+
         print(f"Converted {self.raw_data_tensor.shape} time series to {self.data_tensor.shape} wavelet coefficients")
         print(f"Wavelet: {self.wavelet_type}, Levels: {self.wavelet_info['levels']}")
 
     def _load_dataset(self, dataset_name: str, seq_len: int, normalize_data: bool = True) -> torch.Tensor:
         """Load dataset based on the dataset name."""
         dataset_name = dataset_name.lower()
-        
+
         if dataset_name.startswith("ett"):
             raw_data, norm_stats = load_ett_data(dataset_name, self.data_dir, seq_len=seq_len, normalize_data=normalize_data)
         elif dataset_name == "fmri":
@@ -121,7 +112,7 @@ class WaveletTimeSeriesDataModule(pl.LightningDataModule):
     def _convert_to_wavelet_coefficients(self) -> tuple[torch.Tensor, dict]:
         """
         Convert time series data to wavelet coefficients.
-        
+
         Returns:
             wavelet_tensor: Shape [n_samples, n_level_dim, n_features]
             wavelet_info: Dictionary with reconstruction information
@@ -129,7 +120,6 @@ class WaveletTimeSeriesDataModule(pl.LightningDataModule):
         raw_data = self.raw_data_tensor.numpy()
         n_samples, seq_len, n_features = raw_data.shape
 
-        # Auto-detect wavelet type if not specified
         if self.wavelet_type == "auto":
             if seq_len <= 32:
                 self.wavelet_type = 'db2'
@@ -140,13 +130,11 @@ class WaveletTimeSeriesDataModule(pl.LightningDataModule):
             else:
                 self.wavelet_type = 'db8'
 
-        # Auto-detect levels if not specified
         if self.num_levels == "auto":
             self.num_levels = int(np.clip(pywt.dwt_max_level(seq_len, self.wavelet_type), 3, 7))
-        
+
         print(f"Converting to wavelet coefficients with {self.num_levels} levels...")
-        
-        # Get coefficient shapes by decomposing a sample signal
+
         sample_signal = raw_data[0, :, 0]
         sample_coeffs = pywt.wavedec(sample_signal, self.wavelet_type, level=self.num_levels, mode=self.mode)
         coeffs_shapes = [c.shape for c in sample_coeffs]
@@ -157,28 +145,18 @@ class WaveletTimeSeriesDataModule(pl.LightningDataModule):
         print(f"Level dimensions: {level_dims}")
         print(f"Total coefficients per feature: {total_coeffs_per_feature}")
 
-        # Initialize output array [n_samples, total_coeffs_per_feature, n_features]
         wavelet_coeffs = np.zeros((n_samples, total_coeffs_per_feature, n_features))
 
-        # Process each sample and feature
         for sample_idx in range(n_samples):
             for feature_idx in range(n_features):
                 signal = raw_data[sample_idx, :, feature_idx]
-                
-                # Perform wavelet decomposition
                 coeffs = pywt.wavedec(signal, self.wavelet_type, level=self.num_levels, mode=self.mode)
-                
-                # Flatten and store coefficients
                 coeffs_flat = np.concatenate([c.flatten() for c in coeffs])
                 wavelet_coeffs[sample_idx, :, feature_idx] = coeffs_flat
 
-        # Convert to tensor
         wavelet_tensor = torch.FloatTensor(wavelet_coeffs)
-
-        # Calculate level start indices for easy access
         level_start_indices = [0] + list(np.cumsum(level_dims[:-1]))
-        
-        # Store reconstruction information
+
         wavelet_info = {
             'levels': self.num_levels,
             'coeffs_shapes': coeffs_shapes,
@@ -191,71 +169,62 @@ class WaveletTimeSeriesDataModule(pl.LightningDataModule):
             'mode': self.mode,
             'total_coeffs_per_feature': total_coeffs_per_feature
         }
-        
+
         return wavelet_tensor, wavelet_info
 
     def convert_wavelet_to_timeseries(self, wavelet_coeffs: torch.Tensor) -> torch.Tensor:
         """
         Convert wavelet coefficients back to time series.
-        
+
         Args:
             wavelet_coeffs: Shape [n_samples, n_level_dim, n_features]
-            
+
         Returns:
             reconstructed_ts: Shape [n_samples, seq_len, n_features]
         """
         if isinstance(wavelet_coeffs, torch.Tensor):
             wavelet_coeffs = wavelet_coeffs.detach().cpu().numpy()
-        
+
         n_samples, n_level_dim, n_features = wavelet_coeffs.shape
         coeffs_shapes = self.wavelet_info['coeffs_shapes']
         level_dims = self.wavelet_info['level_dims']
         level_start_indices = self.wavelet_info['level_start_indices']
         original_seq_len = self.wavelet_info['original_shape'][1]
 
-        # Verify dimensions match
         expected_n_features = self.wavelet_info['n_features']
         expected_n_level_dim = self.wavelet_info['total_coeffs_per_feature']
-        
+
         if n_features != expected_n_features:
             raise ValueError(f"Feature dimension mismatch: expected {expected_n_features}, got {n_features}")
         if n_level_dim != expected_n_level_dim:
             raise ValueError(f"Level dimension mismatch: expected {expected_n_level_dim}, got {n_level_dim}")
-        
+
         reconstructed_signals = []
 
         for sample_idx in range(n_samples):
             sample_features = []
-            
-            # Process each feature
+
             for feature_idx in range(n_features):
                 coeffs_flat = wavelet_coeffs[sample_idx, :, feature_idx]
-                
-                # Reconstruct coefficient structure
                 coeffs = []
                 for level_idx, (shape, dim, start_idx) in enumerate(zip(coeffs_shapes, level_dims, level_start_indices)):
                     end_idx = start_idx + dim
                     coeff = coeffs_flat[start_idx:end_idx].reshape(shape)
                     coeffs.append(coeff)
-                
-                # Perform inverse wavelet transform
+
                 reconstructed = pywt.waverec(coeffs, self.wavelet_type, mode=self.mode)
-                
-                # Ensure the reconstructed signal has the correct length
+
                 if len(reconstructed) > original_seq_len:
                     reconstructed = reconstructed[:original_seq_len]
                 elif len(reconstructed) < original_seq_len:
-                    # Pad if necessary (should rarely happen with proper wavelet settings)
                     pad_length = original_seq_len - len(reconstructed)
                     reconstructed = np.pad(reconstructed, (0, pad_length), mode='constant', constant_values=0)
-                
+
                 sample_features.append(reconstructed)
-            
-            # Stack features: [seq_len, n_features]
+
             sample_reconstructed = np.stack(sample_features, axis=1)
             reconstructed_signals.append(sample_reconstructed)
-        
-        # Return [n_samples, seq_len, n_features]
+
         return torch.FloatTensor(np.stack(reconstructed_signals))
 
     def get_input_dim(self) -> int:
@@ -266,145 +235,133 @@ class WaveletTimeSeriesDataModule(pl.LightningDataModule):
         """Get wavelet transformation information."""
         return self.wavelet_info
 
-    def inverse_normalize(self, data: np.ndarray, sample_indices: np.ndarray = None, fixed_anchor: float = None) -> np.ndarray:
+    def inverse_normalize(self, data: np.ndarray, sample_indices: np.ndarray = None,
+                          fixed_anchor: float = None) -> np.ndarray:
         """
         Inverse normalization to convert generated samples back to original scale.
-        
-        For reparameterized OHLC data, reconstructs O, H, L, C, V from normalized features.
-        
+
+        For reparameterized OHLC data, reconstructs O, H, L, C, V from
+        the SOTA 22-feature normalized representation.
+
         Args:
             data: Normalized data of shape (n_samples, seq_len, n_features)
-            sample_indices: Optional indices to select specific anchor/atr_pct values.
-                           If None and reparameterized, samples from stored distributions.
-            fixed_anchor: Optional fixed price anchor (e.g. 100.0) to eliminate price scale noise.
-            
+            sample_indices: Optional indices to select specific anchor values.
+            fixed_anchor: Optional fixed price anchor (e.g. 100.0).
+
         Returns:
             Denormalized data in original scale: (n_samples, seq_len, 5) for OHLCV
         """
         if self.norm_stats is None:
             return data
-        
+
         data = data.copy()
-        
+
         if self.norm_stats.get('reparameterized', False):
             return self._inverse_reparameterize_ohlc(data, sample_indices, fixed_anchor=fixed_anchor)
-        
+
         mean = self.norm_stats['mean']
         std = self.norm_stats['std']
         data = data * std + mean
-        
+
         if self.norm_stats.get('volume_log_transformed', False):
             data[..., 4] = np.maximum(0, np.expm1(data[..., 4]))
-        
+
         return data
-    
-    def _inverse_reparameterize_ohlc(self, data: np.ndarray, sample_indices: np.ndarray = None, fixed_anchor: float = None) -> np.ndarray:
+
+    def _inverse_reparameterize_ohlc(self, data: np.ndarray,
+                                      sample_indices: np.ndarray = None,
+                                      fixed_anchor: float = None) -> np.ndarray:
         """
-        Inverse reparameterization for OHLC data.
-        
-        Reconstructs OHLCV from: [open_norm, body_norm, wick_high_norm, wick_low_norm, volume_norm]
+        Inverse reparameterization for SOTA 22-feature OHLC data.
+
+        Reconstructs OHLCV from Log-Return based features using
+        Robust Scaling inverse and sequential price chaining.
+
+        Feature Index Map:
+            [0] overnight_gap (Robust Scaled log-return)
+            [1] intraday_return (Robust Scaled log-return)
+            [3] normalized_range (Robust Scaled ratio)
+            [4] wick_high_ratio [0,1]
+            [5] wick_low_ratio [0,1]
+            [21] vol_log_dev (Log-Deviation from Rolling Median)
         """
         n_samples = data.shape[0]
-        
+        seq_len = data.shape[1]
+
+        # ── Resolve Price Anchors ──
         if fixed_anchor is not None:
             anchors = np.full((n_samples,), fixed_anchor)
-            if sample_indices is not None:
-                atr_pcts = self.norm_stats['atr_pcts'][sample_indices]
-            else:
-                indices = np.random.choice(len(self.norm_stats['atr_pcts']), size=n_samples, replace=True)
-                atr_pcts = self.norm_stats['atr_pcts'][indices]
         elif sample_indices is not None:
             anchors = self.norm_stats['anchors'][sample_indices]
-            atr_pcts = self.norm_stats['atr_pcts'][sample_indices]
         else:
             all_anchors = self.norm_stats['anchors']
-            all_atr_pcts = self.norm_stats['atr_pcts']
             indices = np.random.choice(len(all_anchors), size=n_samples, replace=True)
             anchors = all_anchors[indices]
-            atr_pcts = all_atr_pcts[indices]
-        
-        anchors = anchors.reshape(-1, 1, 1)
-        atr_pcts = atr_pcts.reshape(-1, 1, 1)
-        
-        if data.shape[-1] > 5:
-            # We have 9 channels now: [gap, body, wickh, wickl, vol, day_sin, day_cos, cum_ret, bar_range]
-            pass 
-            
-        # Extract features (adjusting for potential auxiliary channels if sequence is longer)
-        gap_norm = data[..., 0]
-        body_norm = data[..., 1]
-        wick_high_ratio = data[..., 2]
-        wick_low_ratio = data[..., 3]
-        volume_norm = data[..., 4]
-        # cum_ret_norm = data[..., 7] # Not strictly needed for reconstruction but available
-        bar_range_norm = data[..., 8]
 
-        # Initialize output arrays
-        seq_len = data.shape[1]
+        # ── Resolve Volume Anchors ──
+        if sample_indices is not None:
+            vol_medians = self.norm_stats['vol_medians'][sample_indices]
+            vol_iqrs = self.norm_stats['vol_iqrs'][sample_indices]
+        else:
+            _indices = indices if sample_indices is None and fixed_anchor is not None else np.random.choice(
+                len(self.norm_stats['vol_medians']), size=n_samples, replace=True)
+            vol_medians = self.norm_stats['vol_medians'][_indices]
+            vol_iqrs = self.norm_stats['vol_iqrs'][_indices]
+
+        # ── Retrieve Robust Scaling Stats for Inverse ──
+        rs = self.norm_stats['robust_scales']
+        gap_med, gap_iqr = rs['overnight_gap']['median'], rs['overnight_gap']['iqr']
+        idr_med, idr_iqr = rs['intraday_return']['median'], rs['intraday_return']['iqr']
+        nr_med, nr_iqr = rs['normalized_range']['median'], rs['normalized_range']['iqr']
+
+        # ── Extract & Unscale Structural Features ──
+        gap_scaled = data[..., 0]
+        idr_scaled = data[..., 1]
+        range_scaled = data[..., 3]
+        wick_high_ratio = np.clip(data[..., 4], 0.0, 1.0)
+        wick_low_ratio = np.clip(data[..., 5], 0.0, 1.0)
+        vol_log_dev = np.clip(data[..., 21], -10.0, 10.0)
+
+        # Invert Robust Scaling to raw Log-Returns
+        gap_log_return = (gap_scaled * gap_iqr) + gap_med
+        intraday_log_return = (idr_scaled * idr_iqr) + idr_med
+        normalized_range = (range_scaled * nr_iqr) + nr_med
+        normalized_range = np.maximum(normalized_range, 0.0)
+
+        # ── Reconstruct Prices via Sequential Chaining ──
         open_prices = np.zeros((n_samples, seq_len))
         close_prices = np.zeros((n_samples, seq_len))
         high_prices = np.zeros((n_samples, seq_len))
         low_prices = np.zeros((n_samples, seq_len))
 
-        # Reconstruct step-by-step to maintain continuity
         for t in range(seq_len):
-            # 1. Open Price Calculation (Chain from previous close)
-            # gap_norm[t] = (open[t] - prev_close) / anchor / (atr_pct/100)
-            gap_pct = gap_norm[:, t] * atr_pcts.squeeze(-1).squeeze(-1)
-            
             if t == 0:
-                # First bar: open relative to anchor
-                open_prices[:, t] = anchors.squeeze(-1).squeeze(-1) + (gap_pct / 100.0) * anchors.squeeze(-1).squeeze(-1)
+                prev_close = anchors
             else:
-                # Subsequent bars: chain from previous close
-                open_prices[:, t] = close_prices[:, t-1] + (gap_pct / 100.0) * anchors.squeeze(-1).squeeze(-1)
-            
-            # 2. Close Price Calculation
-            body_pct = body_norm[:, t] * atr_pcts.squeeze(-1).squeeze(-1)
-            close_prices[:, t] = open_prices[:, t] + (body_pct / 100.0) * anchors.squeeze(-1).squeeze(-1)
-            
-            # 3. High/Low Calculation (Using Bar Range and Ratio Wicks)
-            range_pct = bar_range_norm[:, t] * atr_pcts.squeeze(-1).squeeze(-1)
-            total_range = (range_pct / 100.0) * anchors.squeeze(-1).squeeze(-1)
-            total_range = np.maximum(0, total_range) # Ensure positive range
-            
+                prev_close = close_prices[:, t - 1]
+
+            open_prices[:, t] = prev_close * np.exp(gap_log_return[:, t])
+            close_prices[:, t] = open_prices[:, t] * np.exp(intraday_log_return[:, t])
+
+            total_range = prev_close * normalized_range[:, t]
+            total_range = np.maximum(total_range, 0.0)
+
             max_oc = np.maximum(open_prices[:, t], close_prices[:, t])
             min_oc = np.minimum(open_prices[:, t], close_prices[:, t])
-            
-            # Ensure wicks are bounded [0, 1] for stability during generation
-            h_ratio = np.clip(wick_high_ratio[:, t], 0, 1)
-            l_ratio = np.clip(wick_low_ratio[:, t], 0, 1)
-            
-            high_prices[:, t] = max_oc + h_ratio * total_range
-            low_prices[:, t] = min_oc - l_ratio * total_range
 
-        # Volume reconstruction: Z-Score of Log Volume
-        volume_norm_clipped = np.clip(volume_norm, -10.0, 10.0) # Restrict extreme hallucinations
-        
-        if self.norm_stats.get('volume_type') == 'zscore_log':
-            vol_mean = self.norm_stats.get('volume_mean', 0.0)
-            vol_std = self.norm_stats.get('volume_std', 1.0)
-            volume_log = (volume_norm_clipped * vol_std) + vol_mean
-            # Revert log(V + 1e-6)
-            volume = np.exp(volume_log) - 1e-6
-            volume = np.maximum(0, volume)
-        elif self.norm_stats.get('volume_type') == 'log_ratio_sma':
-            # Legacy fallback
-            vol_smas = None
-            if 'vol_smas' in self.norm_stats:
-                vol_smas = self.norm_stats['vol_smas'][sample_indices] if sample_indices is not None else self.norm_stats['vol_smas'][indices]
-            
-            if vol_smas is not None:
-                volume = np.exp(volume_norm_clipped) * vol_smas
-                volume = np.maximum(0, volume)
-            else:
-                volume = np.zeros_like(volume_norm_clipped)
-        else:
-            vol_mean = self.norm_stats.get('volume_mean', 0)
-            vol_std = self.norm_stats.get('volume_std', 1)
-            volume_log = volume_norm_clipped * vol_std + vol_mean
-            volume = np.maximum(0, np.expm1(volume_log))
-        
+            high_prices[:, t] = max_oc + wick_high_ratio[:, t] * total_range
+            low_prices[:, t] = min_oc - wick_low_ratio[:, t] * total_range
+
+        # ── Volume Reconstruction: Log-Deviation Inverse ──
+        # Z_t = (log(V_t) - median) / (iqr / 1.349)
+        # => log(V_t) = Z_t * (iqr / 1.349) + median
+        vol_medians_exp = vol_medians.reshape(-1, 1)
+        vol_iqrs_exp = vol_iqrs.reshape(-1, 1)
+
+        log_volume = (vol_log_dev * vol_iqrs_exp) + vol_medians_exp
+        volume = np.exp(log_volume) - 1e-10
+        volume = np.maximum(volume, 0.0)
+
         ohlcv = np.stack([
             open_prices,
             high_prices,
@@ -412,16 +369,14 @@ class WaveletTimeSeriesDataModule(pl.LightningDataModule):
             close_prices,
             volume
         ], axis=-1)
-        
+
         return ohlcv.astype(np.float32)
 
     def train_dataloader(self):
-        # When data is on GPU, use num_workers=0 (no CPU workers needed)
-        # When data is on CPU, use persistent workers for speed
         if getattr(self, 'data_on_gpu', False):
             return DataLoader(
-                self.dataset, 
-                batch_size=self.batch_size, 
+                self.dataset,
+                batch_size=self.batch_size,
                 shuffle=True,
                 num_workers=0,
                 pin_memory=False,
@@ -429,8 +384,8 @@ class WaveletTimeSeriesDataModule(pl.LightningDataModule):
             )
         else:
             return DataLoader(
-                self.dataset, 
-                batch_size=self.batch_size, 
+                self.dataset,
+                batch_size=self.batch_size,
                 shuffle=True,
                 num_workers=4,
                 pin_memory=True,
@@ -438,4 +393,3 @@ class WaveletTimeSeriesDataModule(pl.LightningDataModule):
                 prefetch_factor=4,
                 drop_last=True
             )
-

@@ -40,7 +40,7 @@ class StudentTSampler:
         # Total diffusion timesteps (alphas_cumprod includes index 0 padding)
         self.T = len(alphas_cumprod) - 1
 
-    def _get_prediction(self, x_t, t_norm, scale, conditions, guidance_scale, **kwargs):
+    def _get_prediction(self, x_t, t_norm, conditions, guidance_scale, **kwargs):
         """Get model prediction with optional CFG guidance, routing to ONNX if enabled."""
         onnx_session = getattr(self.model, 'onnx_session', None)
         
@@ -50,8 +50,6 @@ class StudentTSampler:
                 'x': x_t.cpu().numpy(),
                 't': t_norm.cpu().numpy()
             }
-            if scale is not None:
-                inputs['scale'] = scale.cpu().numpy()
             if conditions is not None:
                 profile_names = getattr(self.model.data_module, 'quarter_profile_names', []) if hasattr(self.model, 'data_module') else []
                 for i, cond in enumerate(conditions):
@@ -74,10 +72,10 @@ class StudentTSampler:
 
         # Native PyTorch routing
         if guidance_scale is not None and guidance_scale != 1.0 and conditions is not None:
-            uncond_pred = self.model(x_t, t_norm, scale=scale, conditions=None, **kwargs)
-            cond_pred = self.model(x_t, t_norm, scale=scale, conditions=conditions, **kwargs)
+            uncond_pred = self.model(x_t, t_norm, conditions=None, **kwargs)
+            cond_pred = self.model(x_t, t_norm, conditions=conditions, **kwargs)
             return uncond_pred + guidance_scale * (cond_pred - uncond_pred)
-        return self.model(x_t, t_norm, scale=scale, conditions=conditions, **kwargs)
+        return self.model(x_t, t_norm, conditions=conditions, **kwargs)
 
     def _convert_to_x0(self, x_t: torch.Tensor, t_idx: int, model_output: torch.Tensor) -> torch.Tensor:
         """Convert raw model output to an x_0 prediction regardless of prediction target."""
@@ -91,32 +89,28 @@ class StudentTSampler:
         return (x_t - sqrt_one_minus_alpha * model_output) / sqrt_alpha
 
     @torch.no_grad()
-    def sample_loop(self, shape, device, scale=None, conditions=None, guidance_scale=None, show_progress=False, **kwargs):
+    def sample_loop(self, shape, device, conditions=None, guidance_scale=None, show_progress=False, **kwargs):
         """Generate samples from pure noise using the Student-t reverse SDE formulation."""
         import tqdm
         
-        # Start from standard Student-t noise (matching forward process)
         z = torch.randn(shape, device=device)
         alpha_expanded = torch.full(shape, self.nu / 2.0, device=device)
         v = (2.0 * torch._standard_gamma(alpha_expanded)).clamp(min=1e-6)
         
         x = z * torch.sqrt(self.nu / v)
         
-        # Variance normalization used in forward process
         if self.nu > 2.0:
             scale_val = ((self.nu - 2.0) / self.nu) ** 0.5
             x = x * scale_val
 
-        # Loop from T down to 1 (standard DDPM range, skip index 0 which is padding)
         timesteps = reversed(range(1, self.T + 1))
         iterator = tqdm.tqdm(timesteps, desc='t-EDM Sampling', total=self.T) if show_progress else timesteps
 
         for i in iterator:
             t = torch.full((shape[0],), i, device=device, dtype=torch.long)
             
-            # Get raw model output
             t_norm = t.float() / self.T
-            raw_pred = self._get_prediction(x, t_norm, scale, conditions, guidance_scale, **kwargs)
+            raw_pred = self._get_prediction(x, t_norm, conditions, guidance_scale, **kwargs)
             
             # Convert to x_0 estimate regardless of prediction target
             pred_x0 = self._convert_to_x0(x, i, raw_pred)

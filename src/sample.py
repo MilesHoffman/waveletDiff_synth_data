@@ -188,18 +188,14 @@ def main():
     else:
         num_samples = args.num_samples
 
-    # Prepare conditioning: use sequential indices for 1-to-1 mapping with real data
-    scale_conditioning = None
+    # Prepare conditioning indices for 1-to-1 mapping with real data
     sample_indices = None
     if getattr(data_module, 'has_conditioning', False):
-        num_avail = len(data_module.norm_stats['atr_pcts'])
+        num_avail = len(data_module.norm_stats['anchors'])
         if num_samples <= num_avail:
             sample_indices = np.arange(num_samples)
         else:
             sample_indices = np.random.choice(num_avail, size=num_samples, replace=True)
-        scale_pcts = data_module.norm_stats['atr_pcts'][sample_indices]
-        scale_conditioning = torch.FloatTensor(scale_pcts).to(model.device)
-        print(f"Scale conditioning: {num_samples} ATR values (1-to-1={num_samples <= num_avail})")
     
     # Prepare quarter-profile conditions
     conditions = None
@@ -219,7 +215,7 @@ def main():
     print(f"Generating {sampling_method.upper()} samples (Execution mapped to ONNX Runtime)...")
     
     samples = trainer_util.generate_samples(
-        num_samples, use_ddim=use_ddim, sampling_method=sampling_method, scale=scale_conditioning,
+        num_samples, use_ddim=use_ddim, sampling_method=sampling_method,
         conditions=conditions, guidance_scale=guidance_scale
     )
     

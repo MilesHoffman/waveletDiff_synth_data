@@ -12,7 +12,7 @@ import pytorch_lightning as pl
 import numpy as np
 import os
 
-from .layers import TimeEmbedding, WaveletLevelTransformer, ScaleEmbedding, ConditionProfileEmbedding
+from .layers import TimeEmbedding, WaveletLevelTransformer, ConditionProfileEmbedding
 from .attention import CrossLevelAttention
 from torch.optim.lr_scheduler import CosineAnnealingLR, ReduceLROnPlateau, LambdaLR, OneCycleLR
 from utils.noise_schedules import get_noise_schedule
@@ -162,11 +162,7 @@ class WaveletDiffusionTransformer(pl.LightningModule):
         # Time embedding network
         self.time_embedding = TimeEmbedding(time_embed_dim)
         
-        # Scale embedding network for ATR conditioning
-        self.scale_embedding = ScaleEmbedding(time_embed_dim)
-        self.use_scale_conditioning = getattr(data_module, 'has_conditioning', False)
-        if self.use_scale_conditioning:
-            print(f"Scale conditioning enabled (ATR percentage)")
+
         
         # Quarter-window profile embeddings
         self.quarter_profile_names = getattr(data_module, 'quarter_profile_names', [])
@@ -299,24 +295,18 @@ class WaveletDiffusionTransformer(pl.LightningModule):
         
         print(f"{'='*60}\n")
 
-    def forward(self, x, t, scale=None, conditions=None):
+    def forward(self, x, t, conditions=None):
         """Forward pass through level-specific transformers with optional cross-level attention.
         
         Args:
             x: Input coefficients (batch_size, total_coeffs_per_feature, num_features)
             t: Normalized timestep values (batch_size,)
-            scale: Optional ATR percentage values for conditioning (batch_size,)
             conditions: Optional list of (batch_size, 4) quarter-profile tensors
         """
         batch_size, total_coeffs_plus_time, num_features = x.shape
         
         # Create time embedding
         time_embed = self.time_embedding(t)
-        
-        # Add scale conditioning if provided
-        if scale is not None:
-            scale_embed = self.scale_embedding(scale)
-            time_embed = time_embed + scale_embed
         
         # Add quarter-profile conditioning with CFG dropout (branchless for torch.compile)
         if len(self.condition_embeddings) > 0:
@@ -388,11 +378,11 @@ class WaveletDiffusionTransformer(pl.LightningModule):
         x_t = sqrt_alpha_bar_t * x_0 + sqrt_one_minus_alpha_bar_t * noise
         return x_t, noise
 
-    def compute_loss(self, x_0, t, scale=None, conditions=None):
+    def compute_loss(self, x_0, t, conditions=None):
         """Compute training loss."""
         x_t, noise = self.compute_forward_process(x_0, t)
         t_norm = t.float() / self.T
-        prediction = self(x_t, t_norm, scale=scale, conditions=conditions)
+        prediction = self(x_t, t_norm, conditions=conditions)
         
         if self.prediction_target == "noise":
             target = noise
@@ -403,14 +393,13 @@ class WaveletDiffusionTransformer(pl.LightningModule):
         
         return self.wavelet_loss_fn(target, prediction)
     
-    def compute_loss_with_per_sample(self, x_0, t, scale=None, conditions=None):
+    def compute_loss_with_per_sample(self, x_0, t, conditions=None):
         """
         Compute training loss and per-sample losses for timestep sampler updates.
         
         Args:
             x_0: Clean wavelet coefficients
             t: Diffusion timesteps
-            scale: Optional ATR percentage for conditioning
             conditions: Optional list of (batch_size, 4) quarter-profile tensors
         
         Returns:
@@ -419,7 +408,7 @@ class WaveletDiffusionTransformer(pl.LightningModule):
         """
         x_t, noise = self.compute_forward_process(x_0, t)
         t_norm = t.float() / self.T
-        prediction = self(x_t, t_norm, scale=scale, conditions=conditions)
+        prediction = self(x_t, t_norm, conditions=conditions)
         
         if self.prediction_target == "noise":
             target = noise
@@ -480,36 +469,25 @@ class WaveletDiffusionTransformer(pl.LightningModule):
         """Training step with importance-weighted timestep sampling and optional conditioning."""
         x_0 = batch[0]
         
-        # Extract scale conditioning if available (reparameterized stocks data)
-        scale = batch[1] if len(batch) > 1 else None
-        
-        # Extract quarter-profile conditions (batch indices 2..6 = yz, ret, adx, vwap, skew)
+        # Extract quarter-profile conditions (batch indices 1..N = yz, hurst, skew, amihud)
         conditions = None
-        if self.use_quarter_conditioning and len(batch) > 2:
-            conditions = [batch[i] for i in range(2, 2 + len(self.quarter_profile_names))]
+        if self.use_quarter_conditioning and len(batch) > 1:
+            conditions = [batch[i] for i in range(1, 1 + len(self.quarter_profile_names))]
         
         # Unconditional NaN handling (compile-safe, no control flow)
         x_0 = torch.nan_to_num(x_0, nan=0.0, posinf=1.0, neginf=-1.0)
         
-        # --- Conditioning Augmentation (Noise Injection) ---
-        # Prevent overfitting to exact float values during training by adding a tiny Gaussian perturbation
-        if self.training:
-            if scale is not None:
-                scale_noise = torch.randn_like(scale) * self.augmentation_noise * scale
-                scale = scale + scale_noise
-                scale = torch.clamp(scale, min=1e-4) # Ensure ATR percentage remains positive
-                
-            if conditions is not None:
-                for i in range(len(conditions)):
-                    cond_noise = torch.randn_like(conditions[i]) * self.augmentation_noise * conditions[i]
-                    conditions[i] = conditions[i] + cond_noise
-        # ---------------------------------------------------
+        # Conditioning Augmentation (Noise Injection)
+        if self.training and conditions is not None:
+            for i in range(len(conditions)):
+                cond_noise = torch.randn_like(conditions[i]) * self.augmentation_noise * conditions[i]
+                conditions[i] = conditions[i] + cond_noise
         
         # Use importance-weighted timestep sampling instead of uniform
         t = self.timestep_sampler.sample(x_0.size(0), self.device)
         
         # Compute loss with per-sample breakdown for sampler updates
-        loss, per_sample_losses = self.compute_loss_with_per_sample(x_0, t, scale=scale, conditions=conditions)
+        loss, per_sample_losses = self.compute_loss_with_per_sample(x_0, t, conditions=conditions)
         
         # NOTE: We do NOT call update_loss_history here because it has side effects
         # and Python loops that break CUDAGraphs. Instead, we pass the data
@@ -554,19 +532,13 @@ class WaveletDiffusionTransformer(pl.LightningModule):
         try:
             # Get a sample batch from the training dataloader
             sample_batch = next(iter(self.trainer.train_dataloader))
-            x_0 = sample_batch[0][:8].to(self.device)  # Use first 8 samples
-            
-            # Extract scale conditioning if available
-            scale = None
-            if len(sample_batch) > 1:
-                scale = sample_batch[1][:8].to(self.device)
+            x_0 = sample_batch[0][:8].to(self.device)
                 
             # Extract quarter-profile conditions
             conditions = None
-            if self.use_quarter_conditioning and len(sample_batch) > 2:
-                conditions = [sample_batch[i][:8].to(self.device) for i in range(2, 2 + len(self.quarter_profile_names))]
+            if self.use_quarter_conditioning and len(sample_batch) > 1:
+                conditions = [sample_batch[i][:8].to(self.device) for i in range(1, 1 + len(self.quarter_profile_names))]
 
-            # Sanitize inputs (match training_step)
             x_0 = torch.nan_to_num(x_0, nan=0.0, posinf=1.0, neginf=-1.0)
             t = torch.randint(0, self.T, (x_0.size(0),), device=self.device)
             
@@ -574,8 +546,7 @@ class WaveletDiffusionTransformer(pl.LightningModule):
                 x_t, noise = self.compute_forward_process(x_0, t)
                 t_norm = t.float() / self.T
                 
-                # Accurately compute conditional loss matching the actual training objective
-                prediction = self(x_t, t_norm, scale=scale, conditions=conditions)
+                prediction = self(x_t, t_norm, conditions=conditions)
                 
                 target = noise if self.prediction_target == "noise" else x_0
                 
