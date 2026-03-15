@@ -110,28 +110,30 @@ def main():
     
     try:
         has_cond = has_path_sig and getattr(model, 'path_sig_embedding', None) is not None
-        scale_str = "scale" if has_scale else "None"
         
-        class ExportWrapper(nn.Module):
-            def __init__(self, m, use_scale, use_cond):
-                super().__init__()
-                self.m = m
-                self.use_scale = use_scale
-                self.use_cond = use_cond
-                
-            def forward(self, x, t, *args):
-                idx = 0
-                scale = None
-                cond = None
-                if self.use_scale:
-                    scale = args[idx]
-                    idx += 1
-                if self.use_cond:
-                    cond = args[idx]
-                    idx += 1
-                return self.m(x, t, conditions=cond)
+        # Build exact string arguments for the forward pass signature
+        sig_args = ["x", "t"]
+        if has_scale: sig_args.append("scale")
+        if has_cond: sig_args.append("path_sig")
+            
+        cond_str = "path_sig" if has_cond else "None"
         
-        wrapper = ExportWrapper(model, has_scale, has_cond)
+        # Dynamically define wrapper to ensure exact positional argument mapping for Dynamo
+        wrapper_code = f"""
+import torch
+import torch.nn as nn
+class ExportWrapper(nn.Module):
+    def __init__(self, m):
+        super().__init__()
+        self.m = m
+    def forward(self, {', '.join(sig_args)}):
+        return self.m(x, t, conditions={cond_str})
+"""
+        local_vars = {'torch': torch, 'nn': torch.nn}
+        exec(wrapper_code, globals(), local_vars)
+        ExportWrapper = local_vars['ExportWrapper']
+        
+        wrapper = ExportWrapper(model)
         wrapper.eval()
         
         torch.onnx.export(
