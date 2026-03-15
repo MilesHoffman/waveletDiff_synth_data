@@ -12,7 +12,7 @@ import pytorch_lightning as pl
 import numpy as np
 import os
 
-from .layers import TimeEmbedding, WaveletLevelTransformer, ConditionProfileEmbedding
+from .layers import TimeEmbedding, WaveletLevelTransformer, PathSignatureEmbedding
 from .attention import CrossLevelAttention
 from torch.optim.lr_scheduler import CosineAnnealingLR, ReduceLROnPlateau, LambdaLR, OneCycleLR
 from utils.noise_schedules import get_noise_schedule
@@ -164,21 +164,18 @@ class WaveletDiffusionTransformer(pl.LightningModule):
         
 
         
-        # Quarter-window profile embeddings
-        self.quarter_profile_names = getattr(data_module, 'quarter_profile_names', [])
-        self.use_quarter_conditioning = getattr(data_module, 'has_quarter_conditioning', False)
-        if self.use_quarter_conditioning:
-            self.condition_embeddings = nn.ModuleList([
-                ConditionProfileEmbedding(time_embed_dim)
-                for _ in self.quarter_profile_names
-            ])
+        # Path signature conditioning
+        self.path_sig_dim = getattr(data_module, 'path_sig_dim', 0)
+        self.use_path_sig_conditioning = getattr(data_module, 'has_path_sig_conditioning', False)
+        if self.use_path_sig_conditioning and self.path_sig_dim > 0:
+            self.path_sig_embedding = PathSignatureEmbedding(time_embed_dim, sig_dim=self.path_sig_dim)
             self.null_condition_embed = nn.Parameter(torch.zeros(time_embed_dim))
             conditioning_cfg = config.get('conditioning', {})
             self.cfg_dropout_prob = conditioning_cfg.get('cfg_dropout_prob', 0.15)
-            print(f"Quarter conditioning enabled: {self.quarter_profile_names}")
+            print(f"Path signature conditioning enabled: dim={self.path_sig_dim}")
             print(f"CFG dropout prob: {self.cfg_dropout_prob}")
         else:
-            self.condition_embeddings = nn.ModuleList()
+            self.path_sig_embedding = None
             self.null_condition_embed = None
             self.cfg_dropout_prob = 0.0
         
@@ -301,28 +298,25 @@ class WaveletDiffusionTransformer(pl.LightningModule):
         Args:
             x: Input coefficients (batch_size, total_coeffs_per_feature, num_features)
             t: Normalized timestep values (batch_size,)
-            conditions: Optional list of (batch_size, 4) quarter-profile tensors
+            conditions: Optional path signature tensor (batch_size, sig_dim)
         """
         batch_size, total_coeffs_plus_time, num_features = x.shape
         
         # Create time embedding
         time_embed = self.time_embedding(t)
         
-        # Add quarter-profile conditioning with CFG dropout (branchless for torch.compile)
-        if len(self.condition_embeddings) > 0:
+        # Add path signature conditioning with CFG dropout (branchless for torch.compile)
+        if self.path_sig_embedding is not None:
             null_embed = self.null_condition_embed.expand(batch_size, -1)
             
             if conditions is not None:
-                cond_embed = sum(emb(c) for emb, c in zip(self.condition_embeddings, conditions))
+                cond_embed = self.path_sig_embedding(conditions)
                 if self.training:
-                    # Apply CFG dropout during training
                     mask = (torch.rand(batch_size, 1, device=x.device) >= self.cfg_dropout_prob).float()
                     time_embed = time_embed + mask * cond_embed + (1.0 - mask) * null_embed
                 else:
-                    # Full conditioning at inference
                     time_embed = time_embed + cond_embed
             else:
-                # Unconditional generation implies using the null profile
                 time_embed = time_embed + null_embed
         
         if self.use_cross_level_attention:
@@ -400,7 +394,7 @@ class WaveletDiffusionTransformer(pl.LightningModule):
         Args:
             x_0: Clean wavelet coefficients
             t: Diffusion timesteps
-            conditions: Optional list of (batch_size, 4) quarter-profile tensors
+            conditions: Optional path signature tensor (batch_size, sig_dim)
         
         Returns:
             total_loss: Scalar loss for backpropagation
@@ -469,19 +463,18 @@ class WaveletDiffusionTransformer(pl.LightningModule):
         """Training step with importance-weighted timestep sampling and optional conditioning."""
         x_0 = batch[0]
         
-        # Extract quarter-profile conditions (batch indices 1..N = yz, hurst, skew, amihud)
+        # Extract path signature condition (batch index 1)
         conditions = None
-        if self.use_quarter_conditioning and len(batch) > 1:
-            conditions = [batch[i] for i in range(1, 1 + len(self.quarter_profile_names))]
+        if self.use_path_sig_conditioning and len(batch) > 1:
+            conditions = batch[1]
         
         # Unconditional NaN handling (compile-safe, no control flow)
         x_0 = torch.nan_to_num(x_0, nan=0.0, posinf=1.0, neginf=-1.0)
         
         # Conditioning Augmentation (Noise Injection)
         if self.training and conditions is not None:
-            for i in range(len(conditions)):
-                cond_noise = torch.randn_like(conditions[i]) * self.augmentation_noise * conditions[i]
-                conditions[i] = conditions[i] + cond_noise
+            cond_noise = torch.randn_like(conditions) * self.augmentation_noise * conditions
+            conditions = conditions + cond_noise
         
         # Use importance-weighted timestep sampling instead of uniform
         t = self.timestep_sampler.sample(x_0.size(0), self.device)
@@ -534,10 +527,10 @@ class WaveletDiffusionTransformer(pl.LightningModule):
             sample_batch = next(iter(self.trainer.train_dataloader))
             x_0 = sample_batch[0][:8].to(self.device)
                 
-            # Extract quarter-profile conditions
+            # Extract path signature condition
             conditions = None
-            if self.use_quarter_conditioning and len(sample_batch) > 1:
-                conditions = [sample_batch[i][:8].to(self.device) for i in range(1, 1 + len(self.quarter_profile_names))]
+            if self.use_path_sig_conditioning and len(sample_batch) > 1:
+                conditions = sample_batch[1][:8].to(self.device)
 
             x_0 = torch.nan_to_num(x_0, nan=0.0, posinf=1.0, neginf=-1.0)
             t = torch.randint(0, self.T, (x_0.size(0),), device=self.device)

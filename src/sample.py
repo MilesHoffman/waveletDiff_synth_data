@@ -197,17 +197,12 @@ def main():
         else:
             sample_indices = np.random.choice(num_avail, size=num_samples, replace=True)
     
-    # Prepare quarter-profile conditions
+    # Prepare path signature conditions
     conditions = None
     guidance_scale = args.guidance_scale or config.get('conditioning', {}).get('guidance_scale', 1.0)
-    if getattr(data_module, 'has_quarter_conditioning', False) and sample_indices is not None:
-        qp = data_module.norm_stats['quarter_profiles']
-        profile_names = data_module.quarter_profile_names
-        conditions = []
-        for name in profile_names:
-            profile_vals = qp[name][sample_indices]
-            conditions.append(torch.FloatTensor(profile_vals).to(model.device))
-        print(f"Quarter conditioning: {profile_names}, guidance_scale={guidance_scale}")
+    if getattr(data_module, 'has_path_sig_conditioning', False) and sample_indices is not None:
+        conditions = data_module.path_sig_tensor[sample_indices].to(model.device)
+        print(f"Path signature conditioning: dim={conditions.shape[-1]}, guidance_scale={guidance_scale}")
 
     # Create trainer for evaluation (equipped with mounted ONNX session)
     trainer_util = DiffusionTrainer(model)

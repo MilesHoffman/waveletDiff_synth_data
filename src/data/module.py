@@ -41,6 +41,9 @@ class WaveletTimeSeriesDataModule(pl.LightningDataModule):
         self.normalize_data = config['data']['normalize_data']
         self.mode = kwargs.get('mode', 'symmetric')
 
+        # Path signature config
+        self.past_days = config.get('conditioning', {}).get('past_days', 200)
+
         # Load raw time series data
         if data_tensor is not None:
             self.raw_data_tensor, self.norm_stats = data_tensor, None
@@ -55,36 +58,33 @@ class WaveletTimeSeriesDataModule(pl.LightningDataModule):
         # Convert to wavelet coefficients
         self.data_tensor, self.wavelet_info = self._convert_to_wavelet_coefficients()
 
-        # Quarter-profile conditioning tensors
-        self.has_quarter_conditioning = False
-        self.quarter_profile_tensors = {}
+        # Path signature conditioning
+        self.has_path_sig_conditioning = False
+        self.path_sig_tensor = None
+        self.path_sig_dim = 0
         self.has_conditioning = False
 
         if (self.norm_stats is not None
-                and self.norm_stats.get('quarter_profiles') is not None):
-            qp = self.norm_stats['quarter_profiles']
-            self.quarter_profile_names = list(qp.keys())
-            for name, arr in qp.items():
-                self.quarter_profile_tensors[name] = torch.FloatTensor(arr)
-            self.has_quarter_conditioning = True
+                and self.norm_stats.get('path_signatures') is not None):
+            sigs = self.norm_stats['path_signatures']
+            self.path_sig_tensor = torch.FloatTensor(sigs)
+            self.path_sig_dim = sigs.shape[1]
+            self.has_path_sig_conditioning = True
             self.has_conditioning = True
-            n = len(next(iter(qp.values())))
-            print(f"Quarter conditioning enabled: {len(self.quarter_profile_names)} profiles × {n} samples")
+            print(f"Path signature conditioning enabled: dim={self.path_sig_dim}, "
+                  f"past_days={self.norm_stats.get('past_days', 'N/A')}")
 
         # Move dataset to GPU RAM if available
         self.data_on_gpu = torch.cuda.is_available()
         if self.data_on_gpu:
             self.data_tensor = self.data_tensor.cuda()
-            for name in self.quarter_profile_tensors:
-                self.quarter_profile_tensors[name] = self.quarter_profile_tensors[name].cuda()
+            if self.path_sig_tensor is not None:
+                self.path_sig_tensor = self.path_sig_tensor.cuda()
             print("Dataset moved to GPU RAM for faster training")
 
         # Create dataset with conditioning if available
-        if self.has_quarter_conditioning:
-            dataset_tensors = [self.data_tensor]
-            for name in self.quarter_profile_names:
-                dataset_tensors.append(self.quarter_profile_tensors[name])
-            self.dataset = TensorDataset(*dataset_tensors)
+        if self.has_path_sig_conditioning:
+            self.dataset = TensorDataset(self.data_tensor, self.path_sig_tensor)
         else:
             self.dataset = TensorDataset(self.data_tensor)
 
@@ -102,7 +102,11 @@ class WaveletTimeSeriesDataModule(pl.LightningDataModule):
         elif dataset_name == "exchange_rate":
             raw_data, norm_stats = load_exchange_rate_data(self.data_dir, seq_len=seq_len, normalize_data=normalize_data)
         elif dataset_name == "stocks":
-            raw_data, norm_stats = load_stocks_data(self.data_dir, seq_len=seq_len, normalize_data=normalize_data)
+            raw_data, norm_stats = load_stocks_data(
+                self.data_dir, seq_len=seq_len,
+                normalize_data=normalize_data,
+                past_days=self.past_days
+            )
         elif dataset_name == "eeg":
             raw_data, norm_stats = load_eeg_data(self.data_dir, seq_len=seq_len, normalize_data=normalize_data)
         else:
@@ -353,8 +357,6 @@ class WaveletTimeSeriesDataModule(pl.LightningDataModule):
             low_prices[:, t] = min_oc - wick_low_ratio[:, t] * total_range
 
         # ── Volume Reconstruction: Log-Deviation Inverse ──
-        # Z_t = (log(V_t) - median) / (iqr / 1.349)
-        # => log(V_t) = Z_t * (iqr / 1.349) + median
         vol_medians_exp = vol_medians.reshape(-1, 1)
         vol_iqrs_exp = vol_iqrs.reshape(-1, 1)
 

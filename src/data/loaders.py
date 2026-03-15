@@ -2,8 +2,8 @@
 Dataset loading utilities for various time series datasets.
 
 Implements the SOTA 22-feature pipeline for financial time series,
-with Robust Scaling, Log-Ratio normalizations, and 4-quadrant
-global conditioning (YZ, Hurst, Skewness, Amihud).
+with Robust Scaling, Log-Ratio normalizations, and path signature
+global conditioning via lead-lag transformed log returns and volume.
 """
 
 import pandas as pd
@@ -12,6 +12,12 @@ import torch
 import os
 from scipy.stats import skew as scipy_skew
 from typing import Dict, Any, Tuple
+
+try:
+    import esig
+    HAS_ESIG = True
+except ImportError:
+    HAS_ESIG = False
 
 
 # ─── Rolling Indicator Functions ────────────────────────────────────────────────
@@ -166,129 +172,91 @@ def compute_rolling_amihud(close: np.ndarray, volume: np.ndarray,
     return amihud
 
 
-# ─── Quarter-Window Conditioning Helpers ───────────────────────────────────────
+# ─── Path Signature Conditioning ───────────────────────────────────────────────
 
-def _quarter_snapshot_yz(open_prices: np.ndarray, high: np.ndarray,
-                         low: np.ndarray, close: np.ndarray,
-                         global_idx: int, period: int = 20) -> float:
-    """Snapshot of rolling 20-day Yang-Zhang at a specific global index."""
-    if global_idx < period:
-        return 0.0
-
-    s = global_idx - period
-    o_w = open_prices[s:global_idx]
-    h_w = high[s:global_idx]
-    l_w = low[s:global_idx]
-    c_w = close[s:global_idx]
-
-    log_oc = np.log(o_w[1:] / c_w[:-1])
-    log_co = np.log(c_w / o_w)
-    log_ho = np.log(h_w / o_w)
-    log_lo = np.log(l_w / o_w)
-    log_hc = np.log(h_w / c_w)
-    log_lc = np.log(l_w / c_w)
-
-    sigma_o = np.var(log_oc, ddof=1) if len(log_oc) > 1 else 0.0
-    sigma_c = np.var(log_co, ddof=1) if period > 1 else 0.0
-    sigma_rs = np.mean(log_ho * log_hc + log_lo * log_lc)
-
-    k = 0.34 / (1.34 + (period + 1) / (period - 1)) if period > 1 else 0.34
-    sigma_yz_sq = sigma_o + k * sigma_c + (1 - k) * sigma_rs
-
-    return float(np.log1p(np.sqrt(max(sigma_yz_sq, 0.0)) * 100.0))
+SIG_DEPTH = 4
+SIG_CHANNELS = 5  # (time, price_lead, price_lag, vol_lead, vol_lag)
 
 
-def _quarter_snapshot_hurst(close: np.ndarray, global_idx: int,
-                            period: int = 20) -> float:
-    """Snapshot of rolling 20-day Hurst at a specific global index."""
-    if global_idx < period:
-        return 0.5
-
-    log_returns = np.diff(np.log(close[global_idx - period:global_idx]))
-    if len(log_returns) < 2:
-        return 0.5
-
-    mean_ts = np.mean(log_returns)
-    deviate = np.cumsum(log_returns - mean_ts)
-    r = np.max(deviate) - np.min(deviate)
-    s = np.std(log_returns, ddof=1)
-
-    if s < 1e-12 or r < 1e-12:
-        return 0.5
-
-    h = np.log(r / s) / np.log(period)
-    return float(np.clip(h, 0.0, 1.0))
-
-
-def _quarter_snapshot_skew(close: np.ndarray, global_idx: int,
-                           period: int = 20) -> float:
-    """Snapshot of rolling 20-day skewness at a specific global index."""
-    if global_idx < period:
-        return 0.0
-
-    log_returns = np.diff(np.log(close[global_idx - period:global_idx]))
-    if len(log_returns) < 3 or np.std(log_returns) < 1e-10:
-        return 0.0
-
-    return float(scipy_skew(log_returns, bias=False))
-
-
-def _quarter_snapshot_amihud(close: np.ndarray, volume: np.ndarray,
-                             global_idx: int, period: int = 20) -> float:
-    """Snapshot of rolling 20-day Amihud at a specific global index."""
-    if global_idx < period:
-        return 0.0
-
-    log_returns = np.abs(np.diff(np.log(close[global_idx - period:global_idx])))
-    vol_w = volume[global_idx - period + 1:global_idx]
-    if len(log_returns) == 0 or len(vol_w) == 0:
-        return 0.0
-
-    min_len = min(len(log_returns), len(vol_w))
-    ratios = log_returns[:min_len] / (vol_w[:min_len] + 1e-10)
-    return float(np.mean(ratios))
-
-
-def compute_quarter_profiles(open_w: np.ndarray, high_w: np.ndarray,
-                             low_w: np.ndarray, close_w: np.ndarray,
-                             volume_w: np.ndarray,
-                             global_open: np.ndarray, global_high: np.ndarray,
-                             global_low: np.ndarray, global_close: np.ndarray,
-                             global_volume: np.ndarray,
-                             window_start_global: int,
-                             n_quarters: int = 4) -> dict:
+def _lead_lag_transform(price: np.ndarray, volume: np.ndarray) -> np.ndarray:
     """
-    Compute 4 conditioning profiles for a single window.
+    Construct a 5D lead-lag path from price and volume sequences.
 
-    Each profile value is a snapshot of the rolling 20-day metric
-    evaluated at the final bar of each quadrant of the window.
+    Time is kept monotonic (no lead-lag). Price and volume are
+    duplicated into lead/lag channels. The output has shape
+    (2*N - 1, 5) where N = len(price).
+    """
+    N = len(price)
+    time_norm = np.linspace(0.0, 1.0, N)
+
+    out_len = 2 * N - 1
+    path = np.zeros((out_len, SIG_CHANNELS), dtype=np.float64)
+
+    for i in range(N - 1):
+        # Odd step: lag updates
+        path[2 * i, 0] = time_norm[i]
+        path[2 * i, 1] = price[i + 1]   # price lead
+        path[2 * i, 2] = price[i]        # price lag
+        path[2 * i, 3] = volume[i + 1]   # volume lead
+        path[2 * i, 4] = volume[i]       # volume lag
+
+        # Even step: lead catches up
+        path[2 * i + 1, 0] = time_norm[i]
+        path[2 * i + 1, 1] = price[i + 1]
+        path[2 * i + 1, 2] = price[i + 1]
+        path[2 * i + 1, 3] = volume[i + 1]
+        path[2 * i + 1, 4] = volume[i + 1]
+
+    # Final point
+    path[-1, 0] = time_norm[-1]
+    path[-1, 1] = price[-1]
+    path[-1, 2] = price[-1]
+    path[-1, 3] = volume[-1]
+    path[-1, 4] = volume[-1]
+
+    return path
+
+
+def _compute_logsig_esig(path: np.ndarray, depth: int) -> np.ndarray:
+    """Compute log signature using the esig/roughpy backend."""
+    import roughpy
+    ctx = roughpy.get_context(path.shape[1], depth, roughpy.DPReal)
+    stream = roughpy.LieIncrementStream.from_increments(
+        np.diff(path, axis=0), ctx=ctx
+    )
+    sig = stream.log_signature(roughpy.RealInterval(0, len(path) - 1))
+    return np.asarray(sig).astype(np.float32)
+
+
+def _compute_logsig_fallback(path: np.ndarray, depth: int) -> np.ndarray:
+    """
+    Pure-numpy fallback for depth-1 log signature (just the increments).
+    Only used when no signature library is available.
+    """
+    increments = path[-1] - path[0]
+    return increments.astype(np.float32)
+
+
+def compute_path_signature(close_seq: np.ndarray, vol_log_dev_seq: np.ndarray,
+                           depth: int = SIG_DEPTH) -> np.ndarray:
+    """
+    Compute log path signature from a look-back window.
+
+    Args:
+        close_seq: Close prices for the look-back window (raw, not normalized).
+        vol_log_dev_seq: Volume log-deviation values for the same window.
+        depth: Signature truncation depth.
 
     Returns:
-        dict with keys: 'yz', 'hurst', 'skew', 'amihud'
-        Each value is a numpy array of shape (n_quarters,).
+        1D numpy array of log-signature features.
     """
-    seq_len = len(close_w)
-    q_size = seq_len // n_quarters
+    eps = 1e-10
+    cum_return = np.log(close_seq / (close_seq[0] + eps))
+    path = _lead_lag_transform(cum_return, vol_log_dev_seq)
 
-    profiles = {k: np.zeros(n_quarters, dtype=np.float32)
-                for k in ('yz', 'hurst', 'skew', 'amihud')}
-
-    for q in range(n_quarters):
-        if q < n_quarters - 1:
-            end_local = (q + 1) * q_size - 1
-        else:
-            end_local = seq_len - 1
-
-        end_global = window_start_global + end_local
-
-        profiles['yz'][q] = _quarter_snapshot_yz(
-            global_open, global_high, global_low, global_close, end_global)
-        profiles['hurst'][q] = _quarter_snapshot_hurst(global_close, end_global)
-        profiles['skew'][q] = _quarter_snapshot_skew(global_close, end_global)
-        profiles['amihud'][q] = _quarter_snapshot_amihud(
-            global_close, global_volume, end_global)
-
-    return profiles
+    if HAS_ESIG:
+        return _compute_logsig_esig(path, depth)
+    return _compute_logsig_fallback(path, depth)
 
 
 # ─── Robust Scaling Utilities ──────────────────────────────────────────────────
@@ -419,7 +387,8 @@ def _select_ohlcv_columns(df: pd.DataFrame) -> pd.DataFrame:
 
 # ─── SOTA 22-Feature Stocks Loader ─────────────────────────────────────────────
 
-def load_stocks_data(data_dir: str, seq_len: int = 24, normalize_data: bool = True) -> Tuple[torch.Tensor, dict]:
+def load_stocks_data(data_dir: str, seq_len: int = 24, normalize_data: bool = True,
+                     past_days: int = 200) -> Tuple[torch.Tensor, dict]:
     """
     Load Stocks dataset with the SOTA 22-feature pipeline.
 
@@ -447,8 +416,9 @@ def load_stocks_data(data_dir: str, seq_len: int = 24, normalize_data: bool = Tr
         [20] mfi:               MFI_14 / 100                     [0,1]
         [21] vol_log_dev:       (log(V_t) - Median_W) / (IQR_W / 1.349)
 
-    Global Conditioning (4 profiles × 4 quadrants):
-        yz, hurst, skew, amihud
+    Global Conditioning:
+        Depth-4 log path signature of lead-lag transformed
+        (cum_return, vol_log_dev) over the preceding `past_days`.
     """
     # ── 1. Resolve Path ──
     stocks_path = data_dir
@@ -561,7 +531,8 @@ def load_stocks_data(data_dir: str, seq_len: int = 24, normalize_data: bool = Tr
     sma_200_dist = np.log((close_prices + eps) / (sma_200 + eps))
 
     # ── 6. Determine Valid Start ──
-    valid_start = 200
+    # Ensure enough history for rolling indicators (200) + path signature lookback
+    valid_start = max(200, past_days + 20)
 
     # ── 7. Slice to valid region ──
     open_prices = open_prices[valid_start:]
@@ -625,16 +596,30 @@ def load_stocks_data(data_dir: str, seq_len: int = 24, normalize_data: bool = Tr
     anchors = []
     vol_medians = []
     vol_iqrs = []
-    quarter_profiles = {k: [] for k in ('yz', 'hurst', 'skew', 'amihud')}
+    path_signatures = []
 
-    # We need global arrays (pre-slice) for quarter profile snapshots
-    # Re-read full-length arrays from the original dataframe for global lookback
+    # Full-length arrays (pre-slice) for path signature lookback
     full_data = df.values.astype(np.float64)
-    g_open = full_data[:, 0]
-    g_high = full_data[:, 1]
-    g_low = full_data[:, 2]
     g_close = full_data[:, 3]
-    g_volume = full_data[:, 4]
+
+    # Full-length vol_log_dev (pre-slice) for path signature
+    full_log_volume = np.log(full_data[:, 4] + eps)
+    full_vol_log_dev = np.full_like(full_log_volume, 0.0)
+    for vi in range(20, len(full_log_volume)):
+        w = full_log_volume[vi - 20:vi]
+        med = np.median(w)
+        q75, q25 = np.percentile(w, [75, 25])
+        iqr = (q75 - q25) / 1.349
+        if iqr < eps:
+            iqr = 1.0
+        full_vol_log_dev[vi] = (full_log_volume[vi] - med) / iqr
+
+    # Compute a test signature size
+    _test_close = g_close[:past_days]
+    _test_vld = full_vol_log_dev[:past_days]
+    _test_sig = compute_path_signature(_test_close, _test_vld, depth=SIG_DEPTH)
+    sig_dim = len(_test_sig)
+    print(f"  Path signature dimension: {sig_dim} (depth={SIG_DEPTH}, channels={SIG_CHANNELS})")
 
     for i in range(n_samples):
         s = i
@@ -693,32 +678,25 @@ def load_stocks_data(data_dir: str, seq_len: int = 24, normalize_data: bool = Tr
         vol_medians.append(w_vol_med)
         vol_iqrs.append(w_vol_iqr)
 
-        # Quarter-window conditioning profiles (snapshots from global arrays)
+        # Path signature from the preceding `past_days` (no lookahead)
         global_start = valid_start + s
-        profiles = compute_quarter_profiles(
-            open_prices[s:e], high_prices[s:e],
-            low_prices[s:e], close_prices[s:e],
-            volume[s:e],
-            g_open, g_high, g_low, g_close, g_volume,
-            window_start_global=global_start
-        )
-        for k in quarter_profiles:
-            quarter_profiles[k].append(profiles[k])
+        sig_start = global_start - past_days
+        sig_close = g_close[sig_start:global_start]
+        sig_vld = full_vol_log_dev[sig_start:global_start]
+        sig = compute_path_signature(sig_close, sig_vld, depth=SIG_DEPTH)
+        path_signatures.append(sig)
 
     windows = np.array(windows, dtype=np.float32)
     anchors = np.array(anchors, dtype=np.float32)
     vol_medians = np.array(vol_medians, dtype=np.float32)
     vol_iqrs = np.array(vol_iqrs, dtype=np.float32)
-
-    quarter_profile_arrays = {k: np.array(v, dtype=np.float32)
-                              for k, v in quarter_profiles.items()}
+    path_signatures = np.array(path_signatures, dtype=np.float32)
 
     norm_stats = {
         'reparameterized': True,
         'anchors': anchors,
         'vol_medians': vol_medians,
         'vol_iqrs': vol_iqrs,
-        # Robust scaling stats for inverse normalization
         'robust_scales': {
             'overnight_gap': {'median': gap_med, 'iqr': gap_iqr},
             'intraday_return': {'median': idr_med, 'iqr': idr_iqr},
@@ -749,14 +727,16 @@ def load_stocks_data(data_dir: str, seq_len: int = 24, normalize_data: bool = Tr
             'hurst', 'yz_vol', 'skewness', 'semivariance',
             'amihud', 'vol_shock', 'mfi', 'vol_log_dev'
         ],
-        'quarter_profiles': quarter_profile_arrays,
+        'path_signatures': path_signatures,
+        'path_sig_dim': sig_dim,
+        'past_days': past_days,
     }
 
     print(f"Loaded {n_samples} windows with SOTA 22-channel feature pipeline")
     print(f"  Anchor price range: [{anchors.min():.2f}, {anchors.max():.2f}]")
     print(f"  Vol LogDev mean: {windows[:, :, 21].mean():.4f} (should be ~0)")
-    for pname, parr in quarter_profile_arrays.items():
-        print(f"  {pname}_profile: mean={parr.mean():.4f}, std={parr.std():.4f}")
+    print(f"  Path signature: dim={sig_dim}, past_days={past_days}")
+    print(f"  Sig mean={path_signatures.mean():.4f}, std={path_signatures.std():.4f}")
 
     return torch.FloatTensor(windows), norm_stats
 

@@ -232,30 +232,35 @@ class ScaleEmbedding(nn.Module):
         return self.mlp(emb)
 
 
-class ConditionProfileEmbedding(nn.Module):
-    """Embedding for quarter-window conditioning profiles.
+class PathSignatureEmbedding(nn.Module):
+    """Deep MLP projection for log path signature conditioning.
     
-    Takes a (batch, n_quarters) profile vector and projects it
-    to (batch, embed_dim) via a two-layer MLP.
+    Projects a high-dimensional path signature vector into the
+    model's embedding space for additive conditioning via AdaLayerNorm.
     """
     
-    def __init__(self, embed_dim, n_quarters=4):
+    def __init__(self, embed_dim, sig_dim=205):
         super().__init__()
+        hidden = embed_dim * 2
         self.mlp = nn.Sequential(
-            nn.Linear(n_quarters, embed_dim),
+            nn.Linear(sig_dim, hidden),
+            nn.LayerNorm(hidden),
             nn.SiLU(),
-            nn.Linear(embed_dim, embed_dim)
+            nn.Linear(hidden, hidden),
+            nn.LayerNorm(hidden),
+            nn.SiLU(),
+            nn.Linear(hidden, embed_dim)
         )
     
-    def forward(self, profile):
+    def forward(self, signature):
         """
         Args:
-            profile: Quarter-window values, shape (batch_size, n_quarters)
+            signature: Path signature vector, shape (batch_size, sig_dim)
         
         Returns:
             Embeddings of shape (batch_size, embed_dim)
         """
-        return self.mlp(profile.float())
+        return self.mlp(signature.float())
 
 
 class PositionalEncoding(nn.Module):

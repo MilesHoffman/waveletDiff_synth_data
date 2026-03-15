@@ -99,6 +99,9 @@ def main():
     parser.add_argument('--inline_eval_every_n_epochs', type=int, default=None, help='Epochs between inline evaluations')
     parser.add_argument('--inline_eval_n_samples', type=int, default=None, help='Number of samples for inline evaluation')
 
+    # Path Signature Options
+    parser.add_argument('--past_days', type=int, default=None, help='Number of past days for path signature lookback (default: 200)')
+
     args = parser.parse_args()
     
     # Load configuration
@@ -187,6 +190,9 @@ def main():
         
     if args.log_every_n_epochs: config['training']['log_every_n_epochs'] = args.log_every_n_epochs
     if args.log_level_loss_every_n_epochs is not None: config['training']['log_level_loss_every_n_epochs'] = args.log_level_loss_every_n_epochs
+    if args.past_days is not None:
+        if 'conditioning' not in config: config['conditioning'] = {}
+        config['conditioning']['past_days'] = args.past_days
     
     enable_progress_bar = args.enable_progress_bar.lower() == 'true'
     

@@ -93,8 +93,7 @@ def main():
     dummy_inputs = [dummy_x, dummy_t]
     
     has_scale = getattr(data_module, 'has_conditioning', False)
-    has_quarter = getattr(data_module, 'has_quarter_conditioning', False)
-    num_conds = 0
+    has_path_sig = getattr(data_module, 'has_path_sig_conditioning', False)
     
     if has_scale:
         dummy_scale = torch.tensor([0.05] * batch_size, device=device).unsqueeze(1) if getattr(data_module, 'scale_is_2d', False) else torch.tensor([0.05] * batch_size, device=device)
@@ -102,40 +101,37 @@ def main():
         input_names.append('scale')
         dynamic_shapes.append({0: batch_dim})
         
-    if has_quarter and getattr(model, 'condition_embeddings', None) is not None:
-        profile_names = getattr(data_module, 'quarter_profile_names', [f'cond{i}' for i in range(len(model.condition_embeddings))])
-        num_conds = len(model.condition_embeddings)
-        for i in range(num_conds):
-            cond_name = profile_names[i] if i < len(profile_names) else f'cond{i}'
-            # Expand to matching batch size
-            cond_tensor = torch.tensor([[0.5, 0.5, 0.5, 0.5]], device=device).expand(batch_size, -1).clone()
-            dummy_inputs.append(cond_tensor)
-            input_names.append(cond_name)
-            dynamic_shapes.append({0: batch_dim})
+    if has_path_sig and getattr(model, 'path_sig_embedding', None) is not None:
+        sig_dim = getattr(data_module, 'path_sig_dim', 205)
+        dummy_sig = torch.randn(batch_size, sig_dim, device=device)
+        dummy_inputs.append(dummy_sig)
+        input_names.append('path_sig')
+        dynamic_shapes.append({0: batch_dim})
     
     try:
-        sig_args = ["x", "t"]
-        if has_scale: sig_args.append("scale")
-        for i in range(num_conds): sig_args.append(f"cond{i}")
-            
-        cond_list_str = "[" + ", ".join([f"cond{i}" for i in range(num_conds)]) + "]" if num_conds > 0 else "None"
+        has_cond = has_path_sig and getattr(model, 'path_sig_embedding', None) is not None
         scale_str = "scale" if has_scale else "None"
         
-        wrapper_code = f"""
-import torch
-import torch.nn as nn
-class ExportWrapper(nn.Module):
-    def __init__(self, m):
-        super().__init__()
-        self.m = m
-    def forward(self, {', '.join(sig_args)}):
-        return self.m(x, t, scale={scale_str}, conditions={cond_list_str})
-"""
-        local_vars = {'torch': torch, 'nn': torch.nn}
-        exec(wrapper_code, globals(), local_vars)
-        ExportWrapper = local_vars['ExportWrapper']
+        class ExportWrapper(nn.Module):
+            def __init__(self, m, use_scale, use_cond):
+                super().__init__()
+                self.m = m
+                self.use_scale = use_scale
+                self.use_cond = use_cond
+                
+            def forward(self, x, t, *args):
+                idx = 0
+                scale = None
+                cond = None
+                if self.use_scale:
+                    scale = args[idx]
+                    idx += 1
+                if self.use_cond:
+                    cond = args[idx]
+                    idx += 1
+                return self.m(x, t, conditions=cond)
         
-        wrapper = ExportWrapper(model)
+        wrapper = ExportWrapper(model, has_scale, has_cond)
         wrapper.eval()
         
         torch.onnx.export(

@@ -31,19 +31,14 @@ class DiffusionSampler(ABC):
                 't': t_norm.cpu().numpy()
             }
             if conditions is not None:
-                profile_names = getattr(self.model.data_module, 'quarter_profile_names', [])
-                for i, cond in enumerate(conditions):
-                    name = profile_names[i] if i < len(profile_names) else f'cond{i}'
-                    inputs[name] = cond.cpu().numpy()
+                inputs['path_sig'] = conditions.cpu().numpy()
                     
             ort_outs = self.onnx_session.run(None, inputs)
             
             pred = torch.from_numpy(ort_outs[0]).to(self.device)
             if guidance_scale is not None and guidance_scale != 1.0 and conditions is not None:
                 uncond_inputs = inputs.copy()
-                for i in range(len(conditions)):
-                    name = profile_names[i] if 'profile_names' in locals() and i < len(profile_names) else f'cond{i}'
-                    uncond_inputs[name] = np.zeros_like(inputs[name])
+                uncond_inputs['path_sig'] = np.zeros_like(inputs['path_sig'])
                 uncond_outs = self.onnx_session.run(None, uncond_inputs)
                 uncond_pred = torch.from_numpy(uncond_outs[0]).to(self.device)
                 return uncond_pred + guidance_scale * (pred - uncond_pred)

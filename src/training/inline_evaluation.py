@@ -61,11 +61,9 @@ class InlineEvaluationCallback(pl.Callback):
                 total_samples = len(self.data_module.norm_stats['anchors'])
                 self.eval_indices = np.linspace(0, total_samples - 1, self.n_samples, dtype=int)
                 
-                if getattr(self.data_module, 'has_quarter_conditioning', False):
-                    qp = self.data_module.norm_stats['quarter_profiles']
-                    self.eval_conditions = []
-                    for name in self.data_module.quarter_profile_names:
-                        self.eval_conditions.append(torch.FloatTensor(qp[name][self.eval_indices]).to(pl_module.device))
+                if getattr(self.data_module, 'has_path_sig_conditioning', False):
+                    sigs = self.data_module.path_sig_tensor
+                    self.eval_conditions = sigs[self.eval_indices].to(pl_module.device)
         else:
             if self.eval_indices is None:
                 self.eval_indices = np.linspace(0, len(self.data_module.raw_data_tensor) - 1, self.n_samples, dtype=int)
@@ -73,7 +71,7 @@ class InlineEvaluationCallback(pl.Callback):
         # Ensure conditions are on the correct device if already cached
         conditions = None
         if self.eval_conditions is not None:
-            conditions = [c.to(pl_module.device) for c in self.eval_conditions]
+            conditions = self.eval_conditions.to(pl_module.device)
 
         # 3. Generate DDIM-50 samples
         print("  [DDIM] Generating synthetic samples (50 steps) uniformly distributed...")
