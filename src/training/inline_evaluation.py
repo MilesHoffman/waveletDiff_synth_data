@@ -58,7 +58,7 @@ class InlineEvaluationCallback(pl.Callback):
             
         # 2. Extract Consistent Conditions (Uniformly Spaced) & Reference Set
         if self.eval_indices is None or self.ref_indices is None:
-            if getattr(self.data_module, 'has_conditioning', False):
+            if getattr(self.data_module, 'has_path_sig_conditioning', False):
                 total_samples = len(self.data_module.norm_stats['anchors'])
             else:
                 total_samples = len(self.data_module.raw_data_tensor)

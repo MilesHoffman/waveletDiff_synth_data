@@ -62,7 +62,6 @@ class WaveletTimeSeriesDataModule(pl.LightningDataModule):
         self.has_path_sig_conditioning = False
         self.path_sig_tensor = None
         self.path_sig_dim = 0
-        self.has_conditioning = False
 
         if (self.norm_stats is not None
                 and self.norm_stats.get('path_signatures') is not None):
@@ -70,7 +69,6 @@ class WaveletTimeSeriesDataModule(pl.LightningDataModule):
             self.path_sig_tensor = torch.FloatTensor(sigs)
             self.path_sig_dim = sigs.shape[1]
             self.has_path_sig_conditioning = True
-            self.has_conditioning = True
             print(f"Path signature conditioning enabled: dim={self.path_sig_dim}, "
                   f"past_days={self.norm_stats.get('past_days', 'N/A')}")
 

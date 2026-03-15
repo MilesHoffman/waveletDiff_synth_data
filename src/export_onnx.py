@@ -92,14 +92,8 @@ def main():
     input_names = ['x', 't']
     dummy_inputs = [dummy_x, dummy_t]
     
-    has_scale = getattr(data_module, 'has_conditioning', False)
     has_path_sig = getattr(data_module, 'has_path_sig_conditioning', False)
     
-    if has_scale:
-        dummy_scale = torch.tensor([0.05] * batch_size, device=device).unsqueeze(1) if getattr(data_module, 'scale_is_2d', False) else torch.tensor([0.05] * batch_size, device=device)
-        dummy_inputs.append(dummy_scale)
-        input_names.append('scale')
-        dynamic_shapes.append({0: batch_dim})
         
     if has_path_sig and getattr(model, 'path_sig_embedding', None) is not None:
         sig_dim = getattr(data_module, 'path_sig_dim', 205)
@@ -113,7 +107,6 @@ def main():
         
         # Build exact string arguments for the forward pass signature
         sig_args = ["x", "t"]
-        if has_scale: sig_args.append("scale")
         if has_cond: sig_args.append("path_sig")
             
         cond_str = "path_sig" if has_cond else "None"
