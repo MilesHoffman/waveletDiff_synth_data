@@ -28,6 +28,7 @@ class InlineEvaluationCallback(pl.Callback):
         
         # Caches for uniform extraction conditions
         self.eval_indices = None
+        self.ref_indices = None
         self.eval_conditions = None
         
     def _find_ema_callback(self, trainer):
@@ -55,18 +56,22 @@ class InlineEvaluationCallback(pl.Callback):
             ema_state = ema_callback.ema_model.module.state_dict()
             pl_module.load_state_dict(ema_state)
             
-        # 2. Extract Consistent Conditions (Uniformly Spaced)
-        if getattr(self.data_module, 'has_conditioning', False):
-            if self.eval_indices is None:
+        # 2. Extract Consistent Conditions (Uniformly Spaced) & Reference Set
+        if self.eval_indices is None or self.ref_indices is None:
+            if getattr(self.data_module, 'has_conditioning', False):
                 total_samples = len(self.data_module.norm_stats['anchors'])
-                self.eval_indices = np.linspace(0, total_samples - 1, self.n_samples, dtype=int)
+            else:
+                total_samples = len(self.data_module.raw_data_tensor)
                 
-                if getattr(self.data_module, 'has_path_sig_conditioning', False):
-                    sigs = self.data_module.path_sig_tensor
-                    self.eval_conditions = sigs[self.eval_indices].to(pl_module.device)
-        else:
-            if self.eval_indices is None:
-                self.eval_indices = np.linspace(0, len(self.data_module.raw_data_tensor) - 1, self.n_samples, dtype=int)
+            # Need 2 * n_samples to create orthogonal Target and Reference sets
+            # Target (0 to n_samples-1) for conditioning/generation, Reference (n_samples to 2*n_samples-1) for benchmarking
+            all_indices = np.linspace(0, total_samples - 1, self.n_samples * 2, dtype=int)
+            self.eval_indices = all_indices[:self.n_samples]
+            self.ref_indices = all_indices[self.n_samples:]
+            
+            if getattr(self.data_module, 'has_path_sig_conditioning', False):
+                sigs = self.data_module.path_sig_tensor
+                self.eval_conditions = sigs[self.eval_indices].to(pl_module.device)
 
         # Ensure conditions are on the correct device if already cached
         conditions = None
@@ -79,23 +84,24 @@ class InlineEvaluationCallback(pl.Callback):
         synth_ts_norm = self.data_module.convert_wavelet_to_timeseries(synth_wavelet).cpu().numpy()
         
         # 4. Reconstruct OHLC Space
-        real_ts_norm = self.data_module.raw_data_tensor[self.eval_indices].cpu().numpy()
+        real_ts_norm_target = self.data_module.raw_data_tensor[self.eval_indices].cpu().numpy()
+        real_ts_norm_ref = self.data_module.raw_data_tensor[self.ref_indices].cpu().numpy()
         
         # Need to reconstruct to physical OHLCV to compute physical structure distances
         synth_ohlcv = self.data_module.inverse_normalize(synth_ts_norm, sample_indices=self.eval_indices)
-        real_ohlcv = self.data_module.inverse_normalize(real_ts_norm, sample_indices=self.eval_indices)
+        real_ohlcv_target = self.data_module.inverse_normalize(real_ts_norm_target, sample_indices=self.eval_indices)
+        real_ohlcv_ref = self.data_module.inverse_normalize(real_ts_norm_ref, sample_indices=self.ref_indices)
         
         # Extract strictly OHLC columns
         if self.ohlcv_indices is not None:
-            o_idx = self.ohlcv_indices.get('open', 0)
-            h_idx = self.ohlcv_indices.get('high', 1)
-            l_idx = self.ohlcv_indices.get('low', 2)
-            c_idx = self.ohlcv_indices.get('close', 3)
+            o_idx, h_idx, l_idx, c_idx = self.ohlcv_indices['open'], self.ohlcv_indices['high'], self.ohlcv_indices['low'], self.ohlcv_indices['close']
             synth_ohlc = synth_ohlcv[:, :, [o_idx, h_idx, l_idx, c_idx]]
-            real_ohlc = real_ohlcv[:, :, [o_idx, h_idx, l_idx, c_idx]]
+            real_ohlc_target = real_ohlcv_target[:, :, [o_idx, h_idx, l_idx, c_idx]]
+            real_ohlc_ref = real_ohlcv_ref[:, :, [o_idx, h_idx, l_idx, c_idx]]
         else:
             synth_ohlc = synth_ohlcv
-            real_ohlc = real_ohlcv
+            real_ohlc_target = real_ohlcv_target
+            real_ohlc_ref = real_ohlcv_ref
             
         results = {}
         
@@ -103,15 +109,15 @@ class InlineEvaluationCallback(pl.Callback):
         if self.ohlcv_indices is not None:
             results['OHLC_Valid_Pct'] = self._check_ohlc_invariants(synth_ohlc) * 100.0
 
-        # Metric 2: DCR & NNDR
-        mem_stats = self._compute_ohlc_memorization_stats(real_ohlc, synth_ohlc)
+        # Metric 2: DCR & NNDR (Benchmarked)
+        mem_stats = self._compute_ohlc_memorization_stats(real_ohlc_target, synth_ohlc, real_ohlc_ref)
         results.update(mem_stats)
         
         # Metric 3: Context-FID
-        results['Context_FID'] = self._compute_training_frechet_distance(real_ohlc, synth_ohlc)
+        results['Context_FID'] = self._compute_training_frechet_distance(real_ohlc_target, synth_ohlc)
         
         # Metric 4: EVT Tail Index (Hill)
-        evt_stats = self._compute_evt_tail_drift(real_ohlc, synth_ohlc)
+        evt_stats = self._compute_evt_tail_drift(real_ohlc_target, synth_ohlc)
         results.update(evt_stats)
         
         # Restore Weights
@@ -126,9 +132,9 @@ class InlineEvaluationCallback(pl.Callback):
         if self.ohlcv_indices is not None:
             print(f"    OHLC Valid Pct:  {results['OHLC_Valid_Pct']:.1f}%")
         print(f"    Context-FID:     {results['Context_FID']:.4f}")
-        print(f"\n  • Memorization (Privacy)")
-        print(f"    DCR (5th Pct):   {results['DCR_5th_Pct']:.4f}")
-        print(f"    NNDR (Avg):      {results['NNDR_Avg']:.4f}")
+        print(f"\n  • Memorization (Privacy) vs Baseline")
+        print(f"    S→R DCR (5th):   {results['Synth_to_Real_DCR']:.4f}  [vs Real: {results['Real_to_Real_DCR']:.4f}]")
+        print(f"    S→R NNDR (Avg):  {results['Synth_to_Real_NNDR']:.4f}  [vs Real: {results['Real_to_Real_NNDR']:.4f}]")
         print(f"\n  • Fat Tail Drift (EVT)")
         print(f"    Real Tail Index: {results['Real_Tail_Index']:.4f}")
         print(f"    Synth Tail Index:{results['Synth_Tail_Index']:.4f}")
@@ -179,22 +185,49 @@ class InlineEvaluationCallback(pl.Callback):
         valid = (high_p >= open_p - eps) & (high_p >= close_p - eps) & (low_p <= open_p + eps) & (low_p <= close_p + eps) & (high_p >= low_p - eps)
         return float(np.mean(valid))
 
-    def _compute_ohlc_memorization_stats(self, real_ohlc: np.ndarray, synth_ohlc: np.ndarray) -> dict:
-        real_flat = self._sanitize(real_ohlc).reshape(real_ohlc.shape[0], -1)
+    def _compute_ohlc_memorization_stats(self, real_ohlc_target: np.ndarray, synth_ohlc: np.ndarray, real_ohlc_ref: np.ndarray) -> dict:
+        real_flat_target = self._sanitize(real_ohlc_target).reshape(real_ohlc_target.shape[0], -1)
+        real_flat_ref = self._sanitize(real_ohlc_ref).reshape(real_ohlc_ref.shape[0], -1)
         synth_flat = self._sanitize(synth_ohlc).reshape(synth_ohlc.shape[0], -1)
         
-        # Calculate exactly the 2 nearest neighbors to get DCR and NNDR
-        nbrs = NearestNeighbors(n_neighbors=2, algorithm='ball_tree').fit(real_flat)
-        distances, _ = nbrs.kneighbors(synth_flat)
+        # Fit NN model on the Reference training set pool
+        # Need k=3 for the Real-to-Real benchmark to ensure we can skip self-matches
+        nbrs = NearestNeighbors(n_neighbors=3, algorithm='ball_tree').fit(real_flat_ref)
         
-        # Distance to closest neighbor in the real set
-        dcr = distances[:, 0]
-        # Ratio of closest to second closest
-        nndr = dcr / (distances[:, 1] + 1e-8)
+        # 1. Synthetic Samples: Raw math (Do NOT filter 0, we WANT to see memorization!)
+        synth_distances, _ = nbrs.kneighbors(synth_flat)
+        s_d1 = synth_distances[:, 0]
+        s_d2 = synth_distances[:, 1]
+        synth_dcr = s_d1
+        synth_nndr = s_d1 / (s_d2 + 1e-8)
+        
+        # 2. Real Target Samples: Filter out self-matches to get a true diversity baseline
+        real_distances, _ = nbrs.kneighbors(real_flat_target)
+        r_valid_d1 = []
+        r_valid_d2 = []
+        
+        for i in range(len(real_distances)):
+            row = real_distances[i]
+            # Filter out points that are too close (distance ~ 0) to avoid self-referencing
+            non_self = row[row > 1e-6]
+            if len(non_self) < 2:
+                # Fallback to standard neighbors if the sample is extremely unique or data is very sparse
+                r_valid_d1.append(row[0])
+                r_valid_d2.append(row[1])
+            else:
+                r_valid_d1.append(non_self[0])
+                r_valid_d2.append(non_self[1])
+        
+        r_valid_d1 = np.array(r_valid_d1)
+        r_valid_d2 = np.array(r_valid_d2)
+        real_dcr = r_valid_d1
+        real_nndr = r_valid_d1 / (r_valid_d2 + 1e-8)
         
         return {
-            'DCR_5th_Pct': float(np.percentile(dcr, 5)),
-            'NNDR_Avg': float(np.mean(nndr))
+            'Synth_to_Real_DCR': float(np.percentile(synth_dcr, 5)),
+            'Real_to_Real_DCR': float(np.percentile(real_dcr, 5)),
+            'Synth_to_Real_NNDR': float(np.mean(synth_nndr)),
+            'Real_to_Real_NNDR': float(np.mean(real_nndr))
         }
 
     def _compute_training_frechet_distance(self, real_ohlc: np.ndarray, synth_ohlc: np.ndarray) -> float:
