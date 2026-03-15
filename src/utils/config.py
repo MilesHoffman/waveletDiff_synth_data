@@ -79,7 +79,8 @@ INTERNAL_DEFAULTS = {
     "conditioning": {
         "cfg_dropout_prob": 0.15,
         "guidance_scale": 1.0,
-        "past_days": 200
+        "past_days": 200,
+        "augmentation_noise": 0.0
     }
 }
 

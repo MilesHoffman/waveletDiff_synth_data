@@ -38,7 +38,8 @@ sampling:
 conditioning:
   cfg_dropout_prob: 0.15  # Probability of dropping all conditions during training
   guidance_scale: 1.0     # CFG guidance scale at inference (1.0=no guidance, >1.0=stronger)
-  quarter_conditions: true
+  past_days: 200
+  augmentation_noise: 0.0
 
 # Data configuration
 data:

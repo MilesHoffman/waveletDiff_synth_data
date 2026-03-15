@@ -101,6 +101,7 @@ def main():
 
     # Path Signature Options
     parser.add_argument('--past_days', type=int, default=None, help='Number of past days for path signature lookback (default: 200)')
+    parser.add_argument('--augmentation_noise', type=float, default=None, help='Multiplicative noise for condition augmentation (default: 0.0)')
 
     args = parser.parse_args()
     
@@ -193,6 +194,9 @@ def main():
     if args.past_days is not None:
         if 'conditioning' not in config: config['conditioning'] = {}
         config['conditioning']['past_days'] = args.past_days
+    if args.augmentation_noise is not None:
+        if 'conditioning' not in config: config['conditioning'] = {}
+        config['conditioning']['augmentation_noise'] = args.augmentation_noise
     
     enable_progress_bar = args.enable_progress_bar.lower() == 'true'
     
