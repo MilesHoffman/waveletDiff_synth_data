@@ -232,24 +232,35 @@ class InlineEvaluationCallback(pl.Callback):
         }
 
     def _compute_training_frechet_distance(self, real_ohlc: np.ndarray, synth_ohlc: np.ndarray) -> float:
-        real_flat = self._sanitize(real_ohlc).reshape(real_ohlc.shape[0], -1)
-        synth_flat = self._sanitize(synth_ohlc).reshape(synth_ohlc.shape[0], -1)
-        
-        mu_r = np.mean(real_flat, axis=0)
-        mu_s = np.mean(synth_flat, axis=0)
+        real_flat = self._sanitize(real_ohlc).reshape(real_ohlc.shape[0], -1).astype(np.float64)
+        synth_flat = self._sanitize(synth_ohlc).reshape(synth_ohlc.shape[0], -1).astype(np.float64)
         
         if real_flat.shape[0] < 2:
             return 0.0
+        
+        # Standardize per-feature to remove scale bias from raw OHLCV dollar values.
+        # Without this, the mean-diff^2 term dominates and produces values in the 10k-100k range
+        # even for two draws from the same distribution.
+        feat_std = real_flat.std(axis=0) + 1e-8
+        real_flat = real_flat / feat_std
+        synth_flat = synth_flat / feat_std
             
+        mu_r = np.mean(real_flat, axis=0)
+        mu_s = np.mean(synth_flat, axis=0)
+        
         sigma_r = np.cov(real_flat, rowvar=False)
         sigma_s = np.cov(synth_flat, rowvar=False)
+        
+        # Tikhonov regularization: prevents near-singular covariance matrices when n << d
+        eps = 1e-4
+        sigma_r += np.eye(sigma_r.shape[0]) * eps
+        sigma_s += np.eye(sigma_s.shape[0]) * eps
         
         diff = mu_r - mu_s
         
         covmean, _ = scipy.linalg.sqrtm(sigma_r.dot(sigma_s), disp=False)
         if not np.isfinite(covmean).all():
-            offset = np.eye(sigma_r.shape[0]) * 1e-6
-            covmean = scipy.linalg.sqrtm((sigma_r + offset).dot(sigma_s + offset))
+            covmean = scipy.linalg.sqrtm((sigma_r + np.eye(sigma_r.shape[0]) * 1e-3).dot(sigma_s + np.eye(sigma_s.shape[0]) * 1e-3))
             
         if np.iscomplexobj(covmean):
             covmean = covmean.real
