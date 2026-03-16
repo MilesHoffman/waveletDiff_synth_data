@@ -190,7 +190,15 @@ def main():
 
     # Prepare conditioning indices for 1-to-1 mapping with real data
     sample_indices = None
-    if getattr(data_module, 'has_conditioning', False):
+    has_conditioning = getattr(data_module, 'has_path_sig_conditioning', False)
+    
+    # We also need sample_indices if we are doing reparameterized OHLC inverse mapping
+    needs_indices = has_conditioning or (
+        getattr(data_module, 'norm_stats', None) is not None and 
+        'anchors' in data_module.norm_stats
+    )
+    
+    if needs_indices:
         num_avail = len(data_module.norm_stats['anchors'])
         if num_samples <= num_avail:
             sample_indices = np.arange(num_samples)
@@ -200,7 +208,7 @@ def main():
     # Prepare path signature conditions
     conditions = None
     guidance_scale = args.guidance_scale or config.get('conditioning', {}).get('guidance_scale', 1.0)
-    if getattr(data_module, 'has_path_sig_conditioning', False) and sample_indices is not None:
+    if has_conditioning and sample_indices is not None:
         conditions = data_module.path_sig_tensor[sample_indices].to(model.device)
         print(f"Path signature conditioning: dim={conditions.shape[-1]}, guidance_scale={guidance_scale}")
 
