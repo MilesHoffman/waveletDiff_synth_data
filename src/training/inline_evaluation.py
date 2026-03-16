@@ -199,7 +199,11 @@ class InlineEvaluationCallback(pl.Callback):
             ch = ohlc[:, :, c]
             parts.append(ch.mean(axis=1, keepdims=True))
             parts.append(ch.std(axis=1, keepdims=True))
-            parts.append(_scipy_skew(ch, axis=1).reshape(-1, 1))
+            
+            # Scipy skew returns NaN for constant data (variance=0); replace with 0.0
+            skew_vals = _scipy_skew(ch, axis=1)
+            skew_vals = np.nan_to_num(skew_vals, nan=0.0, posinf=0.0, neginf=0.0)
+            parts.append(skew_vals.reshape(-1, 1))
         return np.hstack(parts).astype(np.float64)
 
     # ── Structural Invariants ──────────────────────────────────────────────────
@@ -351,8 +355,9 @@ class InlineEvaluationCallback(pl.Callback):
             return zero
 
         eps = 1e-8
-        real_c  = real_ohlc[..., 3]
-        synth_c = synth_ohlc[..., 3]
+        # Ensure prices are non-negative before logarithm to prevent NaNs
+        real_c  = np.clip(real_ohlc[..., 3], 0.0, None)
+        synth_c = np.clip(synth_ohlc[..., 3], 0.0, None)
 
         real_ret  = np.log((real_c[:,  1:] + eps) / (real_c[:,  :-1] + eps)).flatten()
         synth_ret = np.log((synth_c[:, 1:] + eps) / (synth_c[:, :-1] + eps)).flatten()
