@@ -103,6 +103,9 @@ def main():
     parser.add_argument('--past_days', type=int, default=None, help='Number of past days for path signature lookback (default: 200)')
     parser.add_argument('--augmentation_noise', type=float, default=None, help='Multiplicative noise for condition augmentation (default: 0.0)')
 
+    # Test Dataset Options
+    parser.add_argument('--test_data_dir', type=str, default=None, help='Path to test dataset CSV for out-of-sample inline evaluation')
+
     args = parser.parse_args()
     
     # Load configuration
@@ -252,6 +255,17 @@ def main():
     print(f"Dataset size: {len(data_module.dataset)}")
     print(f"Wavelet: {data_module.wavelet_type} with {data_module.wavelet_info['levels']} levels")
 
+    # Test Data Module (opt-in; never passed to trainer.fit — only used in inline eval)
+    test_data_module = None
+    if args.test_data_dir:
+        print("\n" + "="*60)
+        print("SETTING UP TEST DATA MODULE (out-of-sample eval only)")
+        print("="*60)
+        test_config = {k: (dict(v) if isinstance(v, dict) else v) for k, v in config.items()}
+        test_config['data']['data_dir'] = args.test_data_dir
+        test_data_module = WaveletTimeSeriesDataModule(config=test_config)
+        print(f"Test data module ready: {len(test_data_module.dataset)} samples")
+
     # Get wavelet info
     wavelet_info = data_module.get_wavelet_info()
     print(f"   Wavelet levels: {wavelet_info['levels']}")
@@ -379,9 +393,12 @@ def main():
             data_module=data_module,
             eval_every_n_epochs=eval_every,
             n_samples=eval_n_samples,
-            ohlcv_indices=ohlcv_indices
+            ohlcv_indices=ohlcv_indices,
+            test_data_module=test_data_module,
         ))
-        print(f"Inline evaluation enabled: every {eval_every} epochs, {eval_n_samples} samples")
+        test_label = f", test data: {args.test_data_dir}" if test_data_module else ""
+        print(f"Inline evaluation enabled: every {eval_every} epochs, {eval_n_samples} samples{test_label}")
+
 
     # Setup Profiler - Using custom callback to bypass Lightning's broken PyTorchProfiler
     import warnings
