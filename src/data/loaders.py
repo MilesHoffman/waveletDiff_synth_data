@@ -261,15 +261,43 @@ def compute_path_signature(close_seq: np.ndarray, vol_log_dev_seq: np.ndarray,
 
 # ─── Robust Scaling Utilities ──────────────────────────────────────────────────
 
-def robust_scale(arr: np.ndarray) -> Tuple[np.ndarray, float, float]:
-    """Global Robust Scaling: (x - median) / IQR. Returns scaled array, median, iqr."""
-    valid = arr[~np.isnan(arr)]
-    median = float(np.median(valid))
-    q75, q25 = np.percentile(valid, [75, 25])
-    iqr = float(q75 - q25)
-    if iqr < 1e-10:
-        iqr = 1.0
+def robust_scale(arr: np.ndarray, axis: int = None) -> Tuple[np.ndarray, Any, Any]:
+    """
+    Robust Scaling: (x - median) / IQR.
+    
+    Args:
+        arr: Input array.
+        axis: Axis along which to compute statistics. If None, scales globally.
+        
+    Returns:
+        scaled_arr, median, iqr
+    """
+    if axis is None:
+        valid = arr[~np.isnan(arr)]
+        if len(valid) == 0:
+            return arr, 0.0, 1.0
+        median = float(np.median(valid))
+        q75, q25 = np.percentile(valid, [75, 25])
+        iqr = float(q75 - q25)
+    else:
+        median = np.nanmedian(arr, axis=axis, keepdims=True)
+        q75, q25 = np.nanpercentile(arr, [75, 25], axis=axis, keepdims=True)
+        iqr = q75 - q25
+        
+    # Handle zero IQR to avoid division by zero
+    iqr = np.where(np.abs(iqr) < 1e-10, 1.0, iqr)
+    
     return (arr - median) / iqr, median, iqr
+
+
+def log_robust_scale(arr: np.ndarray) -> Tuple[np.ndarray, float, float]:
+    """
+    Log-transform then Robust Scale for strictly positive, right-skewed data.
+    (e.g. Volatility, Amihud).
+    """
+    log_arr = np.where(np.isnan(arr), np.nan, np.log(arr + 1e-10))
+    scaled, med, iqr = robust_scale(log_arr)
+    return scaled, float(med), float(iqr)
 
 
 def log_zscore(arr: np.ndarray) -> Tuple[np.ndarray, float, float]:
@@ -498,8 +526,9 @@ def load_stocks_data(data_dir: str, seq_len: int = 24, normalize_data: bool = Tr
     safe_range = np.where(bar_range < eps, eps, bar_range)
     max_oc = np.maximum(open_prices, close_prices)
     min_oc = np.minimum(open_prices, close_prices)
-    wick_high_ratio = np.clip((high_prices - max_oc) / safe_range, 0.0, 1.0)
-    wick_low_ratio = np.clip((min_oc - low_prices) / safe_range, 0.0, 1.0)
+    # New Log-Shadow Formulas
+    log_upper_shadow_raw = np.log(high_prices / (max_oc + eps) + eps)
+    log_lower_shadow_raw = np.log((min_oc + eps) / (low_prices + eps) + eps)
 
     prev_intraday_raw = np.log(prev_close / (prev_open + eps))
 
@@ -546,8 +575,8 @@ def load_stocks_data(data_dir: str, seq_len: int = 24, normalize_data: bool = Tr
     intraday_return_raw = intraday_return_raw[valid_start:]
     total_log_return_raw = total_log_return_raw[valid_start:]
     normalized_range_raw = normalized_range_raw[valid_start:]
-    wick_high_ratio = wick_high_ratio[valid_start:]
-    wick_low_ratio = wick_low_ratio[valid_start:]
+    log_upper_shadow_raw = log_upper_shadow_raw[valid_start:]
+    log_lower_shadow_raw = log_lower_shadow_raw[valid_start:]
     prev_intraday_raw = prev_intraday_raw[valid_start:]
     vol_shock_raw = vol_shock_raw[valid_start:]
     vol_log_dev = vol_log_dev[valid_start:]
@@ -571,6 +600,11 @@ def load_stocks_data(data_dir: str, seq_len: int = 24, normalize_data: bool = Tr
     intraday_return_scaled, idr_med, idr_iqr = robust_scale(intraday_return_raw)
     total_log_return_scaled, tlr_med, tlr_iqr = robust_scale(total_log_return_raw)
     normalized_range_scaled, nr_med, nr_iqr = robust_scale(normalized_range_raw)
+
+    # Log Shadows Robust Scaling
+    log_upper_shadow_scaled, lus_med, lus_iqr = robust_scale(log_upper_shadow_raw)
+    log_lower_shadow_scaled, lls_med, lls_iqr = robust_scale(log_lower_shadow_raw)
+
     prev_intraday_scaled, pidr_med, pidr_iqr = robust_scale(prev_intraday_raw)
     vol_shock_scaled, vs_med, vs_iqr = robust_scale(vol_shock_raw)
 
@@ -579,10 +613,13 @@ def load_stocks_data(data_dir: str, seq_len: int = 24, normalize_data: bool = Tr
     sma_100_dist_scaled, sma100_med, sma100_iqr = robust_scale(sma_100_dist)
     sma_200_dist_scaled, sma200_med, sma200_iqr = robust_scale(sma_200_dist)
 
-    yz_scaled, yz_log_mean, yz_log_std = log_zscore(rolling_yz)
-    semivar_scaled, sv_log_mean, sv_log_std = log_zscore(rolling_semivar)
-    amihud_scaled, am_log_mean, am_log_std = log_zscore(rolling_amihud)
-    skew_scaled, skew_mean, skew_std = zscore(rolling_skew)
+    # Use Log-Robust Scaling for naturally skewed positive metrics
+    yz_scaled, yz_med, yz_iqr = log_robust_scale(rolling_yz)
+    semivar_scaled, sv_med, sv_iqr = log_robust_scale(rolling_semivar)
+    amihud_scaled, am_med, am_iqr = log_robust_scale(rolling_amihud)
+    
+    # Use Robust Scaling for Skewness
+    skew_scaled, skew_med, skew_iqr = robust_scale(rolling_skew)
 
     # ── 9. Build Windows ──
     total_timesteps = len(open_prices)
@@ -638,8 +675,8 @@ def load_stocks_data(data_dir: str, seq_len: int = 24, normalize_data: bool = Tr
         w_vol_med = vol_median_arr[s] if not np.isnan(vol_median_arr[s]) else 0.0
         w_vol_iqr = vol_iqr_arr[s] if not np.isnan(vol_iqr_arr[s]) else 1.0
 
-        # Price anchor for reconstruction
-        anchor = float(close_prices[s])
+        # Price anchor for reconstruction (Close_{t-1} needed for Open_t reconstruction)
+        anchor = float(g_close[valid_start + s - 1])
 
         # NaN-safe feature fill
         def safe(arr, start, end):
@@ -653,8 +690,8 @@ def load_stocks_data(data_dir: str, seq_len: int = 24, normalize_data: bool = Tr
             safe(intraday_return_scaled, s, e),     # [1]
             safe(total_log_return_scaled, s, e),    # [2]
             safe(normalized_range_scaled, s, e),    # [3]
-            wick_high_ratio[s:e],                   # [4]
-            wick_low_ratio[s:e],                    # [5]
+            safe(log_upper_shadow_scaled, s, e),    # [4]
+            safe(log_lower_shadow_scaled, s, e),    # [5]
             safe(prev_intraday_scaled, s, e),       # [6]
             cum_return,                             # [7]
             day_sin,                                # [8]
@@ -686,11 +723,14 @@ def load_stocks_data(data_dir: str, seq_len: int = 24, normalize_data: bool = Tr
         sig = compute_path_signature(sig_close, sig_vld, depth=SIG_DEPTH)
         path_signatures.append(sig)
 
+    # ── 10. Robust Scale Path Signatures (Per-Dimension) ──
+    path_signatures = np.array(path_signatures, dtype=np.float32)
+    path_signatures_scaled, sig_meds, sig_iqrs = robust_scale(path_signatures, axis=0)
+
     windows = np.array(windows, dtype=np.float32)
     anchors = np.array(anchors, dtype=np.float32)
     vol_medians = np.array(vol_medians, dtype=np.float32)
     vol_iqrs = np.array(vol_iqrs, dtype=np.float32)
-    path_signatures = np.array(path_signatures, dtype=np.float32)
 
     norm_stats = {
         'reparameterized': True,
@@ -702,32 +742,34 @@ def load_stocks_data(data_dir: str, seq_len: int = 24, normalize_data: bool = Tr
             'intraday_return': {'median': idr_med, 'iqr': idr_iqr},
             'total_log_return': {'median': tlr_med, 'iqr': tlr_iqr},
             'normalized_range': {'median': nr_med, 'iqr': nr_iqr},
+            'log_upper_shadow': {'median': lus_med, 'iqr': lus_iqr},
+            'log_lower_shadow': {'median': lls_med, 'iqr': lls_iqr},
             'prev_intraday': {'median': pidr_med, 'iqr': pidr_iqr},
             'vol_shock': {'median': vs_med, 'iqr': vs_iqr},
             'sma_20_dist': {'median': sma20_med, 'iqr': sma20_iqr},
             'sma_50_dist': {'median': sma50_med, 'iqr': sma50_iqr},
             'sma_100_dist': {'median': sma100_med, 'iqr': sma100_iqr},
             'sma_200_dist': {'median': sma200_med, 'iqr': sma200_iqr},
+            'skewness': {'median': skew_med, 'iqr': skew_iqr},
+            'yz_vol': {'median': yz_med, 'iqr': yz_iqr, 'log_transformed': True},
+            'semivariance': {'median': sv_med, 'iqr': sv_iqr, 'log_transformed': True},
+            'amihud': {'median': am_med, 'iqr': am_iqr, 'log_transformed': True},
         },
-        'log_zscore_stats': {
-            'yz_vol': {'mean': yz_log_mean, 'std': yz_log_std},
-            'semivariance': {'mean': sv_log_mean, 'std': sv_log_std},
-            'amihud': {'mean': am_log_mean, 'std': am_log_std},
-        },
-        'zscore_stats': {
-            'skewness': {'mean': skew_mean, 'std': skew_std},
+        'signature_scales': {
+            'medians': sig_meds.flatten(),
+            'iqrs': sig_iqrs.flatten()
         },
         'volume_type': 'log_deviation_median',
         'feature_names': [
             'overnight_gap', 'intraday_return', 'total_log_return',
-            'normalized_range', 'wick_high_ratio', 'wick_low_ratio',
+            'normalized_range', 'log_upper_shadow', 'log_lower_shadow',
             'prev_intraday_ret', 'cum_return',
             'day_sin', 'day_cos',
             'sma_20_dist', 'sma_50_dist', 'sma_100_dist', 'sma_200_dist',
             'hurst', 'yz_vol', 'skewness', 'semivariance',
             'amihud', 'vol_shock', 'mfi', 'vol_log_dev'
         ],
-        'path_signatures': path_signatures,
+        'path_signatures': path_signatures_scaled,
         'path_sig_dim': sig_dim,
         'past_days': past_days,
     }
@@ -736,7 +778,7 @@ def load_stocks_data(data_dir: str, seq_len: int = 24, normalize_data: bool = Tr
     print(f"  Anchor price range: [{anchors.min():.2f}, {anchors.max():.2f}]")
     print(f"  Vol LogDev mean: {windows[:, :, 21].mean():.4f} (should be ~0)")
     print(f"  Path signature: dim={sig_dim}, past_days={past_days}")
-    print(f"  Sig mean={path_signatures.mean():.4f}, std={path_signatures.std():.4f}")
+    print(f"  Sig mean={path_signatures_scaled.mean():.4f}, std={path_signatures_scaled.std():.4f}")
 
     return torch.FloatTensor(windows), norm_stats
 

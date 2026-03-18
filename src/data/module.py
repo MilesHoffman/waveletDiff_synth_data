@@ -315,20 +315,25 @@ class WaveletTimeSeriesDataModule(pl.LightningDataModule):
         gap_med, gap_iqr = rs['overnight_gap']['median'], rs['overnight_gap']['iqr']
         idr_med, idr_iqr = rs['intraday_return']['median'], rs['intraday_return']['iqr']
         nr_med, nr_iqr = rs['normalized_range']['median'], rs['normalized_range']['iqr']
+        lus_med, lus_iqr = rs['log_upper_shadow']['median'], rs['log_upper_shadow']['iqr']
+        lls_med, lls_iqr = rs['log_lower_shadow']['median'], rs['log_lower_shadow']['iqr']
 
         # ── Extract & Unscale Structural Features ──
         gap_scaled = data[..., 0]
         idr_scaled = data[..., 1]
         range_scaled = data[..., 3]
-        wick_high_ratio = np.clip(data[..., 4], 0.0, 1.0)
-        wick_low_ratio = np.clip(data[..., 5], 0.0, 1.0)
+        lus_scaled = data[..., 4]
+        lls_scaled = data[..., 5]
         vol_log_dev = np.clip(data[..., 21], -10.0, 10.0)
 
-        # Invert Robust Scaling to raw Log-Returns
+        # Invert Robust Scaling to raw Log-Returns and Log-Shadows
         gap_log_return = (gap_scaled * gap_iqr) + gap_med
         intraday_log_return = (idr_scaled * idr_iqr) + idr_med
         normalized_range = (range_scaled * nr_iqr) + nr_med
         normalized_range = np.maximum(normalized_range, 0.0)
+
+        log_upper_shadow = (lus_scaled * lus_iqr) + lus_med
+        log_lower_shadow = (lls_scaled * lls_iqr) + lls_med
 
         # ── Reconstruct Prices via Sequential Chaining ──
         open_prices = np.zeros((n_samples, seq_len))
@@ -351,8 +356,10 @@ class WaveletTimeSeriesDataModule(pl.LightningDataModule):
             max_oc = np.maximum(open_prices[:, t], close_prices[:, t])
             min_oc = np.minimum(open_prices[:, t], close_prices[:, t])
 
-            high_prices[:, t] = max_oc + wick_high_ratio[:, t] * total_range
-            low_prices[:, t] = min_oc - wick_low_ratio[:, t] * total_range
+            # Reconstruct High/Low using Log-Shadows (exact inverse of log(ratio + eps))
+            eps = 1e-10
+            high_prices[:, t] = (max_oc + eps) * (np.exp(log_upper_shadow[:, t]) - eps)
+            low_prices[:, t] = (min_oc + eps) / (np.exp(log_lower_shadow[:, t]) - eps) - eps
 
         # ── Volume Reconstruction: Log-Deviation Inverse ──
         vol_medians_exp = vol_medians.reshape(-1, 1)
