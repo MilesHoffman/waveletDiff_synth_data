@@ -471,11 +471,21 @@ def load_stocks_data(data_dir: str, seq_len: int = 24, normalize_data: bool = Tr
     df = pd.read_csv(stocks_path)
 
     # ── 2. Handle Multi-ticker / Metadata headers ──
-    try:
-        pd.to_numeric(df['Open'].iloc[0])
-    except (ValueError, KeyError, TypeError, IndexError):
-        print("Detected non-numeric first row (metadata/headers), dropping...")
-        df = df.iloc[1:].reset_index(drop=True)
+    # Check if the first row is actually data (Open column should be numeric)
+    # Use case-insensitive column lookup to avoid brittle drops
+    col_map_initial = {c.lower(): c for c in df.columns}
+    open_col = col_map_initial.get('open')
+    
+    if open_col is not None:
+        try:
+            pd.to_numeric(df[open_col].iloc[0])
+        except (ValueError, TypeError, IndexError):
+            print("Detected non-numeric first row (metadata/headers), dropping...")
+            df = df.iloc[1:].reset_index(drop=True)
+    else:
+        # If 'open' not found at all, we'll hit an error in _select_ohlcv_columns anyway,
+        # but let's not drop data blindly.
+        pass
 
     # ── 3. Date / Day of Week ──
     if 'Date' in df.columns:
@@ -540,7 +550,7 @@ def load_stocks_data(data_dir: str, seq_len: int = 24, normalize_data: bool = Tr
     vol_log_dev = np.full_like(log_volume, np.nan)
     vol_median_arr = np.full_like(log_volume, np.nan)
     vol_iqr_arr = np.full_like(log_volume, np.nan)
-    vol_rolling_period = 20
+    vol_rolling_period = 60
 
     for i in range(vol_rolling_period, len(log_volume)):
         window = log_volume[i - vol_rolling_period:i]
@@ -561,7 +571,7 @@ def load_stocks_data(data_dir: str, seq_len: int = 24, normalize_data: bool = Tr
 
     # ── 6. Determine Valid Start ──
     # Ensure enough history for rolling indicators (200) + path signature lookback
-    valid_start = max(200, past_days + 20)
+    valid_start = max(200, past_days + vol_rolling_period)
 
     # ── 7. Slice to valid region ──
     open_prices = open_prices[valid_start:]
@@ -642,8 +652,9 @@ def load_stocks_data(data_dir: str, seq_len: int = 24, normalize_data: bool = Tr
     # Full-length vol_log_dev (pre-slice) for path signature
     full_log_volume = np.log(full_data[:, 4] + eps)
     full_vol_log_dev = np.full_like(full_log_volume, 0.0)
-    for vi in range(20, len(full_log_volume)):
-        w = full_log_volume[vi - 20:vi]
+    vol_rolling_period = 60
+    for vi in range(vol_rolling_period, len(full_log_volume)):
+        w = full_log_volume[vi - vol_rolling_period:vi]
         med = np.median(w)
         q75, q25 = np.percentile(w, [75, 25])
         iqr = (q75 - q25) / 1.349
@@ -671,9 +682,11 @@ def load_stocks_data(data_dir: str, seq_len: int = 24, normalize_data: bool = Tr
         window_close = close_prices[s:e]
         cum_return = np.log(window_close / (window_close[0] + eps))
 
-        # Volume anchors for this window (use the values at window start)
-        w_vol_med = vol_median_arr[s] if not np.isnan(vol_median_arr[s]) else 0.0
-        w_vol_iqr = vol_iqr_arr[s] if not np.isnan(vol_iqr_arr[s]) else 1.0
+        # Volume log-deviation relative to window-start baseline
+        # This ensuring stationarity and perfect reconstruction during inference
+        v_med = vol_median_arr[s] if not np.isnan(vol_median_arr[s]) else 0.0
+        v_iqr = vol_iqr_arr[s] if not np.isnan(vol_iqr_arr[s]) else 1.0
+        window_vol_log_dev = (log_volume[valid_start + s : valid_start + e] - v_med) / v_iqr
 
         # Price anchor for reconstruction (Close_{t-1} needed for Open_t reconstruction)
         anchor = float(g_close[valid_start + s - 1])
@@ -707,13 +720,13 @@ def load_stocks_data(data_dir: str, seq_len: int = 24, normalize_data: bool = Tr
             safe(amihud_scaled, s, e),              # [18]
             safe(vol_shock_scaled, s, e),           # [19]
             np.nan_to_num(mfi[s:e], nan=0.5),       # [20]
-            safe(vol_log_dev, s, e),                # [21]
+            window_vol_log_dev,                     # [21]
         ], axis=1)
 
         windows.append(window_features)
         anchors.append(anchor)
-        vol_medians.append(w_vol_med)
-        vol_iqrs.append(w_vol_iqr)
+        vol_medians.append(v_med)
+        vol_iqrs.append(v_iqr)
 
         # Path signature from the preceding `past_days` (no lookahead)
         global_start = valid_start + s
