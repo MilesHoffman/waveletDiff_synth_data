@@ -673,10 +673,10 @@ def load_stocks_data(data_dir: str, seq_len: int = 24, normalize_data: bool = Tr
         s = i
         e = s + seq_len
 
-        # Day encoding
+        # Day encoding (7-day calendar cycle to preserve weekend gaps)
         curr_days = day_of_week[s:e]
-        day_sin = np.sin(2 * np.pi * curr_days / 5.0)
-        day_cos = np.cos(2 * np.pi * curr_days / 5.0)
+        day_sin = np.sin(2 * np.pi * curr_days / 7.0)
+        day_cos = np.cos(2 * np.pi * curr_days / 7.0)
 
         # Cumulative return relative to window start
         window_close = close_prices[s:e]
