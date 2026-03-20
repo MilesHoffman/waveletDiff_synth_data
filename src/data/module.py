@@ -156,8 +156,34 @@ class WaveletTimeSeriesDataModule(pl.LightningDataModule):
                 coeffs_flat = np.concatenate([c.flatten() for c in coeffs])
                 wavelet_coeffs[sample_idx, :, feature_idx] = coeffs_flat
 
-        wavelet_tensor = torch.FloatTensor(wavelet_coeffs)
         level_start_indices = [0] + list(np.cumsum(level_dims[:-1]))
+        
+        # ── Apply Robust Scaling per Wavelet Level ──
+        level_medians = np.zeros((len(level_dims), n_features))
+        level_iqrs = np.zeros((len(level_dims), n_features))
+        
+        for level_idx, (start_idx, dim) in enumerate(zip(level_start_indices, level_dims)):
+            end_idx = start_idx + dim
+            level_data = wavelet_coeffs[:, start_idx:end_idx, :]
+            
+            for f in range(n_features):
+                f_data = level_data[:, :, f]
+                # Compute median and IQR globally for this feature at this level
+                med = np.median(f_data)
+                q75, q25 = np.percentile(f_data, [75, 25])
+                iqr = q75 - q25
+                
+                # Scale to rough standard normal equivalent (IQR / 1.349)
+                scale_factor = iqr / 1.349
+                if scale_factor < 1e-8:
+                    scale_factor = 1.0
+                    
+                wavelet_coeffs[:, start_idx:end_idx, f] = (f_data - med) / scale_factor
+                
+                level_medians[level_idx, f] = med
+                level_iqrs[level_idx, f] = scale_factor
+
+        wavelet_tensor = torch.FloatTensor(wavelet_coeffs)
 
         wavelet_info = {
             'levels': self.num_levels,
@@ -169,7 +195,11 @@ class WaveletTimeSeriesDataModule(pl.LightningDataModule):
             'wavelet_shape': wavelet_tensor.shape,
             'wavelet_type': self.wavelet_type,
             'mode': self.mode,
-            'total_coeffs_per_feature': total_coeffs_per_feature
+            'total_coeffs_per_feature': total_coeffs_per_feature,
+            'robust_stats': {
+                'medians': level_medians,
+                'scale_factors': level_iqrs
+            }
         }
 
         return wavelet_tensor, wavelet_info
@@ -202,12 +232,24 @@ class WaveletTimeSeriesDataModule(pl.LightningDataModule):
             raise ValueError(f"Level dimension mismatch: expected {expected_n_level_dim}, got {n_level_dim}")
 
         reconstructed_signals = []
+        
+        # Invert Robust Scaling
+        robust_stats = self.wavelet_info.get('robust_stats')
 
         for sample_idx in range(n_samples):
             sample_features = []
 
             for feature_idx in range(n_features):
-                coeffs_flat = wavelet_coeffs[sample_idx, :, feature_idx]
+                coeffs_flat = wavelet_coeffs[sample_idx, :, feature_idx].copy()
+                
+                # Invert scaling per level
+                if robust_stats is not None:
+                    for level_idx, (start_idx, dim) in enumerate(zip(level_start_indices, level_dims)):
+                        end_idx = start_idx + dim
+                        med = robust_stats['medians'][level_idx, feature_idx]
+                        scale = robust_stats['scale_factors'][level_idx, feature_idx]
+                        coeffs_flat[start_idx:end_idx] = (coeffs_flat[start_idx:end_idx] * scale) + med
+
                 coeffs = []
                 for level_idx, (shape, dim, start_idx) in enumerate(zip(coeffs_shapes, level_dims, level_start_indices)):
                     end_idx = start_idx + dim
