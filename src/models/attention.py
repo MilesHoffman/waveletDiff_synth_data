@@ -34,17 +34,6 @@ class CrossLevelAttention(nn.Module):
         # Use the maximum embedding dimension as common dimension if not specified
         self.common_dim = common_dim if common_dim is not None else max(level_embed_dims)
         
-        # Level aggregation layers - convert variable length coefficient sequences to fixed-size level representations
-        self.level_aggregators = nn.ModuleList()
-        for embed_dim in level_embed_dims:
-            # Use attention-based pooling to aggregate coefficients within each level
-            aggregator = nn.Sequential(
-                nn.Linear(embed_dim, embed_dim // 2),
-                nn.GELU(),
-                nn.Linear(embed_dim // 2, 1),
-                nn.Softmax(dim=1)
-            )
-            self.level_aggregators.append(aggregator)
         
         # Project aggregated level representations to common dimension
         self.level_projections = nn.ModuleList()
@@ -93,7 +82,7 @@ class CrossLevelAttention(nn.Module):
         self.cross_level_gates = nn.ModuleList()
         for embed_dim in level_embed_dims:
             gate = nn.Sequential(
-                nn.Linear(embed_dim + time_embed_dim, embed_dim),
+                nn.Linear(embed_dim * 2 + time_embed_dim, embed_dim),
                 nn.Sigmoid()
             )
             self.cross_level_gates.append(gate)
@@ -111,66 +100,58 @@ class CrossLevelAttention(nn.Module):
             Attention weights tensor of shape [num_levels, num_levels]
         """
         batch_size = level_embeddings[0].shape[0]
+        attention_matrix = torch.zeros(self.num_levels, self.num_levels, device=level_embeddings[0].device)
         
-        # Step 1: Aggregate each level's coefficient embeddings into a single level representation
-        level_representations = []
-        for i, (level_emb, aggregator, projector) in enumerate(zip(level_embeddings, self.level_aggregators, self.level_projections)):
-            # level_emb shape: [batch_size, level_seq_len, level_embed_dim]
+        # Step 1: Base representations (project to common_dim and add positional encoding)
+        projected_levels = []
+        for i, (level_emb, projector) in enumerate(zip(level_embeddings, self.level_projections)):
+            proj_emb = projector(level_emb)
+            proj_emb = proj_emb + self.level_position_embeddings[i].unsqueeze(0).unsqueeze(1)
+            projected_levels.append(proj_emb)
             
-            # Self-attention pooling
-            attention_weights = aggregator(level_emb)
+        # Step 2 & 3: Pyramidal alignment and cross-attention
+        for i in range(self.num_levels):
+            target_seq_len = projected_levels[i].shape[1]
+            query = projected_levels[i]
             
-            # Apply attention weights to aggregate coefficients into level representation
-            level_repr = torch.sum(level_emb * attention_weights, dim=1)  # [batch_size, level_embed_dim]
+            keys_values = []
+            source_indices = []
             
-            # Project to common dimension
-            level_repr = projector(level_repr)  # [batch_size, common_dim]
-            
-            # Add level-specific position encoding
-            level_repr = level_repr + self.level_position_embeddings[i].unsqueeze(0)
-            
-            level_representations.append(level_repr)
-        
-        # Step 2: Stack level representations for attention computation
-        level_stack = torch.stack(level_representations, dim=1)  # [batch_size, num_levels, common_dim]
-        
-        # Step 3: Apply level-to-level attention and extract weights
-        if self.attention_mode == "all_to_all":
-            # Use the built-in attention mechanism
-            _, attention_weights = self.cross_attention(
-                level_stack, level_stack, level_stack, average_attn_weights=True, need_weights=True
-            )
-            # attention_weights shape: [batch_size, num_levels, num_levels]
-            # Average over batch dimension for visualization
-            attention_weights = attention_weights.mean(dim=0)  # [num_levels, num_levels]
-            
-        else:  # cross_only
-            # For cross-only mode, construct attention matrix manually
-            attention_matrix = torch.zeros(self.num_levels, self.num_levels, device=level_stack.device)
-            
-            for i in range(self.num_levels):
-                # Create key-value tensor excluding the current level
-                other_levels_indices = [j for j in range(self.num_levels) if j != i]
-                if not other_levels_indices:
+            for j in range(self.num_levels):
+                if self.attention_mode == "cross_only" and i == j:
                     continue
                     
-                other_levels = level_stack[:, other_levels_indices, :].contiguous()  # [batch_size, num_other_levels, common_dim]
-                query_level = level_stack[:, i:i+1, :].contiguous()  # [batch_size, 1, common_dim]
+                source = projected_levels[j]
+                if source.shape[1] != target_seq_len:
+                    source_t = source.transpose(1, 2)
+                    aligned_t = F.interpolate(source_t, size=target_seq_len, mode='linear', align_corners=False)
+                    aligned = aligned_t.transpose(1, 2)
+                else:
+                    aligned = source
+                keys_values.append(aligned)
+                source_indices.append(j)
                 
-                # Apply attention
-                _, attn_weights = self.cross_attention_layers[i](
-                    query_level, other_levels, other_levels
-                )
-                # attn_weights shape: [batch_size, 1, num_other_levels]
+            if not keys_values:
+                continue
                 
-                # Average over batch and place in correct positions
-                attn_weights_avg = attn_weights.mean(dim=0).squeeze(0)  # [num_other_levels]
-                for k, j in enumerate(other_levels_indices):
-                    attention_matrix[i, j] = attn_weights_avg[k]
+            kv_tensor = torch.cat(keys_values, dim=1)
             
-            attention_weights = attention_matrix
-        
-        return attention_weights
+            if self.attention_mode == "all_to_all":
+                _, attn_weights = self.cross_attention(query, kv_tensor, kv_tensor, average_attn_weights=True, need_weights=True)
+            else:
+                _, attn_weights = self.cross_attention_layers[i](query, kv_tensor, kv_tensor, average_attn_weights=True, need_weights=True)
+                
+            # attn_weights shape (if averaged over heads): [batch_size, target_seq_len, num_sources * target_seq_len]
+            attn_weights_avg = attn_weights.mean(dim=0)
+            
+            # Split back into individual source blocks along key sequence dimension
+            chunks = torch.chunk(attn_weights_avg, len(source_indices), dim=-1)
+            
+            for chunk, j in zip(chunks, source_indices):
+                # chunk shape: [target_seq_len, target_seq_len]
+                attention_matrix[i, j] = chunk.mean()
+                
+        return attention_matrix
 
     def forward(self, level_embeddings, time_embed):
         """
@@ -187,84 +168,60 @@ class CrossLevelAttention(nn.Module):
         # No clone needed since we don't modify them in-place
         original_embeddings = level_embeddings
         
-        # Step 1: Aggregate each level's coefficient embeddings into a single level representation
-        level_representations = []
-        for i, (level_emb, aggregator, projector) in enumerate(zip(level_embeddings, self.level_aggregators, self.level_projections)):
-            # level_emb shape: [batch_size, level_seq_len, level_embed_dim]
+        # Step 1: Base representations (project to common_dim and add positional encoding)
+        projected_levels = []
+        for i, (level_emb, projector) in enumerate(zip(level_embeddings, self.level_projections)):
+            proj_emb = projector(level_emb)
+            proj_emb = proj_emb + self.level_position_embeddings[i].unsqueeze(0).unsqueeze(1)
+            projected_levels.append(proj_emb)
             
-            # Self-attention pooling
-            # Compute attention weights for aggregation
-            attention_weights = aggregator(level_emb)  # [batch_size, level_seq_len, 1]
+        # Step 2 & 3: Pyramidal alignment and cross-attention
+        cross_attended_levels = []
+        for i in range(self.num_levels):
+            target_seq_len = projected_levels[i].shape[1]
+            query = projected_levels[i]
             
-            # Apply attention weights to aggregate coefficients into level representation
-            level_repr = torch.sum(level_emb * attention_weights, dim=1)  # [batch_size, level_embed_dim]
-            
-            # Project to common dimension
-            level_repr = projector(level_repr)  # [batch_size, common_dim]
-            
-            # Add level-specific position encoding
-            level_repr = level_repr + self.level_position_embeddings[i].unsqueeze(0)
-            
-            level_representations.append(level_repr)
-        
-        # Step 2: Stack level representations for attention computation
-        # Shape: [batch_size, num_levels, common_dim]
-        level_stack = torch.stack(level_representations, dim=1)
-        
-        # Step 3: Apply level-to-level attention
-        if self.attention_mode == "all_to_all":
-            # ALL-TO-ALL: Each level attends to all levels (including itself)
-            cross_attended_levels, attention_weights = self.cross_attention(
-                level_stack, level_stack, level_stack
-            )
-            # cross_attended_levels shape: [batch_size, num_levels, common_dim]
-            # attention_weights shape: [batch_size, num_heads, num_levels, num_levels]
-            
-        else:  # cross_only
-            # CROSS-ONLY: Each level only attends to other levels (not itself)
-            cross_attended_levels = []
-            
-            for i in range(self.num_levels):
-                # Create key-value tensor excluding the current level
-                other_levels_indices = [j for j in range(self.num_levels) if j != i]
-                if not other_levels_indices:
-                    # If there's only one level, just return the original representation
-                    cross_attended_levels.append(level_representations[i])
+            keys_values = []
+            for j in range(self.num_levels):
+                if self.attention_mode == "cross_only" and i == j:
                     continue
                     
-                other_levels = level_stack[:, other_levels_indices, :].contiguous()  # [batch_size, num_other_levels, common_dim]
-                query_level = level_stack[:, i:i+1, :].contiguous()  # [batch_size, 1, common_dim]
+                source = projected_levels[j]
+                if source.shape[1] != target_seq_len:
+                    source_t = source.transpose(1, 2)
+                    aligned_t = F.interpolate(source_t, size=target_seq_len, mode='linear', align_corners=False)
+                    aligned = aligned_t.transpose(1, 2)
+                else:
+                    aligned = source
+                keys_values.append(aligned)
                 
-                # Apply cross-attention (level i attends to all other levels)
-                cross_attended_level, _ = self.cross_attention_layers[i](
-                    query_level, other_levels, other_levels
-                )
-                # cross_attended_level shape: [batch_size, 1, common_dim]
-                cross_attended_levels.append(cross_attended_level.squeeze(1))  # [batch_size, common_dim]
+            if not keys_values:
+                cross_attended_levels.append(query)
+                continue
+                
+            kv_tensor = torch.cat(keys_values, dim=1)
             
-            # Convert to tensor for consistency
-            cross_attended_levels = torch.stack(cross_attended_levels, dim=1)
-            # cross_attended_levels shape: [batch_size, num_levels, common_dim]
-        
-        # Step 4: Expand level representations back to coefficient embeddings
+            if self.attention_mode == "all_to_all":
+                out, _ = self.cross_attention(query, kv_tensor, kv_tensor)
+            else:
+                out, _ = self.cross_attention_layers[i](query, kv_tensor, kv_tensor)
+                
+            cross_attended_levels.append(out)
+            
+        # Step 4: Expand and Gated Residual
         output_embeddings = []
-        for i, (cross_attended_level, expander, original_emb) in enumerate(
-            zip(cross_attended_levels.unbind(1), self.level_expanders, original_embeddings)
+        for i, (cross_attn_out, expander, original_emb) in enumerate(
+            zip(cross_attended_levels, self.level_expanders, original_embeddings)
         ):
-            # cross_attended_level shape: [batch_size, common_dim]
-            # original_emb shape: [batch_size, level_seq_len, level_embed_dim]
-            
-            # Expand level representation to all coefficients in this level
-            expanded_level = expander(cross_attended_level)  # [batch_size, level_embed_dim]
-            expanded_level = expanded_level.unsqueeze(1).expand(-1, original_emb.shape[1], -1)
-            # expanded_level shape: [batch_size, level_seq_len, level_embed_dim]
+            expanded_level = expander(cross_attn_out) # [batch, seq_len_i, embed_dim]
             
             # Apply adaptive layer norm
             cross_output_norm = self.cross_norm[i](expanded_level, time_embed)
             
             # Compute gate to control cross-level information
             time_embed_expanded = time_embed.unsqueeze(1).expand(-1, original_emb.shape[1], -1)
-            gate_input = torch.cat([original_emb, time_embed_expanded], dim=-1)
+            # GLU-Style Gate evaluates incoming cross_output_norm along with original and time embeddings
+            gate_input = torch.cat([original_emb, cross_output_norm, time_embed_expanded], dim=-1)
             gate = self.cross_level_gates[i](gate_input)
             
             # Apply gated residual connection
@@ -272,6 +229,3 @@ class CrossLevelAttention(nn.Module):
             output_embeddings.append(output)
         
         return output_embeddings
-
-
-
