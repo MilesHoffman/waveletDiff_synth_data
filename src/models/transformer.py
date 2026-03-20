@@ -455,8 +455,8 @@ class WaveletDiffusionTransformer(pl.LightningModule):
             # Update timestep sampler history in eager mode (safe from CUDAGraphs)
             if 'sampling_t' in outputs and 'per_sample_losses' in outputs:
                 self.timestep_sampler.update_loss_history(
-                    outputs['sampling_t'], 
-                    outputs['per_sample_losses']
+                    outputs['sampling_t'].detach(), 
+                    outputs['per_sample_losses'].detach()
                 )
 
     def training_step(self, batch, batch_idx):

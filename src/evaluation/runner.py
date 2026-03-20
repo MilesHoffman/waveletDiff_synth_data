@@ -129,7 +129,7 @@ class EvaluationRunner:
         # === Advanced Metrics (Tier 2) ===
         if self.config.compute_advanced:
             print("\n--- Advanced Metrics (Tier 2) ---")
-            result.advanced_metrics = self._run_advanced_metrics(data)
+            result.advanced_metrics = self._run_advanced_metrics(data, is_reparam)
 
         # === Legacy Metrics (Source) ===
         if self.config.compute_legacy:
@@ -239,7 +239,7 @@ class EvaluationRunner:
         
         return metrics
     
-    def _run_advanced_metrics(self, data: dict) -> dict:
+    def _run_advanced_metrics(self, data: dict, is_reparam: bool = False) -> dict:
         """Run Tier 2 metrics."""
         from .advanced_metrics import (
             js_divergence, 
@@ -351,16 +351,19 @@ class EvaluationRunner:
             print(f"  → Leverage failed: {e}")
             
         # Drawdown Dynamics
-        try:
-            # Drawdowns calculated on Price paths (standardized -> re-cumprod or use raw if available?)
-            # Ideally use Raw Price paths if they exist, but 'data' dict might not have them readily in 'raw' if scaled.
-            # prepare_evaluation_data 'raw' is usually the original input.
-            # Let's use data['real']['raw'] which is presumably prices.
-            dd_res = calculate_drawdown_stats(data['real']['raw'], data['synth']['raw'])
-            metrics['quant_finance'].update(dd_res)
-            print(f"  → Drawdown KS Stat: {dd_res['MaxDD_KS_Stat']:.4f}")
-        except Exception as e:
-            print(f"  → Drawdown failed: {e}")
+        if not is_reparam:
+            try:
+                # Drawdowns calculated on Price paths (standardized -> re-cumprod or use raw if available?)
+                # Ideally use Raw Price paths if they exist, but 'data' dict might not have them readily in 'raw' if scaled.
+                # prepare_evaluation_data 'raw' is usually the original input.
+                # Let's use data['real']['raw'] which is presumably prices.
+                dd_res = calculate_drawdown_stats(data['real']['raw'], data['synth']['raw'])
+                metrics['quant_finance'].update(dd_res)
+                print(f"  → Drawdown KS Stat: {dd_res['MaxDD_KS_Stat']:.4f}")
+            except Exception as e:
+                print(f"  → Drawdown failed: {e}")
+        else:
+            print("  → Drawdown: Skipped (Not applicable for reparameterized space)")
 
 
         # Statistician

@@ -354,6 +354,11 @@ def main():
             train_loss = metrics.get('train_loss', 0.0)
             lr = metrics.get('lr', 0.0)
             
+            if isinstance(train_loss, torch.Tensor):
+                train_loss = train_loss.item()
+            if isinstance(lr, torch.Tensor):
+                lr = lr.item()
+                
             postfix = {
                 "loss": f"{train_loss:.6f}",
                 "lr": f"{lr:.2e}"

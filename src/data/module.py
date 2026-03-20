@@ -334,7 +334,7 @@ class WaveletTimeSeriesDataModule(pl.LightningDataModule):
         # ── Resolve Price Anchors ──
         if fixed_anchor is not None:
             anchors = np.full((n_samples,), fixed_anchor)
-            indices = np.random.choice(len(self.norm_stats['vol_medians']), size=n_samples, replace=True)
+            indices = sample_indices if sample_indices is not None else np.random.choice(len(self.norm_stats['vol_medians']), size=n_samples, replace=True)
         elif sample_indices is not None:
             anchors = self.norm_stats['anchors'][sample_indices]
             indices = sample_indices

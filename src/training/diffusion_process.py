@@ -108,7 +108,8 @@ def _ddpm_coeff_step(x_t, prediction, alpha_t, alpha_bar_t, alpha_bar_prev, beta
 def _ddim_noise_step(x_t, prediction, alpha_bar_t, alpha_bar_prev, beta_t, sigma, noise):
     """Branchless DDIM step for noise-prediction models."""
     x_0_pred = (x_t - torch.sqrt(1.0 - alpha_bar_t) * prediction) / torch.sqrt(alpha_bar_t)
-    x_next = torch.sqrt(alpha_bar_prev) * x_0_pred + torch.sqrt(1.0 - alpha_bar_prev) * prediction
+    dir_xt = torch.sqrt(torch.clamp(1.0 - alpha_bar_prev - sigma**2, min=0.0)) * prediction
+    x_next = torch.sqrt(alpha_bar_prev) * x_0_pred + dir_xt
     return x_next + sigma * noise
 
 
@@ -116,7 +117,8 @@ def _ddim_coeff_step(x_t, prediction, alpha_bar_t, alpha_bar_prev, beta_t, sigma
     """Branchless DDIM step for coefficient-prediction models."""
     x_0_pred = prediction
     noise_pred = (x_t - torch.sqrt(alpha_bar_t) * x_0_pred) / torch.sqrt(1.0 - alpha_bar_t)
-    x_next = torch.sqrt(alpha_bar_prev) * x_0_pred + torch.sqrt(1.0 - alpha_bar_prev) * noise_pred
+    dir_xt = torch.sqrt(torch.clamp(1.0 - alpha_bar_prev - sigma**2, min=0.0)) * noise_pred
+    x_next = torch.sqrt(alpha_bar_prev) * x_0_pred + dir_xt
     return x_next + sigma * noise
 
 
@@ -261,9 +263,10 @@ class DDIMSampler(DiffusionSampler):
         
         # Pre-compute sigma for each step (branchless: sigma=0 when t_prev=0 or eta=0)
         if self.eta > 0.0:
+            ddim_beta = 1.0 - (alpha_bar_t / alpha_bar_prev)
             sigma = self.eta * torch.sqrt(
                 (1.0 - alpha_bar_prev) / (1.0 - alpha_bar_t)
-            ) * torch.sqrt(beta_t)
+            ) * torch.sqrt(ddim_beta)
             sigma = sigma * valid_prev_mask.float()
         else:
             sigma = torch.zeros(len(timesteps), device=self.device)

@@ -302,6 +302,7 @@ class InlineEvaluationCallback(pl.Callback):
 
         def _adversarial_accuracy(pool_real: np.ndarray, pool_synth: np.ndarray) -> float:
             X = np.vstack([pool_real, pool_synth])
+            X = X / (X.std(axis=0) + 1e-8)  # Standardize to prevent magnitude domination
             y = np.concatenate([
                 np.ones(len(pool_real), dtype=np.float32),
                 np.zeros(len(pool_synth), dtype=np.float32)

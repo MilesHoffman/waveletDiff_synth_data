@@ -122,8 +122,9 @@ def prepare_evaluation_data(
     # Column mapping for BOTH spaces (Dollar and Reparam):
     # Index 4 is Volume.
     if exclude_volume and real.shape[2] > 4:
-        # Create mask to drop index 4
-        indices = [i for i in range(real.shape[2]) if i != 4]
+        # Create mask to drop the correct volume index
+        vol_idx = 21 if is_reparam else 4
+        indices = [i for i in range(real.shape[2]) if i != vol_idx]
         real_processed = real[:, :, indices]
         synth_processed = synth[:, :, indices]
     else:
