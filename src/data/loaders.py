@@ -421,12 +421,12 @@ def load_stocks_data(data_dir: str, seq_len: int = 24, normalize_data: bool = Tr
     Load Stocks dataset with the SOTA 22-feature pipeline.
 
     Features output (22 channels):
-        [0]  overnight_gap:     log(Open_t / Close_{t-1})
-        [1]  intraday_return:   log(Close_t / Open_t)
+        [0]  logit_open_pos:    logit((log(O)-log(L))/(log(H/L)+eps))
+        [1]  logit_close_pos:   logit((log(C)-log(L))/(log(H/L)+eps))
         [2]  total_log_return:  log(Close_t / Close_{t-1})
-        [3]  normalized_range:  (High - Low) / Close_{t-1}
-        [4]  wick_high_ratio:   (High - max(O,C)) / (H-L)        [0,1]
-        [5]  wick_low_ratio:    (min(O,C) - Low) / (H-L)         [0,1]
+        [3]  log_log_hl_ratio:  log(log(H_t/L_t) + eps)
+        [4]  overnight_gap:     log(Open_t / Close_{t-1}) (redundant structure)
+        [5]  intraday_return:   log(Close_t / Open_t) (redundant structure)
         [6]  prev_intraday_ret: log(Close_{t-1} / Open_{t-1})
         [7]  cum_return:        log(Close_t / Close_window_start)
         [8]  day_sin:           sin(2*pi*dow/5)                   [-1,1]
@@ -529,18 +529,22 @@ def load_stocks_data(data_dir: str, seq_len: int = 24, normalize_data: bool = Tr
     overnight_gap_raw = np.log(open_prices / (prev_close + eps))
     intraday_return_raw = np.log(close_prices / (open_prices + eps))
     total_log_return_raw = np.log(close_prices / (prev_close + eps))
-
-    bar_range = high_prices - low_prices
-    normalized_range_raw = bar_range / (prev_close + eps)
-
-    safe_range = np.where(bar_range < eps, eps, bar_range)
-    max_oc = np.maximum(open_prices, close_prices)
-    min_oc = np.minimum(open_prices, close_prices)
-    # New Log-Shadow Formulas
-    log_upper_shadow_raw = np.log(high_prices / (max_oc + eps) + eps)
-    log_lower_shadow_raw = np.log((min_oc + eps) / (low_prices + eps) + eps)
-
     prev_intraday_raw = np.log(prev_close / (prev_open + eps))
+
+    # New logit/sigmoid structural features
+    log_hl_ratio = np.log((high_prices + eps) / (low_prices + eps))
+    log_hl_ratio_clipped = np.clip(log_hl_ratio, 1e-8, None)
+    log_log_hl_ratio_raw = np.log(log_hl_ratio_clipped)
+    
+    c_pos = (np.log(close_prices + eps) - np.log(low_prices + eps)) / log_hl_ratio_clipped
+    o_pos = (np.log(open_prices + eps) - np.log(low_prices + eps)) / log_hl_ratio_clipped
+    
+    c_pos_clipped = np.clip(c_pos, 1e-5, 1.0 - 1e-5)
+    o_pos_clipped = np.clip(o_pos, 1e-5, 1.0 - 1e-5)
+    
+    from scipy.special import logit
+    logit_close_pos_raw = logit(c_pos_clipped)
+    logit_open_pos_raw = logit(o_pos_clipped)
 
     vol_shock_raw = np.log(volume / (np.roll(volume, 1) + eps))
     vol_shock_raw[0] = 0.0
@@ -581,12 +585,12 @@ def load_stocks_data(data_dir: str, seq_len: int = 24, normalize_data: bool = Tr
     volume = volume[valid_start:]
     day_of_week = day_of_week[valid_start:]
 
+    logit_open_pos_raw = logit_open_pos_raw[valid_start:]
+    logit_close_pos_raw = logit_close_pos_raw[valid_start:]
+    total_log_return_raw = total_log_return_raw[valid_start:]
+    log_log_hl_ratio_raw = log_log_hl_ratio_raw[valid_start:]
     overnight_gap_raw = overnight_gap_raw[valid_start:]
     intraday_return_raw = intraday_return_raw[valid_start:]
-    total_log_return_raw = total_log_return_raw[valid_start:]
-    normalized_range_raw = normalized_range_raw[valid_start:]
-    log_upper_shadow_raw = log_upper_shadow_raw[valid_start:]
-    log_lower_shadow_raw = log_lower_shadow_raw[valid_start:]
     prev_intraday_raw = prev_intraday_raw[valid_start:]
     vol_shock_raw = vol_shock_raw[valid_start:]
     vol_log_dev = vol_log_dev[valid_start:]
@@ -606,15 +610,13 @@ def load_stocks_data(data_dir: str, seq_len: int = 24, normalize_data: bool = Tr
     rolling_amihud = rolling_amihud[valid_start:]
 
     # ── 8. Apply SOTA Normalization (Global Robust Scaling / Log-ZScore) ──
+    logit_open_pos_scaled, lop_med, lop_iqr = robust_scale(logit_open_pos_raw)
+    logit_close_pos_scaled, lcp_med, lcp_iqr = robust_scale(logit_close_pos_raw)
+    total_log_return_scaled, tlr_med, tlr_iqr = robust_scale(total_log_return_raw)
+    log_log_hl_ratio_scaled, llhl_med, llhl_iqr = robust_scale(log_log_hl_ratio_raw)
+
     overnight_gap_scaled, gap_med, gap_iqr = robust_scale(overnight_gap_raw)
     intraday_return_scaled, idr_med, idr_iqr = robust_scale(intraday_return_raw)
-    total_log_return_scaled, tlr_med, tlr_iqr = robust_scale(total_log_return_raw)
-    normalized_range_scaled, nr_med, nr_iqr = robust_scale(normalized_range_raw)
-
-    # Log Shadows Robust Scaling
-    log_upper_shadow_scaled, lus_med, lus_iqr = robust_scale(log_upper_shadow_raw)
-    log_lower_shadow_scaled, lls_med, lls_iqr = robust_scale(log_lower_shadow_raw)
-
     prev_intraday_scaled, pidr_med, pidr_iqr = robust_scale(prev_intraday_raw)
     vol_shock_scaled, vs_med, vs_iqr = robust_scale(vol_shock_raw)
 
@@ -699,12 +701,12 @@ def load_stocks_data(data_dir: str, seq_len: int = 24, normalize_data: bool = Tr
 
         # ── Concatenate 22 features ──
         window_features = np.stack([
-            safe(overnight_gap_scaled, s, e),       # [0]
-            safe(intraday_return_scaled, s, e),     # [1]
+            safe(logit_open_pos_scaled, s, e),      # [0]
+            safe(logit_close_pos_scaled, s, e),     # [1]
             safe(total_log_return_scaled, s, e),    # [2]
-            safe(normalized_range_scaled, s, e),    # [3]
-            safe(log_upper_shadow_scaled, s, e),    # [4]
-            safe(log_lower_shadow_scaled, s, e),    # [5]
+            safe(log_log_hl_ratio_scaled, s, e),    # [3]
+            safe(overnight_gap_scaled, s, e),       # [4]
+            safe(intraday_return_scaled, s, e),     # [5]
             safe(prev_intraday_scaled, s, e),       # [6]
             cum_return,                             # [7]
             day_sin,                                # [8]
@@ -751,12 +753,12 @@ def load_stocks_data(data_dir: str, seq_len: int = 24, normalize_data: bool = Tr
         'vol_medians': vol_medians,
         'vol_iqrs': vol_iqrs,
         'robust_scales': {
+            'logit_open_pos': {'median': lop_med, 'iqr': lop_iqr},
+            'logit_close_pos': {'median': lcp_med, 'iqr': lcp_iqr},
+            'total_log_return': {'median': tlr_med, 'iqr': tlr_iqr},
+            'log_log_hl_ratio': {'median': llhl_med, 'iqr': llhl_iqr},
             'overnight_gap': {'median': gap_med, 'iqr': gap_iqr},
             'intraday_return': {'median': idr_med, 'iqr': idr_iqr},
-            'total_log_return': {'median': tlr_med, 'iqr': tlr_iqr},
-            'normalized_range': {'median': nr_med, 'iqr': nr_iqr},
-            'log_upper_shadow': {'median': lus_med, 'iqr': lus_iqr},
-            'log_lower_shadow': {'median': lls_med, 'iqr': lls_iqr},
             'prev_intraday': {'median': pidr_med, 'iqr': pidr_iqr},
             'vol_shock': {'median': vs_med, 'iqr': vs_iqr},
             'sma_20_dist': {'median': sma20_med, 'iqr': sma20_iqr},
@@ -774,8 +776,8 @@ def load_stocks_data(data_dir: str, seq_len: int = 24, normalize_data: bool = Tr
         },
         'volume_type': 'log_deviation_median',
         'feature_names': [
-            'overnight_gap', 'intraday_return', 'total_log_return',
-            'normalized_range', 'log_upper_shadow', 'log_lower_shadow',
+            'logit_open_pos', 'logit_close_pos', 'total_log_return',
+            'log_log_hl_ratio', 'overnight_gap', 'intraday_return',
             'prev_intraday_ret', 'cum_return',
             'day_sin', 'day_cos',
             'sma_20_dist', 'sma_50_dist', 'sma_100_dist', 'sma_200_dist',

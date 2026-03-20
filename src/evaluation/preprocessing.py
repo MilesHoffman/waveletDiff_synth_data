@@ -25,11 +25,11 @@ def compute_log_returns(data: np.ndarray, price_col: int = 3, is_reparam: bool =
         Log returns of shape (N, T) or (N, T-1)
     """
     if is_reparam:
-        # In reparam space, index 1 is 'body_norm' which is (Close-Open)/Anchor
-        # This is already a return-like stationary feature.
+        # In the new logit/sigmoid reparam space, index 2 is 'total_log_return'.
+        # This is already a stationary return feature.
         # We perform no diff(), just return the feature as-is.
         # Shape: (N, T)
-        return data[:, :, 1]
+        return data[:, :, 2]
     
     # Clip to avoid log(0) or log(negative)
     close = np.maximum(data[:, :, price_col], 1e-8)

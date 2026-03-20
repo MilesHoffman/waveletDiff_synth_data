@@ -170,6 +170,7 @@ class WaveletDiffusionTransformer(pl.LightningModule):
         if self.use_path_sig_conditioning and self.path_sig_dim > 0:
             self.path_sig_embedding = PathSignatureEmbedding(time_embed_dim, sig_dim=self.path_sig_dim)
             self.null_condition_embed = nn.Parameter(torch.zeros(time_embed_dim))
+            self.cond_norm = nn.LayerNorm(time_embed_dim)
             conditioning_cfg = config.get('conditioning', {})
             self.cfg_dropout_prob = conditioning_cfg.get('cfg_dropout_prob', 0.15)
             print(f"Path signature conditioning enabled: dim={self.path_sig_dim}")
@@ -311,6 +312,8 @@ class WaveletDiffusionTransformer(pl.LightningModule):
             
             if conditions is not None:
                 cond_embed = self.path_sig_embedding(conditions)
+                # Normalize condition to prevent washing out the diffusion timestep
+                cond_embed = self.cond_norm(self.path_sig_embedding(conditions))
                 if self.training:
                     mask = (torch.rand(batch_size, 1, device=x.device) >= self.cfg_dropout_prob).float()
                     time_embed = time_embed + mask * cond_embed + (1.0 - mask) * null_embed

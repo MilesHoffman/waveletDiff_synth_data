@@ -276,15 +276,14 @@ class WaveletTimeSeriesDataModule(pl.LightningDataModule):
         """
         Inverse reparameterization for SOTA 22-feature OHLC data.
 
-        Reconstructs OHLCV from Log-Return based features using
-        Robust Scaling inverse and sequential price chaining.
+        Reconstructs OHLCV from Logit/Sigmoid Log-Return based features using
+        Robust Scaling inverse and structurally guaranteed sequential chaining.
 
         Feature Index Map:
-            [0] overnight_gap (Robust Scaled log-return)
-            [1] intraday_return (Robust Scaled log-return)
-            [3] normalized_range (Robust Scaled ratio)
-            [4] wick_high_ratio [0,1]
-            [5] wick_low_ratio [0,1]
+            [0] logit_open_pos (Robust Scaled)
+            [1] logit_close_pos (Robust Scaled)
+            [2] total_log_return (Robust Scaled)
+            [3] log_log_hl_ratio (Robust Scaled)
             [21] vol_log_dev (Log-Deviation from Rolling Median)
         """
         n_samples = data.shape[0]
@@ -293,47 +292,49 @@ class WaveletTimeSeriesDataModule(pl.LightningDataModule):
         # ── Resolve Price Anchors ──
         if fixed_anchor is not None:
             anchors = np.full((n_samples,), fixed_anchor)
+            indices = np.random.choice(len(self.norm_stats['vol_medians']), size=n_samples, replace=True)
         elif sample_indices is not None:
             anchors = self.norm_stats['anchors'][sample_indices]
+            indices = sample_indices
         else:
             all_anchors = self.norm_stats['anchors']
             indices = np.random.choice(len(all_anchors), size=n_samples, replace=True)
             anchors = all_anchors[indices]
 
         # ── Resolve Volume Anchors ──
-        if sample_indices is not None:
-            vol_medians = self.norm_stats['vol_medians'][sample_indices]
-            vol_iqrs = self.norm_stats['vol_iqrs'][sample_indices]
-        else:
-            _indices = indices if sample_indices is None and fixed_anchor is not None else np.random.choice(
-                len(self.norm_stats['vol_medians']), size=n_samples, replace=True)
-            vol_medians = self.norm_stats['vol_medians'][_indices]
-            vol_iqrs = self.norm_stats['vol_iqrs'][_indices]
+        vol_medians = self.norm_stats['vol_medians'][indices]
+        vol_iqrs = self.norm_stats['vol_iqrs'][indices]
 
         # ── Retrieve Robust Scaling Stats for Inverse ──
         rs = self.norm_stats['robust_scales']
-        gap_med, gap_iqr = rs['overnight_gap']['median'], rs['overnight_gap']['iqr']
-        idr_med, idr_iqr = rs['intraday_return']['median'], rs['intraday_return']['iqr']
-        nr_med, nr_iqr = rs['normalized_range']['median'], rs['normalized_range']['iqr']
-        lus_med, lus_iqr = rs['log_upper_shadow']['median'], rs['log_upper_shadow']['iqr']
-        lls_med, lls_iqr = rs['log_lower_shadow']['median'], rs['log_lower_shadow']['iqr']
+        lop_med, lop_iqr = rs['logit_open_pos']['median'], rs['logit_open_pos']['iqr']
+        lcp_med, lcp_iqr = rs['logit_close_pos']['median'], rs['logit_close_pos']['iqr']
+        tlr_med, tlr_iqr = rs['total_log_return']['median'], rs['total_log_return']['iqr']
+        llhl_med, llhl_iqr = rs['log_log_hl_ratio']['median'], rs['log_log_hl_ratio']['iqr']
 
         # ── Extract & Unscale Structural Features ──
-        gap_scaled = data[..., 0]
-        idr_scaled = data[..., 1]
-        range_scaled = data[..., 3]
-        lus_scaled = data[..., 4]
-        lls_scaled = data[..., 5]
+        lop_scaled = data[..., 0]
+        lcp_scaled = data[..., 1]
+        tlr_scaled = data[..., 2]
+        llhl_scaled = data[..., 3]
         vol_log_dev = np.clip(data[..., 21], -10.0, 10.0)
 
-        # Invert Robust Scaling to raw Log-Returns and Log-Shadows
-        gap_log_return = (gap_scaled * gap_iqr) + gap_med
-        intraday_log_return = (idr_scaled * idr_iqr) + idr_med
-        normalized_range = (range_scaled * nr_iqr) + nr_med
-        normalized_range = np.maximum(normalized_range, 0.0)
+        # Invert Robust Scaling
+        logit_open_pos = (lop_scaled * lop_iqr) + lop_med
+        logit_close_pos = (lcp_scaled * lcp_iqr) + lcp_med
+        total_log_return = (tlr_scaled * tlr_iqr) + tlr_med
+        log_log_hl_ratio = (llhl_scaled * llhl_iqr) + llhl_med
 
-        log_upper_shadow = (lus_scaled * lus_iqr) + lus_med
-        log_lower_shadow = (lls_scaled * lls_iqr) + lls_med
+        # ── Convert Logit/Sigmoid values to Structural Ratios ──
+        def expit(x):
+            return 1.0 / (1.0 + np.exp(-np.clip(x, -20.0, 20.0)))
+            
+        o_pos = expit(logit_open_pos)
+        c_pos = expit(logit_close_pos)
+        
+        # Clip log_log_hl_ratio to prevent overflow in exp
+        log_log_hl_ratio = np.clip(log_log_hl_ratio, -20.0, 10.0)
+        log_hl_ratio = np.exp(log_log_hl_ratio)
 
         # ── Reconstruct Prices via Sequential Chaining ──
         open_prices = np.zeros((n_samples, seq_len))
@@ -347,19 +348,23 @@ class WaveletTimeSeriesDataModule(pl.LightningDataModule):
             else:
                 prev_close = close_prices[:, t - 1]
 
-            open_prices[:, t] = prev_close * np.exp(gap_log_return[:, t])
-            close_prices[:, t] = open_prices[:, t] * np.exp(intraday_log_return[:, t])
-
-            total_range = prev_close * normalized_range[:, t]
-            total_range = np.maximum(total_range, 0.0)
-
-            max_oc = np.maximum(open_prices[:, t], close_prices[:, t])
-            min_oc = np.minimum(open_prices[:, t], close_prices[:, t])
-
-            # Reconstruct High/Low using Log-Shadows (exact inverse of log(ratio + eps))
-            eps = 1e-10
-            high_prices[:, t] = (max_oc + eps) * (np.exp(log_upper_shadow[:, t]) - eps)
-            low_prices[:, t] = (min_oc + eps) / (np.exp(log_lower_shadow[:, t]) - eps) - eps
+            # 1. Reconstruct Close from Anchor via total_log_return
+            close_prices[:, t] = prev_close * np.exp(total_log_return[:, t])
+            
+            # 2. Use Close position and H/L ratio to find Low
+            log_close = np.log(close_prices[:, t] + 1e-10)
+            log_low = log_close - c_pos[:, t] * log_hl_ratio[:, t]
+            
+            # 3. Find High from Low and H/L ratio
+            log_high = log_low + log_hl_ratio[:, t]
+            
+            # 4. Find Open from Low and Open position
+            log_open = log_low + o_pos[:, t] * log_hl_ratio[:, t]
+            
+            # Convert back to price
+            low_prices[:, t] = np.exp(log_low)
+            high_prices[:, t] = np.exp(log_high)
+            open_prices[:, t] = np.exp(log_open)
 
         # ── Volume Reconstruction: Log-Deviation Inverse ──
         vol_medians_exp = vol_medians.reshape(-1, 1)
