@@ -20,6 +20,9 @@ from scipy.stats import skew as _scipy_skew
 from sklearn.neighbors import NearestNeighbors
 import scipy.linalg
 
+from evaluation.core_metrics.discriminative import discriminative_score
+from evaluation.preprocessing import prepare_evaluation_data
+
 
 class InlineEvaluationCallback(pl.Callback):
     def __init__(
@@ -183,6 +186,24 @@ class InlineEvaluationCallback(pl.Callback):
         # Metric 4: EVT Tail Index
         results.update(self._compute_evt_tail_drift(real_ohlc_target, synth_ohlc, source_dm))
 
+        # Metric 5: Discriminative Score
+        print(f"  [Discriminative] Computing Discriminative Score (2000 iterations)...")
+        eval_data = prepare_evaluation_data(
+            real_ohlc_target, 
+            synth_ohlc,
+            exclude_volume=True,
+            close_col=3,
+            is_reparam=False
+        )
+        disc_score, fake_acc, real_acc = discriminative_score(
+            eval_data['real']['standardized'],
+            eval_data['synth']['standardized'],
+            iterations=2000
+        )
+        results['Discriminative_Score'] = disc_score
+        results['Discriminative_Fake_Acc'] = fake_acc
+        results['Discriminative_Real_Acc'] = real_acc
+
         # Console output
         print(f"  • [{label}] Structural Fidelity")
         if self.ohlcv_indices is not None:
@@ -196,6 +217,11 @@ class InlineEvaluationCallback(pl.Callback):
         print(f"    Real Tail Index: {results['Real_Tail_Index']:.4f}")
         print(f"    Synth Tail Index:{results['Synth_Tail_Index']:.4f}")
         print(f"    Tail Index Diff: {results['Tail_Index_Diff']:.4f}")
+
+        print(f"\n  • [{label}] Discriminative Model (RNN/LSTM)")
+        print(f"    Discriminative Score: {results['Discriminative_Score']:.4f}  (ideal: 0.50, low=indistinguishable)")
+        print(f"    Real Accuracy:        {results['Discriminative_Real_Acc']:.4f}")
+        print(f"    Fake Accuracy:        {results['Discriminative_Fake_Acc']:.4f}")
 
         # PL logging with prefixed keys
         for k, v in results.items():
