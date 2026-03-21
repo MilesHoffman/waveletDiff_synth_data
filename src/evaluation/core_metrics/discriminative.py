@@ -12,8 +12,16 @@ import torch.nn as nn
 import torch.optim as optim
 import numpy as np
 from sklearn.metrics import accuracy_score
-from tqdm.auto import tqdm
 from typing import Tuple
+
+try:
+    from IPython import get_ipython
+    if 'IPKernelApp' not in get_ipython().config:
+        raise ImportError("console")
+    from tqdm.notebook import tqdm
+except (ImportError, AttributeError):
+    from tqdm import tqdm
+
 
 
 def _extract_time(data: np.ndarray) -> Tuple[list, int]:
@@ -129,12 +137,18 @@ def discriminative_score(
         real_data, synth_data, ori_time, gen_time
     )
 
+    # To successfully torch.compile an LSTM block inside a custom module we should compile the forward pass directly
+    # However we'll try wrapping the whole model first but using `fullgraph=False`
     discriminator = _Discriminator(dim, hidden_dim).to(device)
     
     if compile_model and hasattr(torch, "compile"):
         try:
-            discriminator = torch.compile(discriminator)
-        except Exception:
+            print("  [Discriminator] Applying torch.compile...")
+            # Disable dynamic shapes and fullgraph to maximize compatibility with the packed sequences
+            discriminator = torch.compile(discriminator, dynamic=False, fullgraph=False)
+            print("  [Discriminator] torch.compile initialized.")
+        except Exception as e:
+            print(f"  [Discriminator] torch.compile failed: {e}")
             pass
             
     criterion = nn.BCEWithLogitsLoss()
@@ -159,7 +173,9 @@ def discriminative_score(
 
     # Training with Early Stopping
     discriminator.train()
-    pbar = tqdm(range(iterations), desc="Discriminative Training", leave=False, file=sys.stdout, ncols=100)
+    
+    # Use dynamic_ncols to prevent line breaking in notebooks
+    pbar = tqdm(range(iterations), desc="Discriminative Training", leave=False, dynamic_ncols=True)
     
     for it in pbar:
         # Train Step
