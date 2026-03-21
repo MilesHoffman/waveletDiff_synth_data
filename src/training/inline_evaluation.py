@@ -187,7 +187,7 @@ class InlineEvaluationCallback(pl.Callback):
         results.update(self._compute_evt_tail_drift(real_ohlc_target, synth_ohlc, source_dm))
 
         # Metric 5: Discriminative Score
-        print(f"  [Discriminative] Computing Discriminative Score (2000 iterations)...")
+        print(f"  [Discriminative] Computing Discriminative Score (500 iterations)...")
         eval_data = prepare_evaluation_data(
             real_ohlc_target, 
             synth_ohlc,
@@ -198,7 +198,7 @@ class InlineEvaluationCallback(pl.Callback):
         disc_score, fake_acc, real_acc = discriminative_score(
             eval_data['real']['standardized'],
             eval_data['synth']['standardized'],
-            iterations=2000,
+            iterations=500,
             compile_model=True
         )
         results['Discriminative_Score'] = disc_score

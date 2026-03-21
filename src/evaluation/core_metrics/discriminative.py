@@ -175,7 +175,7 @@ def discriminative_score(
     discriminator.train()
     
     # Use dynamic_ncols to prevent line breaking in notebooks
-    pbar = tqdm(range(iterations), desc="Discriminative Training", leave=False, dynamic_ncols=True)
+    pbar = tqdm(range(iterations), desc="Discriminative Training", leave=False, dynamic_ncols=True, disable=compile_model)
     
     for it in pbar:
         # Train Step
