@@ -6,6 +6,7 @@ Reference: Jinsung Yoon, Daniel Jarrett, Mihaela van der Schaar,
 Neural Information Processing Systems (NeurIPS), 2019.
 """
 
+import sys
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -97,7 +98,8 @@ def discriminative_score(
     real_data: np.ndarray,
     synth_data: np.ndarray,
     iterations: int = 2000,
-    batch_size: int = 128
+    batch_size: int = 128,
+    compile_model: bool = False
 ) -> float:
     """
     Compute discriminative score using post-hoc LSTM classifier (Hardened).
@@ -128,6 +130,13 @@ def discriminative_score(
     )
 
     discriminator = _Discriminator(dim, hidden_dim).to(device)
+    
+    if compile_model and hasattr(torch, "compile"):
+        try:
+            discriminator = torch.compile(discriminator)
+        except Exception:
+            pass
+            
     criterion = nn.BCEWithLogitsLoss()
     optimizer = optim.Adam(discriminator.parameters(), lr=0.001)
 
@@ -150,7 +159,7 @@ def discriminative_score(
 
     # Training with Early Stopping
     discriminator.train()
-    pbar = tqdm(range(iterations), desc="Discriminative Training (Extended)", leave=False)
+    pbar = tqdm(range(iterations), desc="Discriminative Training", leave=False, file=sys.stdout, ncols=100)
     
     for it in pbar:
         # Train Step

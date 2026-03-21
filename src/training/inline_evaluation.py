@@ -198,7 +198,8 @@ class InlineEvaluationCallback(pl.Callback):
         disc_score, fake_acc, real_acc = discriminative_score(
             eval_data['real']['standardized'],
             eval_data['synth']['standardized'],
-            iterations=2000
+            iterations=2000,
+            compile_model=True
         )
         results['Discriminative_Score'] = disc_score
         results['Discriminative_Fake_Acc'] = fake_acc
