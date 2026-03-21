@@ -107,7 +107,7 @@ def discriminative_score(
     synth_data: np.ndarray,
     iterations: int = 2000,
     batch_size: int = 128,
-    compile_model: bool = False
+    show_progress: bool = True
 ) -> float:
     """
     Compute discriminative score using post-hoc LSTM classifier (Hardened).
@@ -117,6 +117,7 @@ def discriminative_score(
         synth_data: Synthetic data of shape (N, T, D), should be scaled to [0,1]
         iterations: Max number of training iterations
         batch_size: Batch size for training
+        show_progress: Whether to show the tqdm progress bar
         
     Returns:
         Discriminative score: |0.5 - accuracy|
@@ -137,19 +138,7 @@ def discriminative_score(
         real_data, synth_data, ori_time, gen_time
     )
 
-    # To successfully torch.compile an LSTM block inside a custom module we should compile the forward pass directly
-    # However we'll try wrapping the whole model first but using `fullgraph=False`
     discriminator = _Discriminator(dim, hidden_dim).to(device)
-    
-    if compile_model and hasattr(torch, "compile"):
-        try:
-            print("  [Discriminator] Applying torch.compile...")
-            # Disable dynamic shapes and fullgraph to maximize compatibility with the packed sequences
-            discriminator = torch.compile(discriminator, dynamic=False, fullgraph=False)
-            print("  [Discriminator] torch.compile initialized.")
-        except Exception as e:
-            print(f"  [Discriminator] torch.compile failed: {e}")
-            pass
             
     criterion = nn.BCEWithLogitsLoss()
     optimizer = optim.Adam(discriminator.parameters(), lr=0.001)
@@ -175,7 +164,7 @@ def discriminative_score(
     discriminator.train()
     
     # Use dynamic_ncols to prevent line breaking in notebooks
-    pbar = tqdm(range(iterations), desc="Discriminative Training", leave=False, dynamic_ncols=True, disable=compile_model)
+    pbar = tqdm(range(iterations), desc="Discriminative Training", leave=False, dynamic_ncols=True, disable=not show_progress)
     
     for it in pbar:
         # Train Step

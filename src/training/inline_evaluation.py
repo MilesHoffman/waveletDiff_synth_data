@@ -199,7 +199,7 @@ class InlineEvaluationCallback(pl.Callback):
             eval_data['real']['standardized'],
             eval_data['synth']['standardized'],
             iterations=500,
-            compile_model=True
+            show_progress=False
         )
         results['Discriminative_Score'] = disc_score
         results['Discriminative_Fake_Acc'] = fake_acc
